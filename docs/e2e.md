@@ -11,9 +11,12 @@ Script: [`scripts/e2e-two-nodes.sh`](../scripts/e2e-two-nodes.sh).
 | A posts a topic | B stores it; the author key is identical in both stores | ✓ (~1 s) |
 | B replies anonymously | A stores it with mode *anonymous*, under a key none of B's accounts hold | ✓ |
 | B is wiped and restarted | B recovers both posts from A's snapshot on Logos Storage | ✓ |
+| D, installed **from the catalog** on a blank Basecamp, starts | D recovers the forum from A's snapshot (storage 2.1.3 ↔ 2.1.2) | ✓ |
+| D replies under an alias | A stores it as *alias* "Ghost of D", signed by D's account key | ✓ |
 
 ![B receives A's topic](e2e/1-b-receives-a-topic.png)
 ![A receives B's anonymous reply](e2e/3-a-receives-b-anonymous-reply.png)
+![All three signing modes, as node A sees them](e2e/5-three-signing-modes.png)
 
 ## What the network keeps
 
