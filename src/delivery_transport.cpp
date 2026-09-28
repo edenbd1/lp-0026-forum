@@ -62,24 +62,61 @@ bool DeliveryTransport::subscribe(const std::string& content_topic) {
     return modules_.delivery_module.subscribe(qs(content_topic)).success;
 }
 
-std::vector<std::string> DeliveryTransport::history(const std::string& content_topic) {
+std::vector<std::string> DeliveryTransport::history(const std::string&) { return {}; }
+
+struct DeliveryTransport::Query {
+    std::string topic;
+    std::function<void(std::vector<std::string>)> done;
+    size_t peer = 0;
+    int page = 0;
+    std::string cursor;
+    bool answered = false;
     std::vector<std::string> out;
+};
+
+void DeliveryTransport::history_async(const std::string& content_topic,
+                                      std::function<void(std::vector<std::string>)> done) {
     last_peer_.clear();
     last_error_.clear();
-    for (const auto& peer : peers_) {
-        std::string cursor;
-        bool answered = false;
-        for (int page = 0; page < kHistoryMaxPages; ++page) {
-            json q{{"requestId", QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString()},
-                   {"includeData", true},
-                   {"paginationForward", true},
-                   {"paginationLimit", kHistoryPageLimit},
-                   {"contentTopics", json::array({content_topic})}};
-            if (!cursor.empty()) q["paginationCursor"] = cursor;
-            const LogosResult r = modules_.delivery_module.storeQuery(qs(q.dump()), qs(peer), kHistoryTimeoutMs);
+    auto q = std::make_shared<Query>();
+    q->topic = content_topic;
+    q->done = std::move(done);
+    query_page(q);
+}
+
+void DeliveryTransport::query_page(std::shared_ptr<Query> q) {
+    if (q->peer >= peers_.size()) {
+        if (last_error_.empty()) last_error_ = "no store node answered";
+        q->done(std::move(q->out));
+        return;
+    }
+    json req{{"requestId", QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString()},
+             {"includeData", true},
+             {"paginationForward", true},
+             {"paginationLimit", kHistoryPageLimit},
+             {"contentTopics", json::array({q->topic})}};
+    if (!q->cursor.empty()) req["paginationCursor"] = q->cursor;
+    const std::string peer = peers_[q->peer];
+    modules_.delivery_module.storeQueryAsync(
+        qs(req.dump()), qs(peer), kHistoryTimeoutMs,
+        [this, q, peer](LogosResult r) {
+            // One peer is finished with — answered or not — when it fails, runs
+            // out of pages, or hits the page bound.
+            auto next_peer = [&]() {
+                if (q->answered) {
+                    last_peer_ = peer;
+                    q->done(std::move(q->out));  // one store node's view is the network's
+                    return;
+                }
+                ++q->peer;
+                q->page = 0;
+                q->cursor.clear();
+                query_page(q);
+            };
             if (!r.success) {
                 last_error_ = error_of(r);
-                break;
+                next_peer();
+                return;
             }
             // The Qt wrapper may hand the response back as JSON text or as an
             // already-structured variant; normalise to text.
@@ -88,23 +125,25 @@ std::vector<std::string> DeliveryTransport::history(const std::string& content_t
             const json resp = json::parse(text.toStdString(), nullptr, false);
             if (!resp.is_object() || !resp.contains("messages") || !resp["messages"].is_array()) {
                 last_error_ = "unreadable store response";
-                break;
+                next_peer();
+                return;
             }
-            answered = true;
+            q->answered = true;
             for (const auto& m : resp["messages"]) {
                 if (!m.is_object() || !m.contains("message") || !m["message"].is_object()) continue;
                 const auto& msg = m["message"];
                 if (!msg.contains("payload") || !msg["payload"].is_string()) continue;
                 std::string bytes = b64decode(msg["payload"].get<std::string>());
-                if (!bytes.empty()) out.push_back(std::move(bytes));
+                if (!bytes.empty()) q->out.push_back(std::move(bytes));
             }
-            cursor = resp.value("paginationCursor", std::string());
-            if (cursor.empty() || resp["messages"].empty()) break;
-        }
-        if (answered) {
-            last_peer_ = peer;
-            return out;  // one store node's view is the network's; no need to ask the rest
-        }
-    }
-    return out;
+            // A last page carries "paginationCursor": null, not an absent key.
+            const auto c = resp.find("paginationCursor");
+            q->cursor = c != resp.end() && c->is_string() ? c->get<std::string>() : std::string();
+            if (q->cursor.empty() || resp["messages"].empty() || ++q->page >= kHistoryMaxPages) {
+                next_peer();
+                return;
+            }
+            query_page(q);
+        },
+        Timeout(kHistoryTimeoutMs + 7000));
 }

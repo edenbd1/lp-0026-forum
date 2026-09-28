@@ -86,6 +86,7 @@ private:
     QTimer pumpTimer_, historyTimer_, snapshotTimer_;
     QString connectionState_;
     bool subscribed_ = false;
+    bool catchingUp_ = false;
     int subscribeAttempts_ = 0;
 
     // delivery request id -> post id, for posts the network has accepted but

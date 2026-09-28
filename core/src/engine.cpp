@@ -14,6 +14,17 @@ using json = nlohmann::json;
 constexpr const char* kSnapshotTag = "logos-forum-snapshot";
 constexpr const char* kAnnounceTag = "logos-forum-snapshot-at";
 constexpr size_t kMaxSnapshotPosts = 100000;
+
+// Typed reads that never throw: anything on the topic can be sent by anyone,
+// and json::value() throws when a field exists with another type.
+std::string str_at(const json& j, const char* k) {
+    const auto it = j.find(k);
+    return it != j.end() && it->is_string() ? it->get<std::string>() : std::string();
+}
+int64_t int_at(const json& j, const char* k) {
+    const auto it = j.find(k);
+    return it != j.end() && it->is_number_integer() ? it->get<int64_t>() : 0;
+}
 } // namespace
 
 bool RateLimiter::take(uint64_t now_ms) {
@@ -102,9 +113,11 @@ bool Engine::receive(const std::string& payload, uint64_t now_ms) {
         // unsigned on purpose — it carries no authority, only a place to look,
         // and everything fetched from there is verified post by post.
         const json a = json::parse(payload, nullptr, false);
-        if (on_snapshot && a.is_object() && a.value(kAnnounceTag, 0) == 1 && a.value("forum", "") == forum_ &&
-            a.contains("cid") && a["cid"].is_string() && a["cid"].get<std::string>().size() <= 128)
-            on_snapshot(a["cid"].get<std::string>(), a.value("posts", size_t{0}));
+        if (on_snapshot && a.is_object() && int_at(a, kAnnounceTag) == 1 && str_at(a, "forum") == forum_) {
+            const std::string cid = str_at(a, "cid");
+            const int64_t n = int_at(a, "posts");
+            if (!cid.empty() && cid.size() <= 128) on_snapshot(cid, n > 0 ? static_cast<size_t>(n) : 0);
+        }
         return false;
     }
     if (p->forum != forum_) return false;
@@ -138,7 +151,7 @@ std::string Engine::snapshot() const {
 
 int Engine::import_snapshot(const std::string& doc, uint64_t now_ms) {
     const json s = json::parse(doc, nullptr, false);
-    if (!s.is_object() || s.value(kSnapshotTag, 0) != 1 || s.value("forum", "") != forum_) return 0;
+    if (!s.is_object() || int_at(s, kSnapshotTag) != 1 || str_at(s, "forum") != forum_) return 0;
     const auto it = s.find("posts");
     if (it == s.end() || !it->is_array() || it->size() > kMaxSnapshotPosts) return 0;
     int added = 0;

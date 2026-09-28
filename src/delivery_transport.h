@@ -8,6 +8,8 @@
 // while we were away is caught up in one call.
 #pragma once
 
+#include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -23,7 +25,13 @@ public:
 
     forum::SendResult send(const std::string& content_topic, const std::string& payload) override;
     bool subscribe(const std::string& content_topic) override;
+    // Always empty: a Store query can take many seconds, and a blocking call
+    // from the backend freezes the view with it. Use history_async().
     std::vector<std::string> history(const std::string& content_topic) override;
+
+    // Ask the store nodes in turn, following pages, and call `done` with every
+    // payload once one has answered (or all have failed).
+    void history_async(const std::string& content_topic, std::function<void(std::vector<std::string>)> done);
 
     void set_store_peers(std::vector<std::string> peers) { peers_ = std::move(peers); }
     const std::vector<std::string>& store_peers() const { return peers_; }
@@ -36,6 +44,8 @@ public:
     static std::vector<std::string> default_store_peers();
 
 private:
+    struct Query;
+    void query_page(std::shared_ptr<Query> q);
     LogosModules& modules_;
     std::vector<std::string> peers_;
     std::string last_peer_, last_error_;

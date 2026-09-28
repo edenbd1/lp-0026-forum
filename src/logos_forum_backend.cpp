@@ -26,7 +26,16 @@ using forum::Post;
 
 namespace {
 
-void log(const std::string& m) { std::cerr << "[logos_forum] " << m << std::endl; }
+// Basecamp does not surface a ui-host's stderr, so the log also goes to
+// forum.log in the forum's data directory, where tests and bug reports read it.
+QString g_logPath;
+void log(const std::string& m) {
+    const std::string line = QDateTime::currentDateTime().toString(Qt::ISODateWithMs).toStdString() + " " + m;
+    std::cerr << "[logos_forum] " << line << std::endl;
+    if (g_logPath.isEmpty()) return;
+    QFile f(g_logPath);
+    if (f.open(QIODevice::Append | QIODevice::Text)) f.write((line + "\n").c_str());
+}
 
 uint64_t now_ms() { return static_cast<uint64_t>(QDateTime::currentMSecsSinceEpoch()); }
 
@@ -50,6 +59,19 @@ std::string b64decode(const std::string& in) {
         return {};
     out.resize(n);
     return out;
+}
+
+// Module events are parsed without ever throwing: an exception escaping an
+// event callback aborts the ui-host process.
+std::string str_at(const nlohmann::json& j, const char* k) {
+    if (!j.is_object()) return {};
+    const auto it = j.find(k);
+    return it != j.end() && it->is_string() ? it->get<std::string>() : std::string();
+}
+bool bool_at(const nlohmann::json& j, const char* k) {
+    if (!j.is_object()) return false;
+    const auto it = j.find(k);
+    return it != j.end() && it->is_boolean() && it->get<bool>();
 }
 
 constexpr const char* kDefaultForum = "Logos Forum";
@@ -92,6 +114,8 @@ void LogosForumBackend::onContextReady() {
 }
 
 void LogosForumBackend::bootstrap() {
+    g_logPath = dataDir() + QStringLiteral("/forum.log");
+    log("bootstrap: forum \"" + s(forumName()) + "\" on " + s(contentTopic()));
     if (sodium_init() < 0) {
         setStatus(QStringLiteral("libsodium failed to initialise"));
         return;
@@ -112,6 +136,7 @@ void LogosForumBackend::bootstrap() {
         emit postArrived(q(id), q(p.kind == Kind::Topic ? id : p.topic_id));
     };
     engine_->on_sent = [this](const std::string& id, const std::string& request) {
+        log("sent " + id.substr(0, 12) + " as request " + request);
         if (!request.empty()) inFlight_.insert(q(request), q(id));
         emit postStateChanged(q(id), QStringLiteral("sent"), QString());
     };
@@ -149,6 +174,7 @@ void LogosForumBackend::wireDelivery() {
         if (data.isEmpty()) return;
         const QString prev = connectionState_;
         connectionState_ = data.at(0).toString();
+        log("connection: " + s(connectionState_));
         refreshStatus();
         // Back from offline: fetch what was missed and flush the outbox.
         if (connectionState_ == QLatin1String("Connected") && prev != connectionState_)
@@ -160,7 +186,8 @@ void LogosForumBackend::wireDelivery() {
     d.on("messageReceived", [this](const QVariantList& data) {
         if (data.size() < 3 || !engine_) return;
         if (data.at(1).toString() != contentTopic()) return;  // another app's traffic
-        engine_->receive(data.at(2).toByteArray().toStdString(), now_ms());
+        const bool fresh = engine_->receive(data.at(2).toByteArray().toStdString(), now_ms());
+        log(std::string("received ") + (fresh ? "a new post" : "a known or foreign message"));
     });
     d.on("nodeStarted", [this](const QVariantList& data) {
         const bool up = !data.isEmpty() && data.at(0).toBool();
@@ -214,6 +241,7 @@ void LogosForumBackend::subscribe() {
     if (subscribed_ || !net_) return;
     ++subscribeAttempts_;
     if (net_->subscribe(s(contentTopic()))) {
+        log("subscribed on attempt " + std::to_string(subscribeAttempts_));
         subscribed_ = true;
         refreshStatus();
         return;
@@ -508,33 +536,45 @@ void LogosForumBackend::publishHistory() {
 }
 
 void LogosForumBackend::runCatchUp(const char* why) {
-    if (!engine_) return;
-    const int added = engine_->catch_up(now_ms());
-    const std::string& peer = net_->last_history_peer();
-    log(std::string("catch-up (") + why + "): " + std::to_string(added) + " new, peer " +
-        (peer.empty() ? "none — " + net_->last_history_error() : peer));
-    lastCatchUp_ = peer.empty() ? QStringLiteral("History unavailable (%1)").arg(q(net_->last_history_error()))
-                                : QStringLiteral("Caught up %1 · %2 new").arg(hhmm(now_ms())).arg(added);
+    if (!engine_ || catchingUp_) return;
+    catchingUp_ = true;
+    log(std::string("catch-up starting (") + why + ")");
+    lastCatchUp_ = QStringLiteral("Fetching missed posts…");
     publishHistory();
+    const std::string reason = why;
+    net_->history_async(s(contentTopic()), [this, reason](std::vector<std::string> payloads) {
+        catchingUp_ = false;
+        if (!engine_) return;
+        int added = 0;
+        for (const auto& m : payloads)
+            if (engine_->receive(m, now_ms())) ++added;
+        const std::string& peer = net_->last_history_peer();
+        log("catch-up (" + reason + "): " + std::to_string(payloads.size()) + " messages, " + std::to_string(added) +
+            " new, peer " + (peer.empty() ? "none — " + net_->last_history_error() : peer));
+        lastCatchUp_ = peer.empty()
+            ? QStringLiteral("History unavailable (%1)").arg(q(net_->last_history_error()))
+            : QStringLiteral("Caught up %1 · %2 new").arg(hhmm(now_ms())).arg(added);
+        publishHistory();
+    });
 }
 
 QString LogosForumBackend::catchUp() {
     runCatchUp("asked");
-    return lastCatchUp_;
+    return QString();
 }
 
 void LogosForumBackend::wireStorage() {
     auto& st = modules().storage_module;
     st.onStorageStart([this](const QString& payload) {
         const auto j = nlohmann::json::parse(s(payload), nullptr, false);
-        storageReady_ = j.is_object() && j.value("success", false);
+        storageReady_ = bool_at(j, "success");
         log(std::string("storage start: ") + (storageReady_ ? "ok" : s(payload)));
         publishHistory();
     });
     st.onStorageUploadProgress([this](const QString& payload) {
         const auto j = nlohmann::json::parse(s(payload), nullptr, false);
-        if (!j.is_object() || q(j.value("sessionId", std::string())) != uploadSession_) return;
-        if (!j.value("success", false)) {
+        if (!j.is_object() || q(str_at(j, "sessionId")) != uploadSession_) return;
+        if (!bool_at(j, "success")) {
             lastSnapshot_ = QStringLiteral("Snapshot upload failed");
             uploadSession_.clear();
             publishHistory();
@@ -545,10 +585,11 @@ void LogosForumBackend::wireStorage() {
     });
     st.onStorageDownloadProgress([this](const QString& payload) {
         const auto j = nlohmann::json::parse(s(payload), nullptr, false);
-        if (!j.is_object() || !j.value("success", false) || q(j.value("sessionId", std::string())) != downloadSession_)
+        if (!bool_at(j, "success") || q(str_at(j, "sessionId")) != downloadSession_)
             return;
-        if (!j.contains("chunk") || !j["chunk"].is_string()) return;
-        downloadBuf_ += b64decode(j["chunk"].get<std::string>());
+        const std::string chunk = str_at(j, "chunk");
+        if (chunk.empty()) return;
+        downloadBuf_ += b64decode(chunk);
         if (downloadBuf_.size() > kMaxSnapshotBytes) {  // not a forum snapshot; stop
             modules().storage_module.downloadCancel(downloadSession_);
             downloadSession_.clear();
@@ -557,9 +598,9 @@ void LogosForumBackend::wireStorage() {
     });
     st.onStorageDownloadDone([this](const QString& payload) {
         const auto j = nlohmann::json::parse(s(payload), nullptr, false);
-        if (!j.is_object() || q(j.value("sessionId", std::string())) != downloadSession_) return;
+        if (!j.is_object() || q(str_at(j, "sessionId")) != downloadSession_) return;
         downloadSession_.clear();
-        if (j.value("success", false) && engine_) {
+        if (bool_at(j, "success") && engine_) {
             const int added = engine_->import_snapshot(downloadBuf_, now_ms());
             lastSnapshot_ = QStringLiteral("Loaded a snapshot · %1 new").arg(added);
             log("snapshot imported: " + std::to_string(added) + " new");
@@ -572,7 +613,11 @@ void LogosForumBackend::wireStorage() {
     // init is refused and the node is already usable.
     const QString cfg = QString::fromUtf8(QJsonDocument(QJsonObject{
         {"network", "logos.test"},
-        {"data-dir", dataDir() + QStringLiteral("/storage")}}).toJson(QJsonDocument::Compact));
+        {"data-dir", dataDir() + QStringLiteral("/storage")},
+        // Ephemeral ports: the default discovery port is fixed (8090), so two
+        // Basecamp instances on one machine would otherwise collide.
+        {"listen-port", 0},
+        {"disc-port", 0}}).toJson(QJsonDocument::Compact));
     if (ok(st.init(cfg))) ok(st.start());
     else storageReady_ = true;
     publishHistory();

@@ -276,6 +276,28 @@ TEST(a_snapshot_announcement_reaches_peers_and_is_not_a_post) {
     CHECK(!elsewhere.receive(bus.log.back(), 11) && got.empty());   // another forum's pointer is ignored
 }
 
+TEST(mistyped_traffic_is_ignored_not_fatal) {
+    // Anyone can publish on the topic; a field of the wrong type must be a
+    // dropped message, never an exception that takes the app down.
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum");
+    int calls = 0;
+    ea.on_snapshot = [&](const std::string&, size_t) { ++calls; };
+    for (const char* m : {
+             R"({"logos-forum-snapshot-at":"1","forum":"Logos Forum","cid":"x"})",
+             R"({"logos-forum-snapshot-at":1,"forum":5,"cid":"x"})",
+             R"({"logos-forum-snapshot-at":1,"forum":"Logos Forum","cid":null})",
+             R"({"logos-forum-snapshot-at":1,"forum":"Logos Forum","cid":"x","posts":"many"})",
+             R"({"v":"1","kind":7})", "[]", "null", "", "{"}) {
+        CHECK(!ea.receive(m, 1));
+    }
+    CHECK(calls == 1);  // only the last well-formed pointer, with a bad count read as 0
+    CHECK(ea.import_snapshot(R"({"logos-forum-snapshot":"1","forum":"Logos Forum","posts":[]})", 1) == 0);
+    CHECK(ea.import_snapshot(R"({"logos-forum-snapshot":1,"forum":null,"posts":[]})", 1) == 0);
+    CHECK(ea.import_snapshot(R"({"logos-forum-snapshot":1,"forum":"Logos Forum","posts":{"a":1}})", 1) == 0);
+    CHECK(sa.count() == 0);
+}
+
 TEST(each_forum_has_its_own_content_topic) {
     CHECK(content_topic("Logos Forum") != content_topic("logos-forum"));
     CHECK(content_topic("Logos Forum").rfind("/logos-forum/1/logos-forum-", 0) == 0);
