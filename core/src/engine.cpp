@@ -13,6 +13,7 @@ namespace {
 using json = nlohmann::json;
 constexpr const char* kSnapshotTag = "logos-forum-snapshot";
 constexpr const char* kAnnounceTag = "logos-forum-snapshot-at";
+constexpr const char* kWantTag = "logos-forum-want";
 constexpr size_t kMaxSnapshotPosts = 100000;
 
 // Typed reads that never throw: anything on the topic can be sent by anyone,
@@ -55,6 +56,25 @@ std::string content_topic(const std::string& forum) {
     uint8_t h[crypto_hash_sha256_BYTES];
     crypto_hash_sha256(h, reinterpret_cast<const uint8_t*>(forum.data()), forum.size());
     return "/logos-forum/1/" + (slug.empty() ? std::string("forum") : slug) + "-" + to_hex(h, 4) + "/json";
+}
+
+std::string pubsub_topic(const std::string& ct, int cluster, int shards) {
+    // /app/version/name/encoding
+    std::vector<std::string> parts;
+    size_t i = 1;
+    while (i <= ct.size()) {
+        const size_t j = ct.find('/', i);
+        parts.push_back(ct.substr(i, j == std::string::npos ? std::string::npos : j - i));
+        if (j == std::string::npos) break;
+        i = j + 1;
+    }
+    if (parts.size() < 2 || shards <= 0) return {};
+    const std::string bytes = parts[0] + parts[1];
+    uint8_t h[crypto_hash_sha256_BYTES];
+    crypto_hash_sha256(h, reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size());
+    uint64_t v = 0;
+    for (int k = 24; k < 32; ++k) v = (v << 8) | h[k];
+    return "/waku/2/rs/" + std::to_string(cluster) + "/" + std::to_string(v % static_cast<uint64_t>(shards));
 }
 
 Engine::Engine(Store& store, Transport& net, std::string forum)
@@ -113,10 +133,30 @@ bool Engine::receive(const std::string& payload, uint64_t now_ms) {
         // unsigned on purpose — it carries no authority, only a place to look,
         // and everything fetched from there is verified post by post.
         const json a = json::parse(payload, nullptr, false);
+        if (a.is_object() && int_at(a, kWantTag) == 1 && str_at(a, "forum") == forum_) {
+            const int64_t theirs = int_at(a, "have");
+            const size_t ours = store_.all(forum_).size();
+            const bool quiet = !answered_ || now_ms >= last_answer_ms_ + kAnswerEveryMs;
+            if (on_history_wanted && quiet && theirs >= 0 && static_cast<size_t>(theirs) < ours) {
+                answered_ = true;
+                last_answer_ms_ = now_ms;
+                on_history_wanted(static_cast<size_t>(theirs));
+            }
+            return false;
+        }
         if (on_snapshot && a.is_object() && int_at(a, kAnnounceTag) == 1 && str_at(a, "forum") == forum_) {
             const std::string cid = str_at(a, "cid");
             const int64_t n = int_at(a, "posts");
-            if (!cid.empty() && cid.size() <= 128) on_snapshot(cid, n > 0 ? static_cast<size_t>(n) : 0);
+            if (!cid.empty() && cid.size() <= 128) {
+                Announcement an{cid, n > 0 ? static_cast<size_t>(n) : 0, str_at(a, "peer"), {}};
+                if (an.peer.size() > 128) an.peer.clear();
+                const auto it = a.find("addrs");
+                if (!an.peer.empty() && it != a.end() && it->is_array())
+                    for (const auto& x : *it)
+                        if (x.is_string() && x.get<std::string>().size() <= 256 && an.addrs.size() < 8)
+                            an.addrs.push_back(x.get<std::string>());
+                on_snapshot(an);
+            }
         }
         return false;
     }
@@ -160,10 +200,19 @@ int Engine::import_snapshot(const std::string& doc, uint64_t now_ms) {
     return added;
 }
 
+void Engine::request_history(uint64_t) {
+    net_.send(topic_, json{{kWantTag, 1}, {"forum", forum_}, {"have", store_.all(forum_).size()}}.dump());
+}
+
 void Engine::announce_snapshot(const std::string& cid, size_t posts, uint64_t) {
     // Sent directly rather than through the outbox: an announcement that does
     // not go out is simply made again at the next snapshot.
-    net_.send(topic_, json{{kAnnounceTag, 1}, {"forum", forum_}, {"cid", cid}, {"posts", posts}}.dump());
+    json a{{kAnnounceTag, 1}, {"forum", forum_}, {"cid", cid}, {"posts", posts}};
+    if (!provider_peer_.empty()) {
+        a["peer"] = provider_peer_;
+        a["addrs"] = provider_addrs_;
+    }
+    net_.send(topic_, a.dump());
 }
 
 } // namespace forum

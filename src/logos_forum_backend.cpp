@@ -9,7 +9,10 @@
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QHostAddress>
 #include <QJsonObject>
+#include <QNetworkInterface>
+#include <QRandomGenerator>
 #include <QStandardPaths>
 #include <QVariant>
 
@@ -140,7 +143,17 @@ void LogosForumBackend::bootstrap() {
         if (!request.empty()) inFlight_.insert(q(request), q(id));
         emit postStateChanged(q(id), QStringLiteral("sent"), QString());
     };
-    engine_->on_snapshot = [this](const std::string& cid, size_t) { fetchSnapshot(cid); };
+    engine_->on_snapshot = [this](const forum::Announcement& an) { fetchSnapshot(an); };
+    engine_->on_history_wanted = [this](size_t theirs) {
+        log("a peer with " + std::to_string(theirs) + " posts asked for history");
+        // Off the delivery event's call stack: answering calls back into modules.
+        QTimer::singleShot(0, [this]() {
+            if (!lastSnapshotCid_.empty() && postsAtLastSnapshot_ == store_->count())
+                engine_->announce_snapshot(lastSnapshotCid_, postsAtLastSnapshot_, now_ms());  // unchanged: same CID
+            else
+                saveSnapshot();
+        });
+    };
 
     // Accounts: the first run makes one, so posting works straight away.
     accounts_ = store_->accounts();
@@ -471,11 +484,20 @@ QString LogosForumBackend::setRotation(int maxPosts, int maxDays) {
 // ─── Settings ───────────────────────────────────────────────────────────────
 
 void LogosForumBackend::loadSettings() {
+    bool needSave = false;
     QFile f(dataDir() + QStringLiteral("/settings.json"));
     QJsonObject o;
     if (f.open(QIODevice::ReadOnly)) o = QJsonDocument::fromJson(f.readAll()).object();
     rotation_.max_posts = static_cast<uint32_t>(o.value("rotateAfterPosts").toInt(0));
     rotation_.max_age_ms = static_cast<uint64_t>(o.value("rotateAfterDays").toInt(0)) * 86400000ull;
+    // A stable storage port per install, so the address this node announces
+    // for its snapshots stays valid across restarts; random per install so two
+    // Basecamp instances on one machine never collide.
+    storagePort_ = o.value("storagePort").toInt(0);
+    if (storagePort_ <= 0) {
+        storagePort_ = 20000 + static_cast<int>(QRandomGenerator::global()->bounded(20000));
+        needSave = true;
+    }
     std::vector<std::string> peers;
     for (const auto& v : o.value("storePeers").toArray())
         if (!v.toString().isEmpty()) peers.push_back(s(v.toString()));
@@ -483,6 +505,7 @@ void LogosForumBackend::loadSettings() {
     QStringList shown;
     for (const auto& p : net_->store_peers()) shown << q(p);
     setStorePeers(shown.join('\n'));
+    if (needSave) saveSettings();
 }
 
 void LogosForumBackend::saveSettings() {
@@ -492,7 +515,8 @@ void LogosForumBackend::saveSettings() {
         for (const auto& p : net_->store_peers()) peers.append(q(p));
     const QJsonObject o{{"rotateAfterPosts", static_cast<int>(rotation_.max_posts)},
                         {"rotateAfterDays", static_cast<int>(rotation_.max_age_ms / 86400000ull)},
-                        {"storePeers", peers}};
+                        {"storePeers", peers},
+                        {"storagePort", storagePort_}};
     QFile f(dataDir() + QStringLiteral("/settings.json"));
     if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) f.write(QJsonDocument(o).toJson());
 }
@@ -550,11 +574,17 @@ void LogosForumBackend::runCatchUp(const char* why) {
             if (engine_->receive(m, now_ms())) ++added;
         const std::string& peer = net_->last_history_peer();
         log("catch-up (" + reason + "): " + std::to_string(payloads.size()) + " messages, " + std::to_string(added) +
-            " new, peer " + (peer.empty() ? "none — " + net_->last_history_error() : peer));
+            " new, peer " + (peer.empty() ? "none — " + net_->last_history_error() : peer) + ", status " +
+            net_->last_history_status());
         lastCatchUp_ = peer.empty()
             ? QStringLiteral("History unavailable (%1)").arg(q(net_->last_history_error()))
             : QStringLiteral("Caught up %1 · %2 new").arg(hhmm(now_ms())).arg(added);
         publishHistory();
+        // Store nodes may keep no archive at all; ask the peers too.
+        QTimer::singleShot(0, [this]() {
+            if (engine_) engine_->request_history(now_ms());
+            log("asked peers for history");
+        });
     });
 }
 
@@ -570,18 +600,20 @@ void LogosForumBackend::wireStorage() {
         storageReady_ = bool_at(j, "success");
         log(std::string("storage start: ") + (storageReady_ ? "ok" : s(payload)));
         publishHistory();
+        if (storageReady_) QTimer::singleShot(0, [this]() { learnStorageIdentity(); });
     });
     st.onStorageUploadProgress([this](const QString& payload) {
         const auto j = nlohmann::json::parse(s(payload), nullptr, false);
         if (!j.is_object() || q(str_at(j, "sessionId")) != uploadSession_) return;
+        log("upload progress: " + s(payload).substr(0, 200));
         if (!bool_at(j, "success")) {
-            lastSnapshot_ = QStringLiteral("Snapshot upload failed");
-            uploadSession_.clear();
-            publishHistory();
+            failUpload(QStringLiteral("Snapshot upload failed: %1").arg(q(str_at(j, "error"))));
             return;
         }
-        if (uploadOffset_ < uploadDoc_.size()) uploadNextChunk();
-        else finishUpload();
+        QTimer::singleShot(0, [this]() {
+            if (uploadOffset_ < uploadDoc_.size()) uploadNextChunk();
+            else finishUpload();
+        });
     });
     st.onStorageDownloadProgress([this](const QString& payload) {
         const auto j = nlohmann::json::parse(s(payload), nullptr, false);
@@ -591,7 +623,7 @@ void LogosForumBackend::wireStorage() {
         if (chunk.empty()) return;
         downloadBuf_ += b64decode(chunk);
         if (downloadBuf_.size() > kMaxSnapshotBytes) {  // not a forum snapshot; stop
-            modules().storage_module.downloadCancel(downloadSession_);
+            modules().storage_module.downloadCancelAsync(downloadSession_, [](LogosResult) {});
             downloadSession_.clear();
             downloadBuf_.clear();
         }
@@ -600,6 +632,7 @@ void LogosForumBackend::wireStorage() {
         const auto j = nlohmann::json::parse(s(payload), nullptr, false);
         if (!j.is_object() || q(str_at(j, "sessionId")) != downloadSession_) return;
         downloadSession_.clear();
+        log("download done: " + s(payload).substr(0, 200) + ", " + std::to_string(downloadBuf_.size()) + " bytes");
         if (bool_at(j, "success") && engine_) {
             const int added = engine_->import_snapshot(downloadBuf_, now_ms());
             lastSnapshot_ = QStringLiteral("Loaded a snapshot · %1 new").arg(added);
@@ -616,72 +649,141 @@ void LogosForumBackend::wireStorage() {
         {"data-dir", dataDir() + QStringLiteral("/storage")},
         // Ephemeral ports: the default discovery port is fixed (8090), so two
         // Basecamp instances on one machine would otherwise collide.
-        {"listen-port", 0},
+        {"listen-port", storagePort_},
         {"disc-port", 0}}).toJson(QJsonDocument::Compact));
-    if (ok(st.init(cfg))) ok(st.start());
-    else storageReady_ = true;
+    if (ok(st.init(cfg))) {
+        ok(st.start());
+    } else {
+        storageReady_ = true;  // already running for another app
+        QTimer::singleShot(0, [this]() { learnStorageIdentity(); });
+    }
     publishHistory();
 }
 
 QString LogosForumBackend::saveSnapshot() {
     if (!engine_) return QStringLiteral("the forum is still starting");
-    if (!uploadSession_.isEmpty()) return QStringLiteral("a snapshot is already being saved");
+    if (uploading_) return QStringLiteral("a snapshot is already being saved");
+    uploading_ = true;
     uploadDoc_ = engine_->snapshot();
     uploadOffset_ = 0;
     uploadPosts_ = store_->count();
-    const LogosResult r = modules().storage_module.uploadInit(QStringLiteral("logos-forum-snapshot.json"),
-                                                              static_cast<int>(kUploadChunk));
-    if (!r.success) {
-        lastSnapshot_ = QStringLiteral("Storage unavailable: %1").arg(r.getError());
-        publishHistory();
-        return lastSnapshot_;
-    }
-    uploadSession_ = r.getString();
     lastSnapshot_ = QStringLiteral("Saving snapshot…");
     publishHistory();
-    uploadNextChunk();
+    // Every storage call from here on is asynchronous: a synchronous call made
+    // while storage_module is dispatching one of its own events never returns
+    // before the RPC timeout.
+    modules().storage_module.uploadInitAsync(
+        QStringLiteral("logos-forum-snapshot.json"), static_cast<int>(kUploadChunk), [this](LogosResult r) {
+            if (!r.success) {
+                failUpload(QStringLiteral("Storage unavailable: %1").arg(r.getError()));
+                return;
+            }
+            uploadSession_ = r.getString();
+            log("upload session " + s(uploadSession_) + ", " + std::to_string(uploadDoc_.size()) + " bytes");
+            uploadNextChunk();
+        });
     return QString();
+}
+
+void LogosForumBackend::failUpload(const QString& why) {
+    log("snapshot upload failed: " + s(why));
+    uploading_ = false;
+    uploadSession_.clear();
+    lastSnapshot_ = why;
+    publishHistory();
 }
 
 void LogosForumBackend::uploadNextChunk() {
     const std::string chunk = uploadDoc_.substr(uploadOffset_, kUploadChunk);
     uploadOffset_ += chunk.size();
-    const LogosResult r = modules().storage_module.uploadChunk(uploadSession_, q(chunk));
-    if (!r.success) {
-        modules().storage_module.uploadCancel(uploadSession_);
-        uploadSession_.clear();
-        lastSnapshot_ = QStringLiteral("Snapshot upload failed: %1").arg(r.getError());
-        publishHistory();
-    }
+    // Completion arrives as a storageUploadProgress event for this session.
+    modules().storage_module.uploadChunkAsync(uploadSession_, q(chunk), [this](LogosResult r) {
+        if (!r.success) {
+            modules().storage_module.uploadCancelAsync(uploadSession_, [](LogosResult) {});
+            failUpload(QStringLiteral("Snapshot upload failed: %1").arg(r.getError()));
+        }
+    });
 }
 
 void LogosForumBackend::finishUpload() {
-    const LogosResult r = modules().storage_module.uploadFinalize(uploadSession_);
-    uploadSession_.clear();
-    if (!r.success) {
-        lastSnapshot_ = QStringLiteral("Snapshot upload failed: %1").arg(r.getError());
+    modules().storage_module.uploadFinalizeAsync(uploadSession_, [this](LogosResult r) {
+        if (!r.success) {
+            failUpload(QStringLiteral("Snapshot upload failed: %1").arg(r.getError()));
+            return;
+        }
+        uploading_ = false;
+        uploadSession_.clear();
+        const std::string cid = s(r.getString());
+        seenSnapshots_.insert(cid);  // our own; nothing to fetch
+        postsAtLastSnapshot_ = uploadPosts_;
+        lastSnapshotCid_ = cid;
+        QTimer::singleShot(0, [this, cid]() { engine_->announce_snapshot(cid, uploadPosts_, now_ms()); });
+        lastSnapshot_ = QStringLiteral("Snapshot %1 saved %2").arg(q(cid.substr(0, 10)) + QStringLiteral("…"), hhmm(now_ms()));
+        log("snapshot saved as " + cid + " (" + std::to_string(uploadPosts_) + " posts)");
         publishHistory();
-        return;
-    }
-    const std::string cid = s(r.getString());
-    seenSnapshots_.insert(cid);  // our own; nothing to fetch
-    postsAtLastSnapshot_ = uploadPosts_;
-    engine_->announce_snapshot(cid, uploadPosts_, now_ms());
-    lastSnapshot_ = QStringLiteral("Snapshot %1 saved %2").arg(q(cid.substr(0, 10)) + QStringLiteral("…"), hhmm(now_ms()));
-    log("snapshot saved as " + cid + " (" + std::to_string(uploadPosts_) + " posts)");
-    publishHistory();
+    });
 }
 
-void LogosForumBackend::fetchSnapshot(const std::string& cid) {
+void LogosForumBackend::learnStorageIdentity() {
+    // Announcements name this node as the snapshot's provider, so a peer can
+    // dial it directly: on logos.test two nodes behind NAT do not find each
+    // other's content through the DHT alone.
+    modules().storage_module.debugAsync([this](LogosResult r) {
+        if (!r.success || !engine_) return;
+        QString text = r.value.toString();
+        if (text.isEmpty()) text = QString::fromUtf8(QJsonDocument::fromVariant(r.value).toJson(QJsonDocument::Compact));
+        const auto j = nlohmann::json::parse(s(text), nullptr, false);
+        const std::string id = str_at(j, "id");
+        std::vector<std::string> addrs;
+        if (j.is_object() && j.contains("addrs") && j["addrs"].is_array())
+            for (const auto& a : j["addrs"])
+                if (a.is_string()) addrs.push_back(a.get<std::string>());
+        if (addrs.empty() && storagePort_ > 0) {
+            // Nothing announced (no public address yet): offer what we listen on.
+            for (const QHostAddress& h : QNetworkInterface::allAddresses())
+                if (h.protocol() == QAbstractSocket::IPv4Protocol)
+                    addrs.push_back("/ip4/" + s(h.toString()) + "/tcp/" + std::to_string(storagePort_));
+        }
+        engine_->set_storage_provider(id, addrs);
+        std::string list;
+        for (const auto& a : addrs) list += " " + a;
+        log("storage peer " + id + " at" + list);
+    });
+}
+
+void LogosForumBackend::fetchSnapshot(const forum::Announcement& an) {
     // One download at a time, each announced snapshot once.
-    if (!downloadSession_.isEmpty() || !seenSnapshots_.insert(cid).second) return;
-    const LogosResult r = modules().storage_module.downloadChunks(q(cid), false, kDownloadChunk);
-    if (!r.success) {
-        log("snapshot " + cid + " unavailable: " + s(r.getError()));
-        return;
-    }
-    downloadSession_ = r.getString();
+    if (!downloadSession_.isEmpty() || seenSnapshots_.count(an.cid)) return;
+    seenSnapshots_.insert(an.cid);
+    downloadSession_ = q(an.cid);  // storage_module names a download session by its CID
     downloadBuf_.clear();
     lastSnapshot_ = QStringLiteral("Loading a peer's snapshot…");
     publishHistory();
+    const std::string cid = an.cid;
+    auto download = [this, cid]() {
+        log("fetching snapshot " + cid);
+        modules().storage_module.downloadChunksAsync(q(cid), false, kDownloadChunk, [this, cid](LogosResult r) {
+            if (!r.success) {
+                log("snapshot " + cid + " unavailable: " + s(r.getError()));
+                downloadSession_.clear();
+                seenSnapshots_.erase(cid);  // a later announcement may succeed
+                lastSnapshot_ = QStringLiteral("A peer's snapshot was unavailable");
+                publishHistory();
+                return;
+            }
+            downloadSession_ = r.getString();
+        }, Timeout(120000));
+    };
+    if (an.peer.empty()) {
+        download();
+        return;
+    }
+    QStringList addrs;
+    for (const auto& a : an.addrs) addrs << q(a);
+    log("dialing snapshot provider " + an.peer);
+    modules().storage_module.connectAsync(q(an.peer), addrs, [this, download](LogosResult r) {
+        if (!r.success) log("dial failed: " + s(r.getError()) + " — trying the DHT");
+        // The connect result arrives as a storageConnect event; give it a moment.
+        QTimer::singleShot(r.success ? 1500 : 0, download);
+    });
 }

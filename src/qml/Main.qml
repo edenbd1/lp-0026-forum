@@ -317,6 +317,8 @@ Item {
 
     Dialog {
         id: newTopic
+        background: Rectangle { color: root.panel; radius: 8; border.color: root.line }
+        header: Text { text: newTopic.title; color: root.text; font.pixelSize: 16; font.bold: true; padding: 16 }
         title: "New topic"
         modal: true; anchors.centerIn: parent
         width: Math.min(640, root.width - 40)
@@ -343,9 +345,11 @@ Item {
 
     Dialog {
         id: accountsDialog
+        background: Rectangle { color: root.panel; radius: 8; border.color: root.line }
+        header: Text { text: accountsDialog.title; color: root.text; font.pixelSize: 16; font.bold: true; padding: 16 }
         title: "Accounts"
         modal: true; anchors.centerIn: parent
-        width: Math.min(560, root.width - 40)
+        width: Math.min(820, root.width - 40)
         standardButtons: Dialog.Close
         property var rot: { try { return JSON.parse(root.rotationJson) } catch (e) { return {} } }
         ColumnLayout {
@@ -354,6 +358,7 @@ Item {
                 model: root.accounts
                 delegate: RowLayout {
                     Layout.fillWidth: true
+                    Layout.maximumWidth: accountsDialog.availableWidth
                     Label2 { text: (modelData.selected ? "● " : "○ ") + modelData.label }
                     Dim { text: modelData.key + " · " + modelData.posts + " posts on this key"; Layout.fillWidth: true }
                     Button { text: "Use"; enabled: !modelData.selected; onClicked: root.call(root.backend.selectAccount(modelData.label), root.plain) }
@@ -371,9 +376,9 @@ Item {
             RowLayout {
                 Button { text: "Rotate now"; onClicked: root.call(root.backend.rotateAccount(), root.plain) }
                 Dim { text: "Automatically after" }
-                SpinBox { id: rotPosts; from: 0; to: 10000; value: accountsDialog.rot.maxPosts || 0; editable: true }
+                SpinBox { id: rotPosts; implicitWidth: 120; from: 0; to: 10000; value: accountsDialog.rot.maxPosts || 0; editable: true }
                 Dim { text: "posts or" }
-                SpinBox { id: rotDays; from: 0; to: 3650; value: accountsDialog.rot.maxDays || 0; editable: true }
+                SpinBox { id: rotDays; implicitWidth: 120; from: 0; to: 3650; value: accountsDialog.rot.maxDays || 0; editable: true }
                 Dim { text: "days" }
                 Button { text: "Save"; onClicked: root.call(root.backend.setRotation(rotPosts.value, rotDays.value), root.plain) }
             }

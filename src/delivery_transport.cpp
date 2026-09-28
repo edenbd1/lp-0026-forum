@@ -71,6 +71,7 @@ struct DeliveryTransport::Query {
     int page = 0;
     std::string cursor;
     bool answered = false;
+    size_t from_peer = 0;
     std::vector<std::string> out;
 };
 
@@ -86,7 +87,7 @@ void DeliveryTransport::history_async(const std::string& content_topic,
 
 void DeliveryTransport::query_page(std::shared_ptr<Query> q) {
     if (q->peer >= peers_.size()) {
-        if (last_error_.empty()) last_error_ = "no store node answered";
+        if (last_peer_.empty() && last_error_.empty()) last_error_ = "no store node answered";
         q->done(std::move(q->out));
         return;
     }
@@ -94,7 +95,12 @@ void DeliveryTransport::query_page(std::shared_ptr<Query> q) {
              {"includeData", true},
              {"paginationForward", true},
              {"paginationLimit", kHistoryPageLimit},
+             {"pubsubTopic", forum::pubsub_topic(q->topic)},
              {"contentTopics", json::array({q->topic})}};
+    // Diagnostics: ask for the whole shard, to tell "the node keeps nothing"
+    // from "the node keeps nothing of ours".
+    if (qEnvironmentVariableIsSet("LOGOS_FORUM_DIAG_SHARD")) req.erase("contentTopics");
+    if (qEnvironmentVariable("LOGOS_FORUM_DIAG_SHARD") == QLatin1String("all")) req.erase("pubsubTopic");
     if (!q->cursor.empty()) req["paginationCursor"] = q->cursor;
     const std::string peer = peers_[q->peer];
     modules_.delivery_module.storeQueryAsync(
@@ -102,15 +108,18 @@ void DeliveryTransport::query_page(std::shared_ptr<Query> q) {
         [this, q, peer](LogosResult r) {
             // One peer is finished with — answered or not — when it fails, runs
             // out of pages, or hits the page bound.
+            // Every store node is asked: retention differs between them, and
+            // the engine de-duplicates by post id, so asking more costs only time.
             auto next_peer = [&]() {
                 if (q->answered) {
-                    last_peer_ = peer;
-                    q->done(std::move(q->out));  // one store node's view is the network's
-                    return;
+                    if (!last_peer_.empty()) last_peer_ += ", ";
+                    last_peer_ += peer.substr(0, peer.find("/tcp")) + " (" + std::to_string(q->from_peer) + ")";
                 }
                 ++q->peer;
                 q->page = 0;
                 q->cursor.clear();
+                q->answered = false;
+                q->from_peer = 0;
                 query_page(q);
             };
             if (!r.success) {
@@ -128,13 +137,28 @@ void DeliveryTransport::query_page(std::shared_ptr<Query> q) {
                 next_peer();
                 return;
             }
+            {
+                const auto code = resp.find("statusCode");
+                const auto desc = resp.find("statusDesc");
+                last_status_ = (code != resp.end() ? code->dump() : std::string("?")) + " " +
+                               (desc != resp.end() && desc->is_string() ? desc->get<std::string>() : std::string());
+                // A store node that refuses the query (non-2xx) has not answered.
+                if (code != resp.end() && code->is_number_integer() && (code->get<int>() < 200 || code->get<int>() >= 300)) {
+                    last_error_ = "store node said " + last_status_;
+                    next_peer();
+                    return;
+                }
+            }
             q->answered = true;
             for (const auto& m : resp["messages"]) {
                 if (!m.is_object() || !m.contains("message") || !m["message"].is_object()) continue;
                 const auto& msg = m["message"];
                 if (!msg.contains("payload") || !msg["payload"].is_string()) continue;
                 std::string bytes = b64decode(msg["payload"].get<std::string>());
-                if (!bytes.empty()) q->out.push_back(std::move(bytes));
+                if (!bytes.empty()) {
+                    q->out.push_back(std::move(bytes));
+                    ++q->from_peer;
+                }
             }
             // A last page carries "paginationCursor": null, not an absent key.
             const auto c = resp.find("paginationCursor");

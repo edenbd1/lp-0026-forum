@@ -53,6 +53,21 @@ private:
 // forum's traffic, and its history, in one place.
 std::string content_topic(const std::string& forum);
 
+// The relay shard a content topic lands on under autosharding (RFC 51):
+// SHA-256 of the topic's application and version, last 8 bytes, modulo the
+// cluster's shard count. Store queries need it as their pubsub topic.
+std::string pubsub_topic(const std::string& content_topic, int cluster = 2, int shards = 8);
+
+// Where a snapshot lives. The storage peer is optional: when present, a
+// fetcher dials it directly instead of relying on the DHT, which finds nothing
+// when both ends are behind NAT.
+struct Announcement {
+    std::string cid;
+    size_t posts = 0;
+    std::string peer;                 // Logos Storage peer id of the provider
+    std::vector<std::string> addrs;   // its multiaddrs
+};
+
 class Engine {
 public:
     Engine(Store& store, Transport& net, std::string forum);
@@ -94,6 +109,22 @@ public:
     // Announce a snapshot stored under `cid` on the forum's topic, so peers who
     // were away for longer than the network keeps history can fetch it.
     void announce_snapshot(const std::string& cid, size_t posts, uint64_t now_ms);
+    // Who to name as the snapshot's provider in announcements.
+    void set_storage_provider(std::string peer, std::vector<std::string> addrs) {
+        provider_peer_ = std::move(peer);
+        provider_addrs_ = std::move(addrs);
+    }
+
+    // Ask peers for history. The network's store nodes may keep nothing (the
+    // logos.test fleet keeps no archive), so a node back from offline asks the
+    // forum itself: a peer holding more posts answers with a snapshot on Logos
+    // Storage (see on_history_wanted). Carries only a count, nothing identifying.
+    void request_history(uint64_t now_ms);
+
+    // A peer asked for history and holds fewer posts than we do. The embedder
+    // answers by announcing a snapshot. At most once per `kAnswerEveryMs`.
+    std::function<void(size_t their_posts)> on_history_wanted;
+    static constexpr uint64_t kAnswerEveryMs = 30000;
 
     // Called for every new post, local or remote, after it is stored.
     std::function<void(const Post&, const std::string& id)> on_post;
@@ -103,7 +134,7 @@ public:
 
     // Called when a peer announces a snapshot. The embedder fetches it from
     // Logos Storage and hands the bytes to import_snapshot().
-    std::function<void(const std::string& cid, size_t posts)> on_snapshot;
+    std::function<void(const Announcement&)> on_snapshot;
 
 private:
     std::string compose(Post p, Account* as, const std::string& alias, uint64_t now_ms);
@@ -111,6 +142,10 @@ private:
     Transport& net_;
     std::string forum_, topic_;
     RateLimiter limiter_{5, 20};
+    uint64_t last_answer_ms_ = 0;
+    std::string provider_peer_;
+    std::vector<std::string> provider_addrs_;
+    bool answered_ = false;
 };
 
 } // namespace forum

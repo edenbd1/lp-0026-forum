@@ -39,6 +39,8 @@ public:
     // returned; empty when none answered.
     const std::string& last_history_peer() const { return last_peer_; }
     const std::string& last_history_error() const { return last_error_; }
+    // The store node's own verdict on the last page ("200 OK", …), for the log.
+    const std::string& last_history_status() const { return last_status_; }
 
     // The logos.test fleet, which serves Store queries.
     static std::vector<std::string> default_store_peers();
@@ -48,5 +50,5 @@ private:
     void query_page(std::shared_ptr<Query> q);
     LogosModules& modules_;
     std::vector<std::string> peers_;
-    std::string last_peer_, last_error_;
+    std::string last_peer_, last_error_, last_status_;
 };

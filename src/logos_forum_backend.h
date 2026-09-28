@@ -70,7 +70,9 @@ private:
     void publishHistory();
     void uploadNextChunk();
     void finishUpload();
-    void fetchSnapshot(const std::string& cid);
+    void failUpload(const QString& why);
+    void fetchSnapshot(const forum::Announcement& an);
+    void learnStorageIdentity();
 
     QString dataDir() const;
     void loadSettings();
@@ -95,7 +97,10 @@ private:
 
     // Storage
     bool storageReady_ = false;
+    int storagePort_ = 0;
+    bool uploading_ = false;
     QString uploadSession_;
+    std::string lastSnapshotCid_;
     std::string uploadDoc_;
     size_t uploadOffset_ = 0, uploadPosts_ = 0, postsAtLastSnapshot_ = 0;
     QString downloadSession_;

@@ -9,6 +9,7 @@
 
 #include <cstdio>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -267,13 +268,49 @@ TEST(a_snapshot_announcement_reaches_peers_and_is_not_a_post) {
     Bus bus; FakeNet a(bus), b(bus); Store sa(":memory:"), sb(":memory:");
     Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
     std::string got; size_t n = 0;
-    eb.on_snapshot = [&](const std::string& cid, size_t posts) { got = cid; n = posts; };
+    eb.on_snapshot = [&](const Announcement& an) { got = an.cid; n = an.posts; };
     ea.announce_snapshot("zDvZRwzkwWtSfgKFoPMRaxzAAJ1i", 7, 10);
     CHECK(got == "zDvZRwzkwWtSfgKFoPMRaxzAAJ1i" && n == 7 && sb.count() == 0);
     got.clear();
     Engine elsewhere(sb, b, "Another Forum");
-    elsewhere.on_snapshot = [&](const std::string& cid, size_t) { got = cid; };
+    elsewhere.on_snapshot = [&](const Announcement& an) { got = an.cid; };
     CHECK(!elsewhere.receive(bus.log.back(), 11) && got.empty());   // another forum's pointer is ignored
+}
+
+TEST(a_node_back_from_offline_gets_history_from_a_peer_through_storage) {
+    // No store node keeps anything (the Bus log is cleared, as on logos.test),
+    // so history has to come from a peer: B asks, A answers with a snapshot,
+    // "storage" is a map from CID to bytes, B fetches and merges.
+    Bus bus; FakeNet a(bus), b(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
+    std::map<std::string, std::string> storage;
+    int answers = 0;
+    ea.on_history_wanted = [&](size_t) {
+        ++answers;
+        const std::string doc = ea.snapshot();
+        const std::string cid = "cid-" + std::to_string(std::hash<std::string>{}(doc));
+        storage[cid] = doc;
+        ea.announce_snapshot(cid, sa.count(), 0);
+    };
+    eb.on_snapshot = [&](const Announcement& an) {
+        CHECK(an.peer == "16Uiu2-alice-storage" && an.addrs.size() == 1);   // B can dial A directly
+        eb.import_snapshot(storage.at(an.cid), 50);
+    };
+    ea.set_storage_provider("16Uiu2-alice-storage", {"/ip4/127.0.0.1/tcp/20001"});
+    Account alice{"alice", Keypair::generate()};
+    b.up = false;
+    const std::string t = ea.post_topic(&alice, "while you were out", "b", "", 10);
+    ea.post_reply(nullptr, t, "anon", "", 11);
+    ea.pump(12);
+    bus.log.clear();                            // the network kept nothing
+    b.up = true;
+    CHECK(eb.catch_up(40) == 0);                // store query: nothing
+    eb.request_history(41);
+    CHECK(answers == 1 && sb.count() == 2 && sb.replies(t).size() == 1);
+    eb.request_history(42);                     // asked again at once: A stays quiet
+    CHECK(answers == 1);
+    ea.request_history(43);                     // A has more than B claims? no: B has as many, so B stays quiet
+    CHECK(answers == 1);
 }
 
 TEST(mistyped_traffic_is_ignored_not_fatal) {
@@ -282,7 +319,7 @@ TEST(mistyped_traffic_is_ignored_not_fatal) {
     Bus bus; FakeNet a(bus); Store sa(":memory:");
     Engine ea(sa, a, "Logos Forum");
     int calls = 0;
-    ea.on_snapshot = [&](const std::string&, size_t) { ++calls; };
+    ea.on_snapshot = [&](const Announcement&) { ++calls; };
     for (const char* m : {
              R"({"logos-forum-snapshot-at":"1","forum":"Logos Forum","cid":"x"})",
              R"({"logos-forum-snapshot-at":1,"forum":5,"cid":"x"})",
@@ -296,6 +333,13 @@ TEST(mistyped_traffic_is_ignored_not_fatal) {
     CHECK(ea.import_snapshot(R"({"logos-forum-snapshot":1,"forum":null,"posts":[]})", 1) == 0);
     CHECK(ea.import_snapshot(R"({"logos-forum-snapshot":1,"forum":"Logos Forum","posts":{"a":1}})", 1) == 0);
     CHECK(sa.count() == 0);
+}
+
+TEST(the_pubsub_topic_follows_autosharding) {
+    // Vector computed independently: sha256("logos-forum" "1")[24..32] mod 8 = 6.
+    CHECK(pubsub_topic(content_topic("Logos Forum")) == "/waku/2/rs/2/6");
+    CHECK(pubsub_topic("/logos-forum/1/anything-else/json") == "/waku/2/rs/2/6");  // the name does not move the shard
+    CHECK(pubsub_topic("nonsense").empty());
 }
 
 TEST(each_forum_has_its_own_content_topic) {
