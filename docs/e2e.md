@@ -63,6 +63,17 @@ is resent when the connection returns, and survives the restart:
 
 ![A post waiting for the network](e2e/6-offline-post-waiting.png)
 
+## Linux
+
+The `linux-amd64` variant is built in CI (`ubuntu-24.04`, Nix) and merged with
+the macOS one into the single package the catalog serves. It was loaded, in an
+`ubuntu:24.04` amd64 container, against the libraries bundled in the official
+**Basecamp 0.3.0 x86_64 AppImage** (Qt 6.9.2): `dlopen(RTLD_NOW)` resolves
+every dependency of `logos_forum_plugin.so` and its replica factory, and both
+export the Qt plugin entry points. Negative control, same container: without
+Basecamp's libraries the load fails (`libQt6RemoteObjects.so.6: cannot open
+shared object file`).
+
 ## Bugs this found
 
 Running in the real host found three faults that no unit test could:

@@ -65,3 +65,25 @@ jobs:
         with:
           name: logos_forum-${{ runner.os }}-${{ runner.arch }}
           path: logos_forum.lgx
+
+  package:
+    name: multi-platform package
+    needs: module
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: actions/download-artifact@v4
+        with:
+          path: parts
+      - name: Merge macOS and Linux into one .lgx
+        run: |
+          nix build github:logos-co/logos-package --accept-flake-config -o lgxtool
+          ./lgxtool/bin/lgx merge parts/*/logos_forum.lgx -o logos_forum.lgx -y
+          ./lgxtool/bin/lgx verify logos_forum.lgx
+          mkdir m && tar xzf logos_forum.lgx -C m && ls m/variants
+          test -d m/variants/linux-amd64 && test -d m/variants/darwin-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: logos_forum-all-platforms
+          path: logos_forum.lgx

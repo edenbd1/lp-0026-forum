@@ -5,7 +5,7 @@ over **Logos Delivery**, history is kept locally and on **Logos Storage**, and
 every post is signed and checked on arrival. You post as yourself, under an
 alias, or as no one at all.
 
-> **Status:** the forum runs in **Logos Basecamp 0.3.0** and has been tested
+> **Status:** the forum runs in **Logos Basecamp 0.3.0** (macOS and Linux) and has been tested
 > end to end between two real nodes on the logos.test network
 > ([`docs/e2e.md`](docs/e2e.md)). The core has 25 tests of its own.
 
@@ -52,7 +52,7 @@ alias, or as no one at all.
 
 ## Install in Basecamp
 
-**From the catalog** (Basecamp 0.3.0): *Settings → Package Repositories → Add
+**From the catalog** (Basecamp 0.3.0, macOS Apple silicon or Linux x86_64): *Settings → Package Repositories → Add
 a repository*, paste
 `https://raw.githubusercontent.com/edenbd1/logos-forum-catalog/main/logos-repo.json`,
 then *Package Manager → Social → Logos Forum → Install*. Basecamp installs
