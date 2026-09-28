@@ -66,13 +66,33 @@ is resent when the connection returns, and survives the restart:
 ## Linux
 
 The `linux-amd64` variant is built in CI (`ubuntu-24.04`, Nix) and merged with
-the macOS one into the single package the catalog serves. It was loaded, in an
-`ubuntu:24.04` amd64 container, against the libraries bundled in the official
-**Basecamp 0.3.0 x86_64 AppImage** (Qt 6.9.2): `dlopen(RTLD_NOW)` resolves
-every dependency of `logos_forum_plugin.so` and its replica factory, and both
-export the Qt plugin entry points. Negative control, same container: without
-Basecamp's libraries the load fails (`libQt6RemoteObjects.so.6: cannot open
-shared object file`).
+the macOS one into the single package the catalog serves.
+
+**It runs in the real Basecamp for Linux.** The official Basecamp 0.3.0
+x86_64 AppImage, unpacked and started in an `ubuntu:24.04` amd64 container on
+a virtual display ([`scripts/linux/`](../scripts/linux/)), with the forum and its
+two dependencies installed from their `.lgx` packages. Opening the tile, the
+forum starts its node, joins logos.test and is answered by the macOS nodes;
+then, both ways:
+
+| From | To | Result |
+|---|---|---|
+| Basecamp **Linux**: new topic | the two macOS nodes | stored by both, signed by the Linux node's key ✓ |
+| Basecamp **macOS**: new topic | the Linux node | shown in its topic list ✓ |
+
+![Basecamp on Linux showing a topic posted from macOS](e2e/7-linux-basecamp-receives-mac.png)
+
+Also checked in the same container: `dlopen(RTLD_NOW)` of the plugin and its
+replica factory against the AppImage's own libraries (Qt 6.9.2) resolves every
+dependency, and fails without them (`libQt6RemoteObjects.so.6: cannot open
+shared object file`) — the negative control.
+
+**A limit this showed.** The Linux node received snapshot announcements from
+the macOS nodes, but could not download them: the addresses a macOS node
+announces for its storage node (loopback, LAN) are not reachable from inside
+Docker's NAT, and the DHT did not find the content either. Peer history needs
+the two storage nodes to reach each other — same machine, same network, or a
+reachable address. Live posts are unaffected: they travel over Logos Delivery.
 
 ## Bugs this found
 

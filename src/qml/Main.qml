@@ -298,6 +298,8 @@ Item {
                             id: replyBody
                             Layout.fillWidth: true; Layout.preferredHeight: 80
                             placeholderText: "Write a reply"; wrapMode: TextArea.Wrap
+                            color: root.text; placeholderTextColor: root.dim
+                            background: Rectangle { color: root.bg; radius: 4; border.color: root.line }
                         }
                         RowLayout {
                             Layout.fillWidth: true
@@ -336,7 +338,9 @@ Item {
         ColumnLayout {
             anchors.fill: parent; spacing: 8
             TextField { id: topicTitle; Layout.fillWidth: true; placeholderText: "Title"; maximumLength: 200 }
-            TextArea { id: topicBody; Layout.fillWidth: true; Layout.preferredHeight: 160; placeholderText: "What do you want to say?"; wrapMode: TextArea.Wrap }
+            TextArea { id: topicBody; Layout.fillWidth: true; Layout.preferredHeight: 160; placeholderText: "What do you want to say?"; wrapMode: TextArea.Wrap
+                            color: root.text; placeholderTextColor: root.dim
+                            background: Rectangle { color: root.bg; radius: 4; border.color: root.line } }
             SignAs { id: topicAs; Layout.fillWidth: true }
             Button {
                 Layout.alignment: Qt.AlignRight
