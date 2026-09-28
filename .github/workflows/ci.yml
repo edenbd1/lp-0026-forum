@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  core:
+    name: core tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libsodium-dev libsqlite3-dev nlohmann-json3-dev pkg-config cmake
+      - name: Dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libsodium sqlite nlohmann-json pkg-config
+      - name: Build
+        run: cmake -S core -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
+      - name: Test
+        run: ./build/forum_core_tests
+
+  module:
+    name: Basecamp module (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: Build the portable package
+        run: nix build .#lgx-portable --accept-flake-config -L -o result
+      - name: Pin dependency versions
+        run: python3 scripts/pin-deps.py result/logos-logos_forum-module.lgx logos_forum.lgx
+      - name: Check the package
+        run: |
+          mkdir pkg && tar xzf logos_forum.lgx -C pkg
+          python3 - <<'PY'
+          import json, os, sys
+          m = json.load(open("pkg/manifest.json"))
+          variants = sorted(os.listdir("pkg/variants"))
+          print("name", m["name"], "version", m["version"], "variants", variants)
+          print("dependencies", m["dependencies"])
+          assert m["type"] == "ui_qml" and m["view"] == "qml/Main.qml"
+          assert {"name": "storage_module", "version": "~2.1.2"} in m["dependencies"]
+          for v in variants:
+              main = m["main"][v]
+              assert os.path.exists(f"pkg/variants/{v}/{main}"), main
+              assert os.path.exists(f"pkg/variants/{v}/qml/Main.qml")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: logos_forum-${{ runner.os }}-${{ runner.arch }}
+          path: logos_forum.lgx
