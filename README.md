@@ -75,6 +75,46 @@ scripts/install-local.sh ~/basecamp-forum result/*.lgx delivery_module-0.2.1.lgx
 LogosBasecamp --user-dir ~/basecamp-forum
 ```
 
+## Using the forum
+
+**Your first minute.** Open *Logos Forum* in Basecamp's sidebar. An account
+("Account 1") is created on first launch, so you can post straight away. The
+header shows the network state (*Connected*, or *Joined — waiting for peers*)
+and, under it, the history state: when the forum last caught up, and whether
+Logos Storage is ready.
+
+**Read.** The left column lists topics, most recently active first, with
+their author and reply count. Click one to open it; replies follow in order.
+Every author line carries a ✓ and the first bytes of the key the post's
+signature was checked against — hover it for the full key. A post whose
+signature does not check is never shown.
+
+**Post.** *New topic* opens the composer: a title, a body, and *Post as*.
+Reply from the box under an open topic.
+
+| Post as | What others see | What it links |
+|---|---|---|
+| *your account* | the account's key (or its label, on your own machine) | all posts by that account |
+| *alias* | the name you type, marked **alias** | posts by the same account, to anyone comparing keys |
+| *anonymous* | "anonymous", marked **anonymous**, under a key made for that post and wiped | nothing — two anonymous posts share no key |
+
+**Accounts** (*Accounts…*): create several and switch between them; the one
+selected signs what you post next. **Identity rotation** replaces the selected
+account's key with a fresh one, now or automatically after a number of posts
+or days — nothing links the old key to the new one.
+
+**Offline.** Write as usual: the post appears at once, marked
+*sending…* or *offline — will retry*, and the header counts what is waiting.
+It goes out by itself when the network returns (retried with back-off: 2 s,
+4 s, 8 s … up to 5 min) and survives closing Basecamp. When you come back after
+being away, the forum fetches what you missed from the network and from peers'
+snapshots on Logos Storage; *Accounts… → Fetch missed posts* does it on demand,
+and *Save snapshot to Logos Storage* publishes yours for others.
+
+**Errors** are shown in one line under the header — a refused post (too long,
+no title), a send the network gave up on (it is retried), a storage node that
+is not ready.
+
 ## Test between two real nodes
 
 ```bash
