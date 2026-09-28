@@ -116,7 +116,8 @@ int Engine::pump(uint64_t now_ms) {
         if (!limiter_.take(now_ms)) break;  // paced, not dropped: it stays due
         const SendResult r = net_.send(topic_, item.payload);
         if (r.ok) {
-            store_.sent(item.id);
+            if (r.confirmed) store_.sent(item.id);
+            else store_.awaiting(item.id, now_ms + kConfirmWindowMs);
             if (on_sent) on_sent(item.id, r.request_id);
             ++sent;
         } else {
@@ -173,6 +174,13 @@ int Engine::catch_up(uint64_t now_ms) {
     for (const auto& m : net_.history(topic_))
         if (receive(m, now_ms)) ++added;
     return added;
+}
+
+void Engine::confirm(const std::string& id) { store_.sent(id); }
+
+int Engine::reconnected(uint64_t now_ms) {
+    store_.due_now(now_ms);
+    return pump(now_ms);
 }
 
 bool Engine::requeue(const std::string& id, const std::string& error, uint64_t now_ms) {

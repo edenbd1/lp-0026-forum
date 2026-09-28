@@ -27,6 +27,9 @@ Item {
     property var openTopic: null
     property var openReplies: []
     property string lastError: ""
+    // Ticks so that time-dependent labels ("sending…" → "waiting…") update.
+    property double now: Date.now()
+    Timer { interval: 5000; running: true; repeat: true; onTriggered: root.now = Date.now() }
 
     // Palette
     readonly property color bg: "#101114"
@@ -137,7 +140,10 @@ Item {
         Dim { text: post ? "· " + root.when(post.ts) : "" }
         Text {
             visible: post && post.state !== ""
-            text: post ? (post.state === "sending" ? "· sending…" : "· offline — will retry") : ""
+            // A post the node accepted but the network has not confirmed stays
+            // "sending" for a few seconds; after that, say what is going on.
+            text: post ? ((post.state === "sending" && root.now - post.ts < 30000)
+                          ? "· sending…" : "· waiting for the network — will retry") : ""
             color: root.warn; font.pixelSize: 12
         }
     }

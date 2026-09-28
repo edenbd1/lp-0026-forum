@@ -196,6 +196,18 @@ void Store::sent(const std::string& id) {
     q.step();
 }
 
+void Store::awaiting(const std::string& id, uint64_t until_ms) {
+    Stmt q(db_, "UPDATE outbox SET next_try=? WHERE id=?");
+    q.i64(1, static_cast<int64_t>(until_ms)).text(2, id);
+    q.step();
+}
+
+void Store::due_now(uint64_t now_ms) {
+    Stmt q(db_, "UPDATE outbox SET next_try=? WHERE next_try>?");
+    q.i64(1, static_cast<int64_t>(now_ms)).i64(2, static_cast<int64_t>(now_ms));
+    q.step();
+}
+
 void Store::failed(const std::string& id, const std::string& error, uint64_t now_ms) {
     int attempts = 0;
     {

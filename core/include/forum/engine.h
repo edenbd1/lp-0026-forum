@@ -26,6 +26,12 @@ struct SendResult {
     bool ok = false;
     std::string error;
     std::string request_id;  // what the network calls this send, if anything
+    // True when the transport knows the message is out (a synchronous
+    // network). False when it has only accepted it: Logos Delivery takes a send
+    // and then retries it in memory, so acceptance proves nothing — the post
+    // stays in the outbox until confirm() or requeue(), and is sent again if
+    // neither comes within kConfirmWindowMs (also after a restart).
+    bool confirmed = false;
 };
 
 class Transport {
@@ -93,6 +99,14 @@ public:
 
     // Pull history from the network and merge it. Returns how many new posts.
     int catch_up(uint64_t now_ms);
+
+    // The network confirmed a send: the post leaves the outbox.
+    void confirm(const std::string& id);
+
+    // The network came back: send what is waiting now rather than at its
+    // scheduled retry. Still paced by the rate limit.
+    int reconnected(uint64_t now_ms);
+    static constexpr uint64_t kConfirmWindowMs = 120000;
 
     // A send the network accepted and later reported lost: put the post back
     // in the outbox, with back-off, so it is retried like any other failure.

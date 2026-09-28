@@ -103,10 +103,14 @@ selected signs what you post next. **Identity rotation** replaces the selected
 account's key with a fresh one, now or automatically after a number of posts
 or days — nothing links the old key to the new one.
 
-**Offline.** Write as usual: the post appears at once, marked
-*sending…* or *offline — will retry*, and the header counts what is waiting.
-It goes out by itself when the network returns (retried with back-off: 2 s,
-4 s, 8 s … up to 5 min) and survives closing Basecamp. When you come back after
+**Offline.** Write as usual: the post appears at once, marked *sending…*,
+then *waiting for the network — will retry*, and the header counts what is
+waiting. A post leaves that state only when the network confirms it has it:
+Logos Delivery accepts a send even with no peers and retries it only in
+memory, so the forum keeps the post itself and sends it again as soon as the
+connection returns — or after two minutes without confirmation, or with
+back-off (2 s … 5 min) after an error — including after Basecamp was closed.
+When you come back after
 being away, the forum fetches what you missed from the network and from peers'
 snapshots on Logos Storage; *Accounts… → Fetch missed posts* does it on demand,
 and *Save snapshot to Logos Storage* publishes yours for others.

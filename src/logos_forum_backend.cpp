@@ -139,9 +139,10 @@ void LogosForumBackend::bootstrap() {
         emit postArrived(q(id), q(p.kind == Kind::Topic ? id : p.topic_id));
     };
     engine_->on_sent = [this](const std::string& id, const std::string& request) {
-        log("sent " + id.substr(0, 12) + " as request " + request);
+        // Accepted by the node, not yet out: it stays in the outbox until the
+        // network confirms it (messagePropagated / messageSent below).
+        log("handed " + id.substr(0, 12) + " to delivery as request " + request);
         if (!request.empty()) inFlight_.insert(q(request), q(id));
-        emit postStateChanged(q(id), QStringLiteral("sent"), QString());
     };
     engine_->on_snapshot = [this](const forum::Announcement& an) { fetchSnapshot(an); };
     engine_->on_history_wanted = [this](size_t theirs) {
@@ -193,7 +194,7 @@ void LogosForumBackend::wireDelivery() {
         if (connectionState_ == QLatin1String("Connected") && prev != connectionState_)
             QTimer::singleShot(0, [this]() {
                 runCatchUp("reconnected");
-                pump();
+                if (engine_ && engine_->reconnected(now_ms()) > 0) publishOutbox();
             });
     });
     d.on("messageReceived", [this](const QVariantList& data) {
@@ -215,9 +216,20 @@ void LogosForumBackend::wireDelivery() {
             runCatchUp("node started");
         });
     });
-    d.on("messageSent", [this](const QVariantList& data) {
-        inFlight_.remove(data.value(0).toString());
-    });
+    // Either event means the post reached the network: it leaves the outbox.
+    auto confirmed = [this](const QVariantList& data, const char* how) {
+        const QString request = data.value(0).toString();
+        const auto it = inFlight_.constFind(request);
+        if (it == inFlight_.constEnd()) return;  // not ours, or already confirmed
+        const QString id = it.value();
+        inFlight_.remove(request);
+        if (engine_) engine_->confirm(s(id));
+        log("confirmed " + s(id).substr(0, 12) + " (" + how + ")");
+        publishOutbox();
+        emit postStateChanged(id, QStringLiteral("sent"), QString());
+    };
+    d.on("messagePropagated", [confirmed](const QVariantList& data) { confirmed(data, "propagated"); });
+    d.on("messageSent", [confirmed](const QVariantList& data) { confirmed(data, "sent"); });
     d.on("messageError", [this](const QVariantList& data) {
         const QString request = data.value(0).toString();
         const auto it = inFlight_.constFind(request);
@@ -225,6 +237,7 @@ void LogosForumBackend::wireDelivery() {
         const QString id = it.value();
         const QString why = data.value(2).toString();
         inFlight_.remove(request);
+        log("lost " + s(id).substr(0, 12) + ": " + s(why));
         // Accepted locally, then lost: back in the outbox, retried with back-off.
         if (engine_ && engine_->requeue(s(id), s(why), now_ms())) publishOutbox();
         emit postStateChanged(id, QStringLiteral("failed"), why);
@@ -244,8 +257,8 @@ void LogosForumBackend::startNode() {
         runCatchUp("joined running node");
         return;
     }
-    subscribe();  // before start(), so nothing that arrives early is missed
     setStatus(QStringLiteral("Starting node…"));
+    subscribe();  // before start(), so nothing that arrives early is missed
     const LogosResult started = modules().delivery_module.start();
     if (!started.success) setStatus(QStringLiteral("Node failed to start: %1").arg(started.getError()));
 }
@@ -576,8 +589,11 @@ void LogosForumBackend::runCatchUp(const char* why) {
         log("catch-up (" + reason + "): " + std::to_string(payloads.size()) + " messages, " + std::to_string(added) +
             " new, peer " + (peer.empty() ? "none — " + net_->last_history_error() : peer) + ", status " +
             net_->last_history_status());
+        const std::string& err = net_->last_history_error();
+        const QString why = err.find("DIAL") != std::string::npos ? QStringLiteral("no store node reachable")
+                                                                    : q(err.substr(0, 60));
         lastCatchUp_ = peer.empty()
-            ? QStringLiteral("History unavailable (%1)").arg(q(net_->last_history_error()))
+            ? QStringLiteral("History: %1 — asking peers").arg(why)
             : QStringLiteral("Caught up %1 · %2 new").arg(hhmm(now_ms())).arg(added);
         publishHistory();
         // Store nodes may keep no archive at all; ask the peers too.

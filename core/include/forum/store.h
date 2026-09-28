@@ -62,6 +62,10 @@ public:
     std::vector<OutboxItem> due(uint64_t now_ms) const;
     std::vector<OutboxItem> outbox() const;
     void sent(const std::string& id);
+    // Accepted but not confirmed: not due again before `until_ms`.
+    void awaiting(const std::string& id, uint64_t until_ms);
+    // Make everything in the outbox due now (the network just came back).
+    void due_now(uint64_t now_ms);
     // Record a failure and schedule the next try with exponential back-off.
     void failed(const std::string& id, const std::string& error, uint64_t now_ms);
 

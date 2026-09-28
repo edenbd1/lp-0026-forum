@@ -72,7 +72,7 @@ old key to the new one."
 
 ## 5. Offline, and history — 1 min 30
 
-**[SCREEN]** Turn off Wi-Fi. Node A: post a reply. Show "offline — will retry" and the waiting counter.
+**[SCREEN]** Turn off Wi-Fi. Node A: post a reply. Show "waiting for the network — will retry" and the waiting counter.
 
 "Now I go offline and keep writing. The post is kept on disk, marked as not
 sent yet, and retried with back-off."

@@ -13,6 +13,7 @@ Script: [`scripts/e2e-two-nodes.sh`](../scripts/e2e-two-nodes.sh).
 | B is wiped and restarted | B recovers both posts from A's snapshot on Logos Storage | ✓ |
 | D, installed **from the catalog** on a blank Basecamp, starts | D recovers the forum from A's snapshot (storage 2.1.3 ↔ 2.1.2) | ✓ |
 | D replies under an alias | A stores it as *alias* "Ghost of D", signed by D's account key | ✓ |
+| A, cut off from the network, posts; Basecamp is closed; A is reopened online | the post stays in A's outbox across the restart, is resent on reconnect, and D stores it | ✓ (23 s after relaunch) |
 
 ![B receives A's topic](e2e/1-b-receives-a-topic.png)
 ![A receives B's anonymous reply](e2e/3-a-receives-b-anonymous-reply.png)
@@ -47,6 +48,20 @@ fetching snapshot zDvZRwzm8N45C9mv9f1Xi32Voh1deqBnrUuhu1ZbjjnQgwBqd5Xp
 download done: {"sessionId":"zDvZ…Xp","success":true}, 422 bytes
 snapshot imported: 1 new
 ```
+
+## Offline, for real
+
+Basecamp was started under `sandbox-exec` with outbound IP denied (local
+sockets allowed, so its own processes still talk), which cuts one instance
+off without touching the machine's network. The store query fails with
+`PEER_DIAL_FAILURE`; `delivery_module` **accepts** the send and retries it in
+memory ("No peers for topic"), reporting `messageError` after about a minute.
+Our first version took acceptance as delivery and removed the post from its
+outbox — a post written offline would have been lost had Basecamp been closed
+first. Now a post leaves the outbox only on `messagePropagated`/`messageSent`,
+is resent when the connection returns, and survives the restart:
+
+![A post waiting for the network](e2e/6-offline-post-waiting.png)
 
 ## Bugs this found
 

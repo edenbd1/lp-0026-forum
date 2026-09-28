@@ -125,7 +125,7 @@ struct FakeNet : Transport {
         if (!up) return {false, "offline"};
         bus.log.push_back(payload);
         for (auto* p : bus.peers) if (p != this && p->up && p->engine) p->engine->receive(payload, now);
-        return {true, ""};
+        return {true, "", "", true};
     }
     bool subscribe(const std::string&) override { return true; }
     std::vector<std::string> history(const std::string&) override { return up ? bus.log : std::vector<std::string>{}; }
@@ -220,6 +220,39 @@ TEST(the_store_and_accounts_survive_a_restart) {
     Store s(path);
     CHECK(s.has(id) && s.outbox().size() == 1);
     CHECK(s.accounts().size() == 1 && s.selected_label() == std::string("me"));
+    std::remove(path.c_str());
+}
+
+// Logos Delivery's shape: it accepts every send, then delivers or not, later.
+struct AcceptingNet : Transport {
+    std::vector<std::string> sent;
+    SendResult send(const std::string&, const std::string& payload) override {
+        sent.push_back(payload);
+        return {true, "", "req-" + std::to_string(sent.size()), false};
+    }
+    bool subscribe(const std::string&) override { return true; }
+    std::vector<std::string> history(const std::string&) override { return {}; }
+};
+
+TEST(an_accepted_send_stays_in_the_outbox_until_the_network_confirms_it) {
+    const std::string path = "/tmp/forum-core-confirm.db";
+    std::remove(path.c_str());
+    AcceptingNet net;
+    Account me{"me", Keypair::generate()};
+    std::string id;
+    {
+        Store s(path); Engine e(s, net, "Logos Forum");
+        id = e.post_topic(&me, "offline", "accepted, never confirmed", "", 1000);
+        CHECK(e.pump(1000) == 1 && net.sent.size() == 1);
+        CHECK(s.outbox().size() == 1);                              // kept: acceptance is not delivery
+        CHECK(e.pump(1000 + 1000) == 0 && net.sent.size() == 1);    // not resent while awaiting…
+    }                                                               // …and the app is closed here
+    Store s(path); Engine e(s, net, "Logos Forum");
+    CHECK(s.outbox().size() == 1);                                  // the post survived the restart
+    CHECK(e.pump(1000 + Engine::kConfirmWindowMs) == 1 && net.sent.size() == 2);  // sent again
+    CHECK(e.reconnected(1000 + Engine::kConfirmWindowMs + 5) == 1 && net.sent.size() == 3);  // back online: at once
+    e.confirm(id);
+    CHECK(s.outbox().empty());
     std::remove(path.c_str());
 }
 
