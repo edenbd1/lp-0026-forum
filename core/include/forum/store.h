@@ -55,6 +55,8 @@ public:
     // Replies to a topic, oldest first.
     std::vector<Post> replies(const std::string& topic_id) const;
     size_t count() const;
+    // Every post of a forum, oldest first.
+    std::vector<Post> all(const std::string& forum) const;
 
     void enqueue(const std::string& id, const std::string& payload, uint64_t now_ms);
     std::vector<OutboxItem> due(uint64_t now_ms) const;

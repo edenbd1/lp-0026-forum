@@ -5,6 +5,8 @@
 #include "forum/store.h"
 #include "forum/post.h"
 
+#include <nlohmann/json.hpp>
+
 #include <cstdio>
 #include <functional>
 #include <string>
@@ -218,6 +220,60 @@ TEST(the_store_and_accounts_survive_a_restart) {
     CHECK(s.has(id) && s.outbox().size() == 1);
     CHECK(s.accounts().size() == 1 && s.selected_label() == std::string("me"));
     std::remove(path.c_str());
+}
+
+TEST(a_send_lost_after_acceptance_goes_back_in_the_outbox) {
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    Account me{"me", Keypair::generate()};
+    std::string sent_id;
+    ea.on_sent = [&](const std::string& id, const std::string&) { sent_id = id; };
+    const std::string id = ea.post_topic(&me, "t", "b", "", 10);
+    CHECK(ea.pump(10) == 1 && sent_id == id && sa.outbox().empty());
+    CHECK(ea.requeue(id, "messageError: no peers", 20));   // the network lost it later
+    CHECK(sa.outbox().size() == 1 && sa.outbox()[0].attempts == 1);
+    CHECK(ea.pump(20 + backoff_ms(1)) == 1 && sa.outbox().empty());
+    CHECK(!ea.requeue("not-a-post-of-ours", "x", 30));
+}
+
+TEST(a_snapshot_restores_a_forum_on_a_fresh_install) {
+    Bus bus; FakeNet a(bus), b(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum");
+    Account me{"me", Keypair::generate()};
+    const std::string t = ea.post_topic(&me, "kept", "in storage", "", 10);
+    ea.post_reply(nullptr, t, "anon", "", 20);
+    ea.post_reply(&me, t, "as an alias", "Ghost", 30);
+    const std::string doc = ea.snapshot();
+    CHECK(eb.import_snapshot(doc, 40) == 3 && sb.replies(t).size() == 2);
+    CHECK(eb.import_snapshot(doc, 41) == 0);                  // idempotent
+    Engine other(sb, b, "Another Forum");
+    CHECK(other.import_snapshot(doc, 42) == 0);               // not this forum's
+}
+
+TEST(a_snapshot_is_checked_post_by_post) {
+    Bus bus; FakeNet a(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, a, "Logos Forum");
+    Account me{"me", Keypair::generate()};
+    ea.post_topic(&me, "genuine", "b", "", 10);
+    Post forged = author_as(me, topic("forged")); forged.body = "edited";
+    auto doc = nlohmann::json::parse(ea.snapshot());
+    doc["posts"].push_back(encode(forged));
+    doc["posts"].push_back("not even json");
+    CHECK(eb.import_snapshot(doc.dump(), 20) == 1 && sb.count() == 1);
+    CHECK(eb.import_snapshot("garbage", 20) == 0);
+}
+
+TEST(a_snapshot_announcement_reaches_peers_and_is_not_a_post) {
+    Bus bus; FakeNet a(bus), b(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
+    std::string got; size_t n = 0;
+    eb.on_snapshot = [&](const std::string& cid, size_t posts) { got = cid; n = posts; };
+    ea.announce_snapshot("zDvZRwzkwWtSfgKFoPMRaxzAAJ1i", 7, 10);
+    CHECK(got == "zDvZRwzkwWtSfgKFoPMRaxzAAJ1i" && n == 7 && sb.count() == 0);
+    got.clear();
+    Engine elsewhere(sb, b, "Another Forum");
+    elsewhere.on_snapshot = [&](const std::string& cid, size_t) { got = cid; };
+    CHECK(!elsewhere.receive(bus.log.back(), 11) && got.empty());   // another forum's pointer is ignored
 }
 
 TEST(each_forum_has_its_own_content_topic) {

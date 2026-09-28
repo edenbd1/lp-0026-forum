@@ -158,6 +158,14 @@ size_t Store::count() const {
     return static_cast<size_t>(q.num(0));
 }
 
+std::vector<Post> Store::all(const std::string& forum) const {
+    Stmt q(db_, (std::string("SELECT ") + kCols + " FROM posts WHERE forum=? ORDER BY kind, ts, id").c_str());
+    q.text(1, forum);
+    std::vector<Post> out;
+    while (q.step()) out.push_back(row_to_post(q));
+    return out;
+}
+
 void Store::enqueue(const std::string& id, const std::string& payload, uint64_t now_ms) {
     Stmt q(db_, "INSERT OR IGNORE INTO outbox(id,payload,next_try) VALUES (?,?,?)");
     q.text(1, id).text(2, payload).i64(3, static_cast<int64_t>(now_ms));
