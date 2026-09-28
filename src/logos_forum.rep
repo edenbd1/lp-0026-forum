@@ -1,0 +1,71 @@
+class LogosForum
+{
+    // ── Posting ───────────────────────────────────────────────────────────────
+    // `mode`: 0 = as the selected account, 1 = as the selected account under
+    // `alias`, 2 = anonymously (a key made for this post and wiped at once).
+    // The post is stored and queued before these return, so it is kept even
+    // when the network is down. Each returns the new post's id, or
+    // "error: …" when the post was refused.
+    SLOT(QString createTopic(QString title, QString body, int mode, QString alias))
+    SLOT(QString reply(QString topicId, QString body, int mode, QString alias))
+
+    // ── Reading ───────────────────────────────────────────────────────────────
+    // Pulled by the view rather than pushed at startup: QtRO forwards a signal
+    // only to replicas already attached, so a backlog emitted during bootstrap
+    // would reach no one. `postArrived` below tells the view when to pull again.
+    //
+    // listTopics: [{id,title,body,author,authorKey,mode,ts,replies,last,mine,state}]
+    //   most recently active first.
+    // thread:     {topic:{…}, replies:[{…}]} with the same fields, oldest first;
+    //   `topic` is null while only replies to it have arrived.
+    // `author` is a display name; `authorKey` is the key the post's signature
+    // was checked against, so it is a fact rather than a claim.
+    // `state` is "" once sent, or "sending" / "retrying" for our own posts.
+    SLOT(QString listTopics())
+    SLOT(QString thread(QString topicId))
+
+    // ── Accounts ──────────────────────────────────────────────────────────────
+    // Accounts are Ed25519 keys kept in this install's store. Each slot returns
+    // "" or an error, and re-publishes accountsJson / myLabel / myKey.
+    SLOT(QString createAccount(QString label))
+    SLOT(QString selectAccount(QString label))
+    SLOT(QString deleteAccount(QString label))
+    // Retire the selected account's key for a fresh one. Nothing links the two.
+    SLOT(QString rotateAccount())
+    // Rotate automatically after `maxPosts` posts or `maxDays` days (0 = never).
+    SLOT(QString setRotation(int maxPosts, int maxDays))
+
+    // ── History ───────────────────────────────────────────────────────────────
+    // Ask the network's store nodes for what was posted while we were away.
+    SLOT(QString catchUp())
+    // Save the forum to Logos Storage now and announce it to peers, so a
+    // newcomer can load everything from before the network's store window.
+    SLOT(QString saveSnapshot())
+    // Store nodes to query, as multiaddrs separated by spaces or new lines.
+    // Empty restores the logos.test fleet.
+    SLOT(QString useStorePeers(QString peers))
+
+    PROP(QString status="Starting…" READONLY)
+    PROP(bool nodeReady=false READONLY)
+    PROP(QString forumName="" READONLY)
+    PROP(QString contentTopic="" READONLY)
+    PROP(QString appVersion="" READONLY)
+    PROP(QString myLabel="" READONLY)
+    PROP(QString myKey="" READONLY)
+    // [{label,key,posts,created,selected}]
+    PROP(QString accountsJson="[]" READONLY)
+    // {maxPosts,maxDays}
+    PROP(QString rotationJson="{}" READONLY)
+    // Posts written here that the network has not taken yet.
+    PROP(int outboxCount=0 READONLY)
+    // One line on history: last catch-up, last snapshot, storage state.
+    PROP(QString historyStatus="" READONLY)
+    PROP(QString storePeers="" READONLY)
+
+    // A post was stored — ours or a peer's. `topicId` is the thread it belongs
+    // to (its own id for a topic).
+    SIGNAL(postArrived(QString id, QString topicId))
+    // One of our own posts changed delivery state: "sent", "failed" (it goes
+    // back in the outbox and is retried), with a reason in `detail`.
+    SIGNAL(postStateChanged(QString id, QString state, QString detail))
+}
