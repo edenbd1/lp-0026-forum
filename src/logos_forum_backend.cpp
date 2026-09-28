@@ -555,7 +555,7 @@ void LogosForumBackend::publishHistory() {
     QStringList parts;
     if (!lastCatchUp_.isEmpty()) parts << lastCatchUp_;
     if (!lastSnapshot_.isEmpty()) parts << lastSnapshot_;
-    parts << (storageReady_ ? QStringLiteral("Storage ready") : QStringLiteral("Storage starting…"));
+    parts << (storageReady_ ? QStringLiteral("Storage ready") : QStringLiteral("Storage not ready"));
     setHistoryStatus(parts.join(QStringLiteral(" · ")));
 }
 
@@ -654,8 +654,16 @@ void LogosForumBackend::wireStorage() {
     if (ok(st.init(cfg))) {
         ok(st.start());
     } else {
-        storageReady_ = true;  // already running for another app
-        QTimer::singleShot(0, [this]() { learnStorageIdentity(); });
+        // Refused: either another app already started the shared node, or the
+        // installed storage_module does not accept this configuration. Ask the
+        // node itself rather than guess.
+        log("storage init refused; checking whether a node is already running");
+        modules().storage_module.debugAsync([this](LogosResult r) {
+            storageReady_ = r.success;
+            log(std::string("storage ") + (r.success ? "already running" : "unavailable: " + s(r.getError())));
+            publishHistory();
+            if (r.success) learnStorageIdentity();
+        });
     }
     publishHistory();
 }

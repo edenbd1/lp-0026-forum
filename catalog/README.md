@@ -10,16 +10,27 @@ dependencies (`delivery_module` 0.2.1, `storage_module` 2.1.2) come from.
 
 Basecamp requires the repository to be served over **HTTPS**.
 
-Generate the two files from the built package:
+The published catalog is
+[`edenbd1/logos-forum-catalog`](https://github.com/edenbd1/logos-forum-catalog); add
+
+```
+https://raw.githubusercontent.com/edenbd1/logos-forum-catalog/main/logos-repo.json
+```
+
+To publish a release: build, pin the dependency versions into the package
+manifest (unpinned, Basecamp installs storage_module 3.0.0-rc1, whose upload
+and download calls differ from the 2.1 series the forum is built against), then
+generate the two files:
 
 ```bash
 nix build .#lgx-portable
+scripts/pin-deps.py result/logos-logos_forum-module.lgx logos_forum-0.1.1.lgx
 scripts/make-catalog.py \
-  --base-url  https://github.com/<owner>/<repo>/releases/download/logos_forum-v0.1.0 \
+  --base-url  https://github.com/<owner>/<repo>/releases/download/logos_forum-v0.1.1 \
   --index-url https://raw.githubusercontent.com/<owner>/<repo>/main/catalog/index.json \
-  --out catalog result/*.lgx
+  --out catalog logos_forum-0.1.1.lgx
 ```
 
-then attach `logos_forum-0.1.0.lgx` to that release, and add
+then attach `logos_forum-0.1.1.lgx` to that release, and add
 `https://raw.githubusercontent.com/<owner>/<repo>/main/catalog/logos-repo.json`
 in Basecamp.

@@ -47,12 +47,20 @@ alias, or as no one at all.
 | If offline when a message arrived, obtain past messages | store query, then `Engine::request_history` → a peer's snapshot on Logos Storage (`import_snapshot`); tested between two nodes |
 | If a send fails, the text stays locally to retry | the outbox, `Store::failed` + `backoff_ms` |
 | Does not flood the network | `RateLimiter` |
-| Basecamp app, loadable, in a module catalog | loads in Basecamp 0.3.0; catalog: [`catalog/`](catalog/) |
+| Basecamp app, loadable, in a module catalog | loads in Basecamp 0.3.0; served by [`logos-forum-catalog`](https://github.com/edenbd1/logos-forum-catalog), installed from it on a blank Basecamp |
 | Video demo, FURPS self-assessment | *at submission* |
 
 ## Install in Basecamp
 
-Build the package (needs [Nix](https://nixos.org)):
+**From the catalog** (Basecamp 0.3.0): *Settings → Package Repositories → Add
+a repository*, paste
+`https://raw.githubusercontent.com/edenbd1/logos-forum-catalog/main/logos-repo.json`,
+then *Package Manager → Social → Logos Forum → Install*. Basecamp installs
+`delivery_module` and `storage_module` from the official catalog with it.
+
+![Logos Forum in Basecamp's package manager](docs/e2e/4-catalog-in-basecamp.png)
+
+**From source.** Build the package (needs [Nix](https://nixos.org)):
 
 ```bash
 nix build .#lgx-portable     # result/logos-logos_forum-module.lgx
