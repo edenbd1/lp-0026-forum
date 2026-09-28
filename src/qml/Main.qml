@@ -322,7 +322,11 @@ Item {
         title: "New topic"
         modal: true; anchors.centerIn: parent
         width: Math.min(640, root.width - 40)
-        standardButtons: Dialog.Cancel
+        footer: Item {
+            implicitHeight: 56
+            Button { anchors.right: parent.right; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter
+                     text: "Cancel"; onClicked: newTopic.close() }
+        }
         ColumnLayout {
             anchors.fill: parent; spacing: 8
             TextField { id: topicTitle; Layout.fillWidth: true; placeholderText: "Title"; maximumLength: 200 }
@@ -350,7 +354,11 @@ Item {
         title: "Accounts"
         modal: true; anchors.centerIn: parent
         width: Math.min(820, root.width - 40)
-        standardButtons: Dialog.Close
+        footer: Item {
+            implicitHeight: 56
+            Button { anchors.right: parent.right; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter
+                     text: "Close"; onClicked: accountsDialog.close() }
+        }
         property var rot: { try { return JSON.parse(root.rotationJson) } catch (e) { return {} } }
         ColumnLayout {
             anchors.fill: parent; spacing: 10
