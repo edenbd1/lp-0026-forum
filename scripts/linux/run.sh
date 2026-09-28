@@ -1,7 +1,7 @@
+#!/bin/bash
 # Basecamp for Linux in Docker, as used for docs/e2e.md#linux. Unpack the official
 # x86_64 AppImage into sq/ (readelf offset + unsquashfs) and put the .lgx files in lgx/.
 
-#!/bin/bash
 # Inside the container: install the forum + deps, start Basecamp Linux 0.3.0 on a virtual display.
 set -e
 rm -rf /w/u && mkdir -p /w/u
