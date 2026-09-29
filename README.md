@@ -62,20 +62,41 @@ then *Package Manager → Social → Logos Forum → Install*. Basecamp installs
 
 ![Logos Forum in Basecamp's package manager](docs/e2e/4-catalog-in-basecamp.png)
 
-**From source.** Build the package (needs [Nix](https://nixos.org)):
+**From source**, on a clean machine (macOS or Linux, [Nix](https://nixos.org) and
+[Basecamp 0.3.0](https://github.com/logos-co/logos-basecamp/releases/tag/0.3.0)):
 
 ```bash
-nix build .#lgx-portable     # result/logos-logos_forum-module.lgx
-```
+git clone https://github.com/edenbd1/lp-0026-forum && cd lp-0026-forum
+nix build .#lgx-portable                      # result/logos-logos_forum-module.lgx
 
-The forum needs `delivery_module` 0.2.1 and `storage_module` 2.1.2, both in
-the official Logos catalog. Install everything into a Basecamp user
-directory and open Basecamp on it:
+# the two modules it depends on, from the official Logos catalog
+base=https://github.com/logos-co/logos-modules-release/releases/download
+curl -LO $base/delivery_module-v0.2.1/delivery_module-0.2.1.lgx
+curl -LO $base/storage_module-v2.1.2/storage_module-2.1.2.lgx
 
-```bash
+# install all three into a Basecamp user directory and open Basecamp on it
 scripts/install-local.sh ~/basecamp-forum result/*.lgx delivery_module-0.2.1.lgx storage_module-2.1.2.lgx
-LogosBasecamp --user-dir ~/basecamp-forum
+LogosBasecamp --user-dir ~/basecamp-forum     # macOS: ~/Applications/LogosBasecamp.app/Contents/MacOS/LogosBasecamp
 ```
+
+Then click *Logos Forum* in the sidebar.
+
+## Deployment and addresses
+
+There is nothing to deploy and no program address: the prize puts the
+blockchain out of scope, and the forum runs no server. What plays that role:
+
+| | |
+|---|---|
+| Module catalog | `https://raw.githubusercontent.com/edenbd1/logos-forum-catalog/main/logos-repo.json` |
+| Network | Logos Delivery, `logos.test` preset (cluster 2) |
+| Forum topic | `/logos-forum/1/logos-forum-934410ad/json`, on shard `/waku/2/rs/2/6` |
+| History | peers' snapshots on Logos Storage (`logos.test`), and bundles over Delivery |
+| Store nodes queried | the four `logos.test` fleet nodes (`node-01.do-ams3`, `node-01.gc-us-central1-a`, `node-01.ac-cn-hongkong-c`, `node-02.do-ams3`) |
+| Data on your machine | `<Basecamp user dir>/module_data/logos_forum/` (`forum.db`, `forum.log`) |
+
+A separate forum can be run by starting Basecamp with `LOGOS_FORUM_NAME=<name>`;
+the topic is derived from the name.
 
 ## Using the forum
 
