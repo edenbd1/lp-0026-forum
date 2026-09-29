@@ -2,7 +2,7 @@
 
 Basecamp 0.3.0 installs apps from *repositories*: a `logos-repo.json` that
 points at an `index.json` listing packages, versions, SHA-256 and download
-URLs — the format of the official
+URLs, in the format of the official
 [`logos-modules-release`](https://github.com/logos-co/logos-modules-release).
 A user adds one under **Settings → Package Repositories → Add a repository**;
 the catalog then merges it with the official one, which is where the forum's

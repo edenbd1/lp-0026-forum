@@ -1,4 +1,4 @@
-# Logos Forum — LP-0026
+# Logos Forum (LP-0026)
 
 A forum for Logos Basecamp with no server anywhere: topics and replies travel
 over **Logos Delivery**, history is kept locally and on **Logos Storage**, and
@@ -19,15 +19,15 @@ alias, or as no one at all.
   dropped. Post ids are the SHA-256 of the signed bytes, so a post is
   tamper-evident and any copy of it is recognised as the same post.
 - **Three ways to sign, chosen per post.**
-  - *Identity* — one of your accounts; your posts link to each other.
-  - *Alias* — the same account under a name you choose for the post.
-  - *Anonymous* — a key made for that one post and wiped immediately, so two
+  - *Identity*: one of your accounts; your posts link to each other.
+  - *Alias*: the same account under a name you choose for the post.
+  - *Anonymous*: a key made for that one post and wiped immediately, so two
     anonymous posts cannot be linked to each other or to you.
 - **Identity rotation.** An account can switch to a fresh key after a number
   of posts or a period of time; nothing links the old key to the new one.
 - **Nothing you write is lost.** A post is stored the moment you press Post and
   queued; if the network is down it is retried with back-off until it goes.
-- **Coming back online catches up — even on a network that keeps nothing.**
+- **Coming back online catches up, even on a network that keeps nothing.**
   A returning node asks the network's store nodes, and it asks the forum: a
   peer holding more posts answers with a snapshot on **Logos Storage**, names
   its storage node so it can be dialled directly, and every post in the
@@ -41,7 +41,7 @@ alias, or as no one at all.
 
 | Criterion | Where |
 |---|---|
-| One or more accounts to post from | `core/include/forum/identity.h` — accounts, selected per post |
+| One or more accounts to post from | `core/include/forum/identity.h`: accounts, selected per post |
 | Create topics and reply | `Engine::post_topic`, `Engine::post_reply` |
 | Reply by id, by alias, or revealing no id | `Mode::Identity`, `Mode::Alias`, `Mode::Anonymous` |
 | Privacy of a long-lived identity; rotation | `RotationPolicy`, `rotate()`; per-post anonymous keys |
@@ -81,7 +81,7 @@ LogosBasecamp --user-dir ~/basecamp-forum
 
 **Your first minute.** Open *Logos Forum* in Basecamp's sidebar. An account
 ("Account 1") is created on first launch, so you can post straight away. The
-header shows the network state (*Connected*, or *Joined — waiting for peers*)
+header shows the network state (*Connected*, or *Joined, waiting for peers*)
 and, under it, the history state: when the forum last caught up, and whether
 Logos Storage is ready.
 
@@ -90,7 +90,7 @@ line of their text, their author and reply count; a blue dot marks activity
 since you last opened a topic, and the search box filters by title, text or
 author. Click one to open it; replies follow in order.
 Every author line carries a ✓ and the first bytes of the key the post's
-signature was checked against — hover it for the full key. A post whose
+signature was checked against; hover it for the full key. A post whose
 signature does not check is never shown.
 
 **Post.** *New topic* opens the composer: a title, a body, and *Post as*.
@@ -100,26 +100,26 @@ Reply from the box under an open topic.
 |---|---|---|
 | *your account* | the account's key (or its label, on your own machine) | all posts by that account |
 | *alias* | the name you type, marked **alias** | posts by the same account, to anyone comparing keys |
-| *anonymous* | "anonymous", marked **anonymous**, under a key made for that post and wiped | nothing — two anonymous posts share no key |
+| *anonymous* | "anonymous", marked **anonymous**, under a key made for that post and wiped | nothing: two anonymous posts share no key |
 
 **Accounts** (*Accounts…*): create several and switch between them; the one
 selected signs what you post next. **Identity rotation** replaces the selected
 account's key with a fresh one, now or automatically after a number of posts
-or days — nothing links the old key to the new one.
+or days. Nothing links the old key to the new one.
 
 **Offline.** Write as usual: the post appears at once, marked *sending…*,
-then *waiting for the network — will retry*, and the header counts what is
+then *waiting for the network, will retry*, and the header counts what is
 waiting. A post leaves that state only when the network confirms it has it:
 Logos Delivery accepts a send even with no peers and retries it only in
 memory, so the forum keeps the post itself and sends it again as soon as the
-connection returns — or after two minutes without confirmation, or with
-back-off (2 s … 5 min) after an error — including after Basecamp was closed.
+connection returns, or after two minutes without confirmation, or with
+back-off (2 s … 5 min) after an error. This holds even after Basecamp was closed.
 When you come back after
 being away, the forum fetches what you missed from the network and from peers'
 snapshots on Logos Storage; *Accounts… → Fetch missed posts* does it on demand,
 and *Save snapshot to Logos Storage* publishes yours for others.
 
-**Errors** are shown in one line under the header — a refused post (too long,
+**Errors** are shown in one line under the header: a refused post (too long,
 no title), a send the network gave up on (it is retried), a storage node that
 is not ready.
 

@@ -1,4 +1,4 @@
-# Discord invite (#builder-hub) — draft, to post yourself
+# Discord invite (#builder-hub): draft, to post yourself
 
 Hey all, I've built a forum app for Basecamp for LP-0026 and I'd love people to
 actually use it.
