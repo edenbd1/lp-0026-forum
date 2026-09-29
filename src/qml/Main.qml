@@ -444,6 +444,10 @@ Item {
                             height: col.implicitHeight + 16
                             radius: 4
                             color: modelData.id === root.openId ? root.line : "transparent"
+                            // Screen readers (and UI tests) see each row as a button named after the topic.
+                            Accessible.role: Accessible.Button
+                            Accessible.name: modelData.title
+                            Accessible.onPressAction: root.openThread(modelData.id)
                             MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.openThread(modelData.id) }
                             ColumnLayout {
                                 id: col
