@@ -137,8 +137,9 @@ bool Engine::receive(const std::string& payload, uint64_t now_ms) {
         if (a.is_object() && int_at(a, kWantTag) == 1 && str_at(a, "forum") == forum_) {
             const int64_t theirs = int_at(a, "have");
             const size_t ours = store_.all(forum_).size();
-            const bool quiet = !answered_ || now_ms >= last_answer_ms_ + kAnswerEveryMs;
-            const bool can = str_at(a, "via") == "delivery" || static_cast<bool>(on_history_wanted);
+            const int path = str_at(a, "via") == "delivery" ? 1 : 0;
+            const bool quiet = !answered_[path] || now_ms >= last_answer_ms_[path] + kAnswerEveryMs;
+            const bool can = path == 1 || static_cast<bool>(on_history_wanted);
             if (can && quiet && !pending_ && theirs >= 0 && static_cast<size_t>(theirs) < ours) {
                 HistoryRequest r;
                 r.id = str_at(a, "id").substr(0, 64);
@@ -247,8 +248,8 @@ void Engine::tick(uint64_t now_ms) {
     if (!pending_ || now_ms < pending_due_ms_) return;
     const HistoryRequest r = *pending_;
     pending_.reset();
-    answered_ = true;
-    last_answer_ms_ = now_ms;
+    answered_[r.via_delivery] = true;
+    last_answer_ms_[r.via_delivery] = now_ms;
     if (r.via_delivery) {
         for (const auto& b : bundles(r.since_ms, r.id)) net_.send(topic_, b);
     } else if (on_history_wanted) {

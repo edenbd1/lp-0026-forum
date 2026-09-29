@@ -185,13 +185,16 @@ private:
     Transport& net_;
     std::string forum_, topic_;
     RateLimiter limiter_{5, 20};
-    uint64_t last_answer_ms_ = 0;
+    // Rate limits, one per path: a Delivery fallback usually follows a Storage
+    // answer by seconds (the snapshot could not be fetched), so a shared limit
+    // would silence exactly the answer that works.
+    uint64_t last_answer_ms_[2] = {0, 0};
     std::optional<HistoryRequest> pending_;
     uint64_t pending_due_ms_ = 0;
     void stand_down(const std::string& re);
     std::string provider_peer_;
     std::vector<std::string> provider_addrs_;
-    bool answered_ = false;
+    bool answered_[2] = {false, false};
 };
 
 } // namespace forum

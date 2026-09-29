@@ -406,6 +406,31 @@ TEST(history_crosses_nat_over_delivery_when_storage_cannot) {
     CHECK(!eb.receive(doc.dump(), 6000000) && sb.count() == 300);
 }
 
+TEST(the_delivery_fallback_is_answered_right_after_a_storage_answer) {
+    // What happened between a Mac and a Linux node behind Docker's NAT: A
+    // answers B's Storage request, B cannot fetch the snapshot and asks again
+    // via Delivery three seconds later. That second answer must still come.
+    Bus bus; FakeNet a(bus), b(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
+    ea.jitter = [] { return uint64_t{0}; };
+    int storage_answers = 0;
+    ea.on_history_wanted = [&](const HistoryRequest& r) { ++storage_answers; ea.announce_snapshot("cid-unreachable", 1, 0, r.id); };
+    Account alice{"alice", Keypair::generate()};
+    b.up = false;
+    ea.post_topic(&alice, "t", "b", "", 1000);
+    ea.pump(1000);
+    b.up = true;
+    eb.request_history(2000);
+    ea.tick(2000);
+    CHECK(storage_answers == 1 && sb.count() == 0);             // announced, but B cannot fetch it
+    eb.request_history(5000, true);
+    ea.tick(5000);
+    CHECK(sb.count() == 1);                                     // the Delivery answer still came
+    eb.request_history(6000, true);                             // and the per-path limit still holds
+    ea.tick(6000);
+    CHECK(sb.count() == 1);
+}
+
 TEST(a_returning_node_asks_only_for_what_is_newer) {
     Bus bus; FakeNet a(bus), b(bus); Store sa(":memory:"), sb(":memory:");
     Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
