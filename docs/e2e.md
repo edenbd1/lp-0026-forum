@@ -87,12 +87,34 @@ replica factory against the AppImage's own libraries (Qt 6.9.2) resolves every
 dependency, and fails without them (`libQt6RemoteObjects.so.6: cannot open
 shared object file`) — the negative control.
 
-**A limit this showed.** The Linux node received snapshot announcements from
-the macOS nodes, but could not download them: the addresses a macOS node
-announces for its storage node (loopback, LAN) are not reachable from inside
-Docker's NAT, and the DHT did not find the content either. Peer history needs
-the two storage nodes to reach each other — same machine, same network, or a
-reachable address. Live posts are unaffected: they travel over Logos Delivery.
+**A limit this showed, and its fix.** The Linux node received snapshot
+announcements from the macOS nodes but could not download them: the addresses
+a macOS node announces for its storage node (loopback, LAN) are not reachable
+from inside Docker's NAT, and the DHT did not find the content either — the
+situation of two people at home behind their routers. Delivery, though, crosses
+NAT. So when a snapshot cannot be fetched, the newcomer asks again with
+`"via":"delivery"`, and a peer sends the posts themselves as bundles on the
+forum's topic (under the network's 150 KiB message limit, newest first, each
+post checked on arrival). Re-run with a blank Linux node behind the NAT and a
+macOS node holding three posts ([log](e2e/node-linux-behind-nat.log)):
+
+```
+snapshot zDvZRwzm8h6re… unavailable: Failed to start chunk download.
+snapshot unavailable: asked peers to send history over Delivery
+received a history bundle: 3 new
+```
+
+![A blank Linux node behind NAT, with the history it received over Delivery](e2e/10-linux-behind-nat-gets-history-over-delivery.png)
+
+The first attempt still failed, and it was ours: the macOS node had answered
+the Storage request three seconds earlier, and a single "one answer every
+30 s" limit silenced the fallback. Answers are now limited per path, and a core
+test replays that exact sequence.
+
+**One answer per newcomer.** Every peer that could answer a history request
+waits a random 0–3 s and stands down if it sees another peer's answer to the
+same request, so a newcomer costs the network one answer rather than one per
+peer (a core test with five peers checks exactly one answer).
 
 ## Bugs this found
 

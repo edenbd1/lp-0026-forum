@@ -1,0 +1,17 @@
+2026-09-29T17:09:05.444 bootstrap: forum "nat-test" on /logos-forum/1/nat-test-e7101da0/json
+2026-09-29T17:09:07.976 storage start: ok
+2026-09-29T17:09:08.066 storage peer 16Uiu2HAmJHcszVjKv4SGDKWGmxyMiMLNdHi4shGUx3XkZdkNurhF at /ip4/127.0.0.1/tcp/39396 /ip4/172.17.0.6/tcp/39396
+2026-09-29T17:09:11.260 subscribed on attempt 1
+2026-09-29T17:09:13.074 connection: Connected
+2026-09-29T17:09:13.076 catch-up starting (reconnected)
+2026-09-29T17:09:13.551 nodeStarted ok
+2026-09-29T17:09:14.744 catch-up (reconnected): 0 messages, 0 new, peer /dns4/node-01.do-ams3.logos.test.status.im (0), /dns4/node-01.gc-us-central1-a.logos.test.status.im (0), /dns4/node-01.ac-cn-hongkong-c.logos.test.status.im (0), /dns4/node-02.do-ams3.logos.test.status.im (0), status 200 OK
+2026-09-29T17:09:14.875 received a known or foreign message
+2026-09-29T17:09:14.876 asked peers for history
+2026-09-29T17:09:17.553 dialing snapshot provider 16Uiu2HAmVsvjyUJtFbSatAf2wVyNpssy4MGtdkHXFecpdS3iasFJ
+2026-09-29T17:09:17.555 received a known or foreign message
+2026-09-29T17:09:19.067 fetching snapshot zDvZRwzm8h6re8zMpqT271A8EArPxudYaxseWdsTWcYiQHRZpnLS
+2026-09-29T17:09:20.083 snapshot zDvZRwzm8h6re8zMpqT271A8EArPxudYaxseWdsTWcYiQHRZpnLS unavailable: Failed to start chunk download.
+2026-09-29T17:09:20.115 received a known or foreign message
+2026-09-29T17:09:20.116 snapshot unavailable: asked peers to send history over Delivery
+2026-09-29T17:09:23.584 received a history bundle: 3 new

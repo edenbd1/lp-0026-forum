@@ -17,6 +17,7 @@ p = argparse.ArgumentParser()
 p.add_argument("--base-url", required=True, help="where the .lgx files are downloaded from")
 p.add_argument("--index-url", required=True, help="where index.json is served")
 p.add_argument("--out", default="catalog")
+p.add_argument("--icon", help="icon PNG shown in Basecamp's package manager (stored as <sha256>.png next to index.json)")
 p.add_argument("lgx", nargs="+")
 a = p.parse_args()
 
@@ -37,6 +38,12 @@ for path in a.lgx:
         "manifest": manifest,
     }
     entry["urls"] = [entry["url"]]
+    if a.icon:
+        icon = open(a.icon, "rb").read()
+        h = hashlib.sha256(icon).hexdigest()
+        entry["icon"] = {"path": f"{h}.png", "sha256": h, "size": len(icon)}
+        os.makedirs(a.out, exist_ok=True)
+        open(os.path.join(a.out, f"{h}.png"), "wb").write(icon)
     packages.setdefault(name, []).append((entry, file, path))
 
 os.makedirs(a.out, exist_ok=True)

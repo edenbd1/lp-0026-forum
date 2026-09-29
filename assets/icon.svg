@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#232834"/>
+      <stop offset="1" stop-color="#0f1115"/>
+    </linearGradient>
+    <linearGradient id="back" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6ea8fe"/>
+      <stop offset="1" stop-color="#3d7be6"/>
+    </linearGradient>
+  </defs>
+  <!-- tile -->
+  <rect x="0" y="0" width="256" height="256" rx="56" fill="url(#bg)"/>
+  <!-- the reply behind: a second voice in the thread -->
+  <path d="M112 50 h86 a26 26 0 0 1 26 26 v44 a26 26 0 0 1 -26 26 h-6 v22 l-26 -22 h-54 a26 26 0 0 1 -26 -26 v-44 a26 26 0 0 1 26 -26 z" fill="url(#back)"/>
+  <!-- the topic in front -->
+  <path d="M58 92 h96 a28 28 0 0 1 28 28 v50 a28 28 0 0 1 -28 28 h-56 l-30 26 v-26 h-10 a28 28 0 0 1 -28 -28 v-50 a28 28 0 0 1 28 -28 z" fill="#e7e9ee"/>
+  <rect x="56" y="124" width="84" height="12" rx="6" fill="#20242b"/>
+  <rect x="56" y="148" width="58" height="12" rx="6" fill="#20242b" opacity="0.55"/>
+  <!-- verified: every post's signature is checked -->
+  <circle cx="178" cy="190" r="34" fill="#0f1115"/>
+  <circle cx="178" cy="190" r="27" fill="#4cc38a"/>
+  <path d="M164 191 l10 10 l19 -21" fill="none" stroke="#ffffff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
