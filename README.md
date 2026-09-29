@@ -144,6 +144,16 @@ and *Save snapshot to Logos Storage* publishes yours for others.
 no title), a send the network gave up on (it is retried), a storage node that
 is not ready.
 
+## Any width, down to a phone
+
+The view adapts instead of clipping. Below 720 px it shows one pane at a time
+(the topic list, or the open topic with a way back), the header stacks, the
+"Post as" explanation gets its own line, and long titles, keys and URLs wrap.
+`scripts/responsive-shots.sh` renders the real view against a stand-in backend
+(`tests/qml/Harness.qml`) in nine states at seven widths, from 360 px to 1600 px.
+
+![The forum at 360, 414, 700 and 1280 px](docs/responsive/widths.png)
+
 ## Test between two real nodes
 
 ```bash
