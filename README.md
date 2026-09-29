@@ -9,6 +9,8 @@ alias, or as no one at all.
 > end to end between two real nodes on the logos.test network
 > ([`docs/e2e.md`](docs/e2e.md)). The core has 25 tests of its own.
 
+![A thread: an account post, an anonymous reply and an alias reply, each with the key its signature was checked against](docs/e2e/9-thread.png)
+
 ## What makes it different
 
 - **Authors are verified, not claimed.** Every post is Ed25519-signed and the
@@ -83,8 +85,10 @@ header shows the network state (*Connected*, or *Joined — waiting for peers*)
 and, under it, the history state: when the forum last caught up, and whether
 Logos Storage is ready.
 
-**Read.** The left column lists topics, most recently active first, with
-their author and reply count. Click one to open it; replies follow in order.
+**Read.** The left column lists topics, most recently active first, with a
+line of their text, their author and reply count; a blue dot marks activity
+since you last opened a topic, and the search box filters by title, text or
+author. Click one to open it; replies follow in order.
 Every author line carries a ✓ and the first bytes of the key the post's
 signature was checked against — hover it for the full key. A post whose
 signature does not check is never shown.

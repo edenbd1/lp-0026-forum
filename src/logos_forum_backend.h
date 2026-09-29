@@ -16,6 +16,7 @@
 #include <string>
 
 #include <QHash>
+#include <QJsonObject>
 #include <QString>
 #include <QTimer>
 
@@ -35,6 +36,7 @@ public:
     QString reply(QString topicId, QString body, int mode, QString alias) override;
     QString listTopics() override;
     QString thread(QString topicId) override;
+    QString markRead(QString topicId) override;
 
     QString createAccount(QString label) override;
     QString selectAccount(QString label) override;
@@ -77,6 +79,7 @@ private:
     QString dataDir() const;
     void loadSettings();
     void saveSettings();
+    QJsonObject readJson() const;
 
     std::unique_ptr<forum::Store> store_;
     std::unique_ptr<DeliveryTransport> net_;
@@ -84,6 +87,8 @@ private:
     std::vector<forum::Account> accounts_;
     QString selectedLabel_;
     forum::RotationPolicy rotation_;
+    QHash<QString, double> readUpTo_;  // topic id -> last activity the user has seen
+    double readSince_ = 0;             // before this, everything counts as read (first launch)
 
     QTimer pumpTimer_, historyTimer_, snapshotTimer_;
     QString connectionState_;

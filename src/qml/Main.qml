@@ -34,11 +34,50 @@ Item {
     // Palette
     readonly property color bg: "#101114"
     readonly property color panel: "#17191e"
-    readonly property color line: "#262a31"
+    readonly property color raised: "#20242b"
+    readonly property color line: "#2a2f37"
     readonly property color text: "#e7e9ee"
     readonly property color dim: "#8b93a1"
     readonly property color accent: "#6ea8fe"
+    readonly property color accentStrong: "#3d7be6"
+    readonly property color ok: "#4cc38a"
     readonly property color warn: "#f0b35b"
+
+    // Every stock control (buttons, combo boxes, fields, spin boxes, popups)
+    // reads its colours from the palette, so one dark palette here keeps the
+    // whole app consistent instead of restyling each control.
+    palette.window: panel
+    palette.windowText: text
+    palette.base: bg
+    palette.alternateBase: panel
+    palette.text: text
+    palette.button: raised
+    palette.buttonText: text
+    palette.brightText: "#ffffff"
+    palette.highlight: accentStrong
+    palette.highlightedText: "#ffffff"
+    palette.placeholderText: dim
+    palette.mid: line
+    palette.dark: accentStrong
+    palette.light: raised
+    palette.midlight: line
+    palette.shadow: "#000000"
+    palette.toolTipBase: raised
+    palette.toolTipText: text
+    palette.disabled.buttonText: "#5d646f"
+    palette.disabled.button: "#191c21"
+    palette.disabled.text: "#5d646f"
+    palette.disabled.dark: "#1f2a3d"
+    palette.disabled.brightText: "#7d8594"
+
+    property string search: ""
+    function matches(t) {
+        if (search.trim() === "") return true
+        var q = search.toLowerCase()
+        return (t.title + " " + t.body + " " + t.author).toLowerCase().indexOf(q) >= 0
+    }
+    readonly property var shownTopics: topics.filter(matches)
+    readonly property int unreadCount: topics.filter(function (t) { return t.unread }).length
 
     function log(m) { console.log("[logos_forum qml] " + m) }
 
@@ -58,12 +97,21 @@ Item {
             } catch (e) { log("thread: " + e) }
         }, function (err) { log("thread failed: " + err) })
     }
-    function openThread(id) { openId = id; openTopic = null; openReplies = []; refreshThread() }
-    function when(ms) {
-        var d = new Date(ms), now = new Date()
-        return d.toDateString() === now.toDateString()
-            ? Qt.formatTime(d, "HH:mm") : Qt.formatDateTime(d, "d MMM HH:mm")
+    function openThread(id) {
+        openId = id; openTopic = null; openReplies = []; refreshThread()
+        call(backend.markRead(id), function () { root.refreshTopics() })
     }
+    // "just now", "5 min ago", "3 h ago", "yesterday 14:02", "12 Sep"
+    function when(ms) {
+        var d = new Date(ms), n = new Date(root.now), s = (root.now - ms) / 1000
+        if (s < 60) return "just now"
+        if (s < 3600) return Math.floor(s / 60) + " min ago"
+        if (d.toDateString() === n.toDateString()) return Math.floor(s / 3600) + " h ago"
+        var y = new Date(root.now - 86400000)
+        if (d.toDateString() === y.toDateString()) return "yesterday " + Qt.formatTime(d, "HH:mm")
+        return d.getFullYear() === n.getFullYear() ? Qt.formatDate(d, "d MMM") : Qt.formatDate(d, "d MMM yyyy")
+    }
+    function exact(ms) { return Qt.formatDateTime(new Date(ms), "d MMM yyyy, HH:mm") }
     function result(r) {
         // Posting slots return the new id, or "error: …".
         if (r.indexOf("error: ") === 0) { lastError = r.substring(7); return false }
@@ -91,7 +139,10 @@ Item {
         ignoreUnknownSignals: true
         function onPostArrived(id, topicId) {
             root.refreshTopics()
-            if (topicId === root.openId) root.refreshThread()
+            if (topicId === root.openId) {
+                root.refreshThread()
+                root.call(root.backend.markRead(topicId))  // the user is looking at it
+            }
         }
         function onPostStateChanged(id, state, detail) {
             root.refreshTopics()
@@ -137,7 +188,11 @@ Item {
             ToolTip.text: post ? "Signature verified against key " + post.authorKey : ""
             HoverHandler { id: keyHover }
         }
-        Dim { text: post ? "· " + root.when(post.ts) : "" }
+        Dim {
+            text: post ? "· " + root.when(post.ts) : ""
+            ToolTip.visible: timeHover.hovered; ToolTip.text: post ? root.exact(post.ts) : ""
+            HoverHandler { id: timeHover }
+        }
         Text {
             visible: post && post.state !== ""
             // A post the node accepted but the network has not confirmed stays
@@ -158,6 +213,7 @@ Item {
             id: modeBox
             model: [root.myLabel || "account", "alias", "anonymous"]
             implicitWidth: 150
+            popup.palette: root.palette
         }
         TextField {
             id: aliasField
@@ -185,15 +241,28 @@ Item {
         RowLayout {
             Layout.fillWidth: true
             spacing: 12
-            Text { text: root.forumName; color: root.text; font.pixelSize: 20; font.bold: true }
-            Dim { text: "v" + root.appVersion }
+            ColumnLayout {
+                spacing: 0
+                RowLayout {
+                    spacing: 8
+                    Text { text: root.forumName; color: root.text; font.pixelSize: 20; font.bold: true }
+                    Dim { text: "v" + root.appVersion }
+                }
+                Dim { text: "No server · every post signed and verified · Logos Delivery + Logos Storage" }
+            }
             Item { Layout.fillWidth: true }
-            Dim { text: (root.status === "Connected" ? "● " : "○ ") + root.status }
+            Rectangle {
+                width: 8; height: 8; radius: 4
+                color: root.status === "Connected" ? root.ok
+                     : root.status.indexOf("fail") >= 0 ? "#e5484d" : root.warn
+            }
+            Dim { text: root.status }
             Dim { visible: root.outboxCount > 0; color: root.warn
                   text: root.outboxCount + " waiting to send" }
             ComboBox {
                 id: accountBox
                 implicitWidth: 170
+                popup.palette: root.palette
                 model: root.accounts.map(function (a) { return a.label + "  " + a.key })
                 currentIndex: root.accounts.findIndex(function (a) { return a.selected })
                 onActivated: function (i) { root.call(root.backend.selectAccount(root.accounts[i].label), root.plain) }
@@ -222,15 +291,27 @@ Item {
                     RowLayout {
                         Layout.fillWidth: true
                         Text { text: "Topics"; color: root.text; font.pixelSize: 15; font.bold: true }
+                        Rectangle {
+                            visible: root.unreadCount > 0
+                            radius: 8; color: root.accentStrong
+                            implicitWidth: unreadText.implicitWidth + 12; implicitHeight: 18
+                            Text { id: unreadText; anchors.centerIn: parent; color: "white"; font.pixelSize: 11; font.bold: true
+                                   text: root.unreadCount + " new" }
+                        }
                         Item { Layout.fillWidth: true }
                         Button { text: "↻"; onClicked: root.call(root.backend.catchUp(), function () { root.refreshTopics() })
                                  ToolTip.visible: hovered; ToolTip.text: "Fetch what was posted while you were away" }
                         Button { text: "New topic"; highlighted: true; onClicked: newTopic.open() }
                     }
+                    TextField {
+                        Layout.fillWidth: true
+                        placeholderText: "Search topics"
+                        onTextChanged: root.search = text
+                    }
                     ListView {
                         Layout.fillWidth: true; Layout.fillHeight: true
                         clip: true; spacing: 4
-                        model: root.topics
+                        model: root.shownTopics
                         delegate: Rectangle {
                             width: ListView.view.width
                             height: col.implicitHeight + 16
@@ -241,16 +322,30 @@ Item {
                                 id: col
                                 anchors.left: parent.left; anchors.right: parent.right
                                 anchors.verticalCenter: parent.verticalCenter; anchors.margins: 8
-                                spacing: 2
-                                Label2 { Layout.fillWidth: true; text: modelData.title; font.bold: true; maximumLineCount: 2; elide: Text.ElideRight }
+                                spacing: 3
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: 6
+                                    Rectangle { visible: modelData.unread; width: 7; height: 7; radius: 4; color: root.accent }
+                                    Label2 { Layout.fillWidth: true; text: modelData.title; font.bold: true; maximumLineCount: 2; elide: Text.ElideRight }
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: modelData.body.replace(/\s+/g, " ")
+                                    color: root.dim; font.pixelSize: 12; elide: Text.ElideRight; maximumLineCount: 1
+                                    textFormat: Text.PlainText
+                                }
                                 Dim { Layout.fillWidth: true
-                                      text: modelData.author + " · " + modelData.replies + (modelData.replies === 1 ? " reply" : " replies")
-                                            + " · " + root.when(modelData.last)
-                                            + (modelData.state !== "" ? " · not sent yet" : "") }
+                                      text: modelData.author
+                                            + " · " + modelData.replies + (modelData.replies === 1 ? " reply" : " replies")
+                                            + " · " + root.when(modelData.last) }
+                                Dim { visible: modelData.state !== ""; color: root.warn; text: "not sent yet — will retry" }
                             }
                         }
-                        Dim { anchors.centerIn: parent; visible: root.topics.length === 0
-                              text: "No topics yet. Start one, or wait for peers." }
+                        Dim { anchors.centerIn: parent; visible: root.topics.length > 0 && root.shownTopics.length === 0
+                              text: "No topic matches \"" + root.search + "\"." }
+                        Dim { anchors.centerIn: parent; width: parent.width - 32; horizontalAlignment: Text.AlignHCenter
+                              visible: root.topics.length === 0
+                              text: "No topics yet. Start one — or wait a moment: when you join, peers who were here before you send their history." }
                     }
                 }
             }
@@ -260,7 +355,32 @@ Item {
                 Layout.fillWidth: true; Layout.fillHeight: true
                 color: root.panel; radius: 6; border.color: root.line
 
-                Dim { anchors.centerIn: parent; visible: root.openId === ""; text: "Pick a topic." }
+                ColumnLayout {
+                    anchors.centerIn: parent; width: Math.min(parent.width - 60, 560)
+                    visible: root.openId === ""
+                    spacing: 14
+                    Text { text: "Welcome to " + root.forumName; color: root.text; font.pixelSize: 18; font.bold: true }
+                    Label2 { Layout.fillWidth: true; color: root.dim
+                             text: "There is no server here. Posts travel peer to peer over Logos Delivery, history is shared through Logos Storage, and every post is signed — the ✓ next to an author means this app checked the signature itself." }
+                    Repeater {
+                        model: [
+                            ["Your account", "Posts are signed by your account's key, so they link to each other. You can hold several accounts and rotate a key at any time."],
+                            ["Alias", "Pick a name for one post. It is still signed by your account, and marked as an alias."],
+                            ["Anonymous", "A key made for that one post and then wiped. Two anonymous posts cannot be linked to each other or to you."]
+                        ]
+                        delegate: RowLayout {
+                            Layout.fillWidth: true; spacing: 10
+                            Rectangle { Layout.alignment: Qt.AlignTop; Layout.topMargin: 6; width: 6; height: 6; radius: 3; color: root.accent }
+                            ColumnLayout {
+                                Layout.fillWidth: true; spacing: 2
+                                Label2 { text: modelData[0]; font.bold: true }
+                                Dim { Layout.fillWidth: true; text: modelData[1]; font.pixelSize: 13 }
+                            }
+                        }
+                    }
+                    Dim { Layout.fillWidth: true; text: "Pick a topic on the left, or start one." }
+                    Button { text: "New topic"; highlighted: true; onClicked: newTopic.open() }
+                }
 
                 ColumnLayout {
                     anchors.fill: parent; anchors.margins: 14; spacing: 10
@@ -299,14 +419,17 @@ Item {
                             Layout.fillWidth: true; Layout.preferredHeight: 80
                             placeholderText: "Write a reply"; wrapMode: TextArea.Wrap
                             color: root.text; placeholderTextColor: root.dim
-                            background: Rectangle { color: root.bg; radius: 4; border.color: root.line }
+                            background: Rectangle { color: root.bg; radius: 4; border.color: replyBody.activeFocus ? root.accentStrong : root.line }
                         }
                         RowLayout {
                             Layout.fillWidth: true
                             SignAs { id: replyAs; Layout.fillWidth: true }
+                            Dim { visible: replyBody.length > 16000; color: replyBody.length > 20000 ? "#e5484d" : root.dim
+                                  text: replyBody.length + " / 20000" }
                             Button {
-                                text: "Reply"; highlighted: true
+                                text: "Reply"
                                 enabled: replyBody.text.trim().length > 0
+                                highlighted: enabled   // a blue button that cannot be pressed reads as broken
                                 onClicked: root.call(root.backend.reply(root.openId, replyBody.text, replyAs.mode, replyAs.alias), function (r) {
                                     if (root.result(r)) {
                                         replyBody.text = ""
@@ -325,6 +448,7 @@ Item {
 
     Dialog {
         id: newTopic
+        palette: root.palette   // popups take their palette from the window, not from us
         background: Rectangle { color: root.panel; radius: 8; border.color: root.line }
         header: Text { text: newTopic.title; color: root.text; font.pixelSize: 16; font.bold: true; padding: 16 }
         title: "New topic"
@@ -340,12 +464,16 @@ Item {
             TextField { id: topicTitle; Layout.fillWidth: true; placeholderText: "Title"; maximumLength: 200 }
             TextArea { id: topicBody; Layout.fillWidth: true; Layout.preferredHeight: 160; placeholderText: "What do you want to say?"; wrapMode: TextArea.Wrap
                             color: root.text; placeholderTextColor: root.dim
-                            background: Rectangle { color: root.bg; radius: 4; border.color: root.line } }
+                            background: Rectangle { color: root.bg; radius: 4; border.color: topicBody.activeFocus ? root.accentStrong : root.line } }
+            Dim { Layout.alignment: Qt.AlignRight; visible: topicBody.length > 16000 || topicTitle.length > 160
+                  color: topicBody.length > 20000 ? "#e5484d" : root.dim
+                  text: "title " + topicTitle.length + " / 200 · body " + topicBody.length + " / 20000" }
             SignAs { id: topicAs; Layout.fillWidth: true }
             Button {
                 Layout.alignment: Qt.AlignRight
-                text: "Post"; highlighted: true
+                text: "Post"
                 enabled: topicTitle.text.trim().length > 0 && topicBody.text.trim().length > 0
+                highlighted: enabled
                 onClicked: root.call(root.backend.createTopic(topicTitle.text, topicBody.text, topicAs.mode, topicAs.alias), function (r) {
                     if (root.result(r)) {
                         topicTitle.text = ""; topicBody.text = ""
@@ -359,6 +487,7 @@ Item {
 
     Dialog {
         id: accountsDialog
+        palette: root.palette
         background: Rectangle { color: root.panel; radius: 8; border.color: root.line }
         header: Text { text: accountsDialog.title; color: root.text; font.pixelSize: 16; font.bold: true; padding: 16 }
         title: "Accounts"
@@ -377,10 +506,12 @@ Item {
                 delegate: RowLayout {
                     Layout.fillWidth: true
                     Layout.maximumWidth: accountsDialog.availableWidth
-                    Label2 { text: (modelData.selected ? "● " : "○ ") + modelData.label }
+                    Label2 { text: modelData.label; font.bold: modelData.selected }
                     Dim { text: modelData.key + " · " + modelData.posts + " posts on this key"; Layout.fillWidth: true }
-                    Button { text: "Use"; enabled: !modelData.selected; onClicked: root.call(root.backend.selectAccount(modelData.label), root.plain) }
-                    Button { text: "Delete"; enabled: root.accounts.length > 1; onClicked: root.call(root.backend.deleteAccount(modelData.label), root.plain) }
+                    // Only the actions that do something are shown.
+                    Dim { visible: modelData.selected; text: "in use"; color: root.ok }
+                    Button { visible: !modelData.selected; text: "Use"; onClicked: root.call(root.backend.selectAccount(modelData.label), root.plain) }
+                    Button { visible: root.accounts.length > 1; text: "Delete"; onClicked: root.call(root.backend.deleteAccount(modelData.label), root.plain) }
                 }
             }
             RowLayout {

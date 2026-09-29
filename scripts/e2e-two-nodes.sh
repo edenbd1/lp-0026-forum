@@ -17,13 +17,23 @@ here=$(cd "$(dirname "$0")" && pwd)
 A=/tmp/forum-e2e-a B=/tmp/forum-e2e-b
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ui() { local pid=$1; shift; osascript -e "tell application \"System Events\" to tell (first process whose unix id is $pid)" -e "$*" -e "end tell"; }
+front() {  # bring a Basecamp to the front, and refuse to click anything else
+  ui "$1" 'set frontmost to true' > /dev/null
+  for _ in 1 2 3 4 5 6; do
+    [ "$(osascript -e 'tell application "System Events" to get unix id of first process whose frontmost is true')" = "$1" ] && return 0
+    sleep 0.5; ui "$1" 'set frontmost to true' > /dev/null
+  done
+  fail "Basecamp $1 is not in front; not clicking into another window"
+}
 click_ax() {  # real mouse click on an accessibility element: QML ignores AX presses
   local pos; pos=$(ui "$1" "get {position, size} of $2" 2> /dev/null | tr -d ' ') || return 1
   [ -n "$pos" ] || return 1
+  front "$1"
   IFS=, read -r x y w h <<< "$pos"
   cliclick "c:$((x + w / 2)),$((y + h / 2))"
 }
 click_in_window() {  # click_in_window <pid> <dx> <dy>: a point relative to the window's corner
+  front "$1"
   local pos; pos=$(ui "$1" 'get position of window 1' | tr -d ' '); IFS=, read -r x y <<< "$pos"
   cliclick "c:$((x + $2)),$((y + $3))"
 }
@@ -52,8 +62,9 @@ sleep 5
 # 1. A posts a topic
 ui "$pa" 'set frontmost to true' > /dev/null; sleep 0.5
 ui "$pa" 'click button "New topic" of group 1 of window 1' > /dev/null; sleep 1
-ui "$pa" 'set value of text field 1 of group 1 of window 1 to "Hello from node A"' > /dev/null
-ui "$pa" 'set value of text field 2 of group 1 of window 1 to "Signed by A, verified by B."' > /dev/null
+# Fields counted from the end: the topic search field comes first on screen.
+ui "$pa" 'set value of text field -2 of group 1 of window 1 to "Hello from node A"' > /dev/null
+ui "$pa" 'set value of text field -1 of group 1 of window 1 to "Signed by A, verified by B."' > /dev/null
 click_ax "$pa" 'button "Post" of group 1 of window 1'
 wait_for 60 "B received A's topic" bash -c "[ \"\$(sqlite3 $B/module_data/logos_forum/forum.db 'select count(*) from posts where kind=0')\" = 1 ]"
 [ "$(db $A 'select hex(author) from posts where kind=0')" = "$(db $B 'select hex(author) from posts where kind=0')" ] \
@@ -62,9 +73,9 @@ echo "ok   same author key on both nodes"
 
 # 2. B replies anonymously
 ui "$pb" 'set frontmost to true' > /dev/null; sleep 0.5
-click_in_window "$pb" 200 203   # the first row of the topic list
+click_in_window "$pb" 200 250   # the first row of the topic list (under the search field)
 sleep 1.5
-ui "$pb" 'set value of text field 1 of group 1 of window 1 to "An anonymous reply from B."' > /dev/null
+ui "$pb" 'set value of text field -1 of group 1 of window 1 to "An anonymous reply from B."' > /dev/null
 click_ax "$pb" 'menu button 2 of group 1 of window 1' 2> /dev/null || click_ax "$pb" 'menu button "Account 1" of group 1 of window 1'
 sleep 0.7
 osascript -e 'tell application "System Events" to key code 125' -e 'tell application "System Events" to key code 125' -e 'tell application "System Events" to key code 36'

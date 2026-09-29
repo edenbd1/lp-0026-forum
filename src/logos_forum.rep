@@ -14,7 +14,7 @@ class LogosForum
     // only to replicas already attached, so a backlog emitted during bootstrap
     // would reach no one. `postArrived` below tells the view when to pull again.
     //
-    // listTopics: [{id,title,body,author,authorKey,mode,ts,replies,last,mine,state}]
+    // listTopics: [{id,title,body,author,authorKey,mode,ts,replies,last,mine,state,unread}]
     //   most recently active first.
     // thread:     {topic:{…}, replies:[{…}]} with the same fields, oldest first;
     //   `topic` is null while only replies to it have arrived.
@@ -23,6 +23,9 @@ class LogosForum
     // `state` is "" once sent, or "sending" / "retrying" for our own posts.
     SLOT(QString listTopics())
     SLOT(QString thread(QString topicId))
+    // The user has read a topic up to now: it stops showing as new. Kept
+    // across restarts. `unread` in listTopics is activity after that point.
+    SLOT(QString markRead(QString topicId))
 
     // ── Accounts ──────────────────────────────────────────────────────────────
     // Accounts are Ed25519 keys kept in this install's store. Each slot returns

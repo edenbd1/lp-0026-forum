@@ -391,6 +391,10 @@ QString LogosForumBackend::listTopics() {
         QJsonObject o = postJson(t.topic, t.id, accounts_, outbox);
         o.insert("replies", t.replies);
         o.insert("last", static_cast<double>(t.last_activity_ms));
+        // New to this user: activity since they last opened the topic, and
+        // never for what they wrote themselves as the latest word.
+        const double seen = readUpTo_.value(q(t.id), readSince_);
+        o.insert("unread", static_cast<double>(t.last_activity_ms) > seen && !(o.value("mine").toBool() && t.replies == 0));
         out.append(o);
     }
     return dump(QJsonDocument(out));
@@ -408,6 +412,16 @@ QString LogosForumBackend::thread(QString topicId) {
     for (const auto& r : store_->replies(s(topicId))) replies.append(postJson(r, r.id(), accounts_, outbox));
     out.insert("replies", replies);
     return dump(QJsonDocument(out));
+}
+
+QString LogosForumBackend::markRead(QString topicId) {
+    if (!store_) return QString();
+    double last = 0;
+    for (const auto& t : store_->topics(s(forumName())))
+        if (q(t.id) == topicId) last = static_cast<double>(t.last_activity_ms);
+    readUpTo_.insert(topicId, last);
+    saveSettings();
+    return QString();
 }
 
 // ─── Accounts ───────────────────────────────────────────────────────────────
@@ -511,6 +525,16 @@ void LogosForumBackend::loadSettings() {
         storagePort_ = 20000 + static_cast<int>(QRandomGenerator::global()->bounded(20000));
         needSave = true;
     }
+    const QJsonObject read = o.value("readUpTo").toObject();
+    for (auto it = read.begin(); it != read.end(); ++it) readUpTo_.insert(it.key(), it.value().toDouble());
+    // A first launch has read nothing, and a forum full of "new" is noise:
+    // what was there before the first launch counts as seen, what comes after
+    // does not.
+    readSince_ = o.value("readSince").toDouble(0);
+    if (readSince_ <= 0) {
+        readSince_ = static_cast<double>(now_ms());
+        needSave = true;
+    }
     std::vector<std::string> peers;
     for (const auto& v : o.value("storePeers").toArray())
         if (!v.toString().isEmpty()) peers.push_back(s(v.toString()));
@@ -521,6 +545,12 @@ void LogosForumBackend::loadSettings() {
     if (needSave) saveSettings();
 }
 
+QJsonObject LogosForumBackend::readJson() const {
+    QJsonObject o;
+    for (auto it = readUpTo_.begin(); it != readUpTo_.end(); ++it) o.insert(it.key(), it.value());
+    return o;
+}
+
 void LogosForumBackend::saveSettings() {
     QJsonArray peers;
     const auto defaults = DeliveryTransport::default_store_peers();
@@ -529,7 +559,9 @@ void LogosForumBackend::saveSettings() {
     const QJsonObject o{{"rotateAfterPosts", static_cast<int>(rotation_.max_posts)},
                         {"rotateAfterDays", static_cast<int>(rotation_.max_age_ms / 86400000ull)},
                         {"storePeers", peers},
-                        {"storagePort", storagePort_}};
+                        {"storagePort", storagePort_},
+                        {"readUpTo", readJson()},
+                        {"readSince", readSince_}};
     QFile f(dataDir() + QStringLiteral("/settings.json"));
     if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) f.write(QJsonDocument(o).toJson());
 }
