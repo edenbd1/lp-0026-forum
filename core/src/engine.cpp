@@ -138,13 +138,27 @@ bool Engine::receive(const std::string& payload, uint64_t now_ms) {
             const int64_t theirs = int_at(a, "have");
             const size_t ours = store_.all(forum_).size();
             const bool quiet = !answered_ || now_ms >= last_answer_ms_ + kAnswerEveryMs;
-            if (on_history_wanted && quiet && theirs >= 0 && static_cast<size_t>(theirs) < ours) {
-                answered_ = true;
-                last_answer_ms_ = now_ms;
-                on_history_wanted(static_cast<size_t>(theirs));
+            const bool can = str_at(a, "via") == "delivery" || static_cast<bool>(on_history_wanted);
+            if (can && quiet && !pending_ && theirs >= 0 && static_cast<size_t>(theirs) < ours) {
+                HistoryRequest r;
+                r.id = str_at(a, "id").substr(0, 64);
+                r.have = static_cast<size_t>(theirs);
+                r.via_delivery = str_at(a, "via") == "delivery";
+                const int64_t since = int_at(a, "since");
+                r.since_ms = since > 0 ? static_cast<uint64_t>(since) : 0;
+                pending_ = r;
+                pending_due_ms_ = now_ms + (jitter ? jitter() : randombytes_uniform(kAnswerJitterMs));
             }
             return false;
         }
+        // History sent as bundles over Delivery: the snapshot format, carried
+        // inline. Every post in it is checked as if it had arrived alone.
+        if (a.is_object() && int_at(a, kSnapshotTag) == 1 && str_at(a, "forum") == forum_) {
+            stand_down(str_at(a, "re"));
+            return import_snapshot(payload, now_ms) > 0;
+        }
+        if (a.is_object() && int_at(a, kAnnounceTag) == 1 && str_at(a, "forum") == forum_)
+            stand_down(str_at(a, "re"));
         if (on_snapshot && a.is_object() && int_at(a, kAnnounceTag) == 1 && str_at(a, "forum") == forum_) {
             const std::string cid = str_at(a, "cid");
             const int64_t n = int_at(a, "posts");
@@ -208,14 +222,71 @@ int Engine::import_snapshot(const std::string& doc, uint64_t now_ms) {
     return added;
 }
 
-void Engine::request_history(uint64_t) {
-    net_.send(topic_, json{{kWantTag, 1}, {"forum", forum_}, {"have", store_.all(forum_).size()}}.dump());
+std::string Engine::request_history(uint64_t, bool via_delivery) {
+    uint8_t raw[8];
+    randombytes_buf(raw, sizeof raw);
+    const std::string id = to_hex(raw, sizeof raw);
+    json w{{kWantTag, 1}, {"forum", forum_}, {"have", store_.all(forum_).size()}, {"id", id}};
+    if (via_delivery) {
+        // Ask only for what is newer than what we hold, with an hour's margin
+        // for clocks and for posts that arrived out of order.
+        uint64_t newest = 0;
+        for (const auto& p : store_.all(forum_)) newest = std::max(newest, p.ts_ms);
+        w["via"] = "delivery";
+        w["since"] = newest > 3600000 ? newest - 3600000 : 0;
+    }
+    net_.send(topic_, w.dump());
+    return id;
 }
 
-void Engine::announce_snapshot(const std::string& cid, size_t posts, uint64_t) {
+void Engine::stand_down(const std::string& re) {
+    if (pending_ && !re.empty() && pending_->id == re) pending_.reset();  // someone else answered
+}
+
+void Engine::tick(uint64_t now_ms) {
+    if (!pending_ || now_ms < pending_due_ms_) return;
+    const HistoryRequest r = *pending_;
+    pending_.reset();
+    answered_ = true;
+    last_answer_ms_ = now_ms;
+    if (r.via_delivery) {
+        for (const auto& b : bundles(r.since_ms, r.id)) net_.send(topic_, b);
+    } else if (on_history_wanted) {
+        on_history_wanted(r);
+    }
+}
+
+std::vector<std::string> Engine::bundles(uint64_t since_ms, const std::string& re) const {
+    std::vector<Post> posts;
+    for (const auto& p : store_.all(forum_))
+        if (p.ts_ms >= since_ms) posts.push_back(p);
+    // The most recent first, so a cap keeps what a returning reader wants.
+    std::sort(posts.begin(), posts.end(), [](const Post& a, const Post& b) { return a.ts_ms > b.ts_ms; });
+    if (posts.size() > kMaxFallbackPosts) posts.resize(kMaxFallbackPosts);
+    std::vector<std::string> out;
+    json cur = json::array();
+    size_t bytes = 0;
+    auto flush = [&]() {
+        if (cur.empty()) return;
+        out.push_back(json{{kSnapshotTag, 1}, {"forum", forum_}, {"re", re}, {"posts", cur}}.dump());
+        cur = json::array();
+        bytes = 0;
+    };
+    for (const auto& p : posts) {
+        std::string e = encode(p);
+        if (bytes + e.size() > kBundleBytes) flush();
+        bytes += e.size() + 3;
+        cur.push_back(std::move(e));
+    }
+    flush();
+    return out;
+}
+
+void Engine::announce_snapshot(const std::string& cid, size_t posts, uint64_t, const std::string& re) {
     // Sent directly rather than through the outbox: an announcement that does
     // not go out is simply made again at the next snapshot.
     json a{{kAnnounceTag, 1}, {"forum", forum_}, {"cid", cid}, {"posts", posts}};
+    if (!re.empty()) a["re"] = re;
     if (!provider_peer_.empty()) {
         a["peer"] = provider_peer_;
         a["addrs"] = provider_addrs_;

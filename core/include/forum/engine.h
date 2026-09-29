@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -74,6 +75,16 @@ struct Announcement {
     std::vector<std::string> addrs;   // its multiaddrs
 };
 
+// A peer asking for history. `via_delivery` means Logos Storage did not work
+// for it (typically: both storage nodes behind NAT), so the answer has to come
+// as bundles on the forum's Delivery topic instead of a snapshot to download.
+struct HistoryRequest {
+    std::string id;        // lets the other peers see it has been answered
+    size_t have = 0;       // how many posts the asker holds
+    bool via_delivery = false;
+    uint64_t since_ms = 0; // the asker's newest post, less a margin
+};
+
 class Engine {
 public:
     Engine(Store& store, Transport& net, std::string forum);
@@ -122,7 +133,8 @@ public:
 
     // Announce a snapshot stored under `cid` on the forum's topic, so peers who
     // were away for longer than the network keeps history can fetch it.
-    void announce_snapshot(const std::string& cid, size_t posts, uint64_t now_ms);
+    // `re` names the history request this answers, so other peers stand down.
+    void announce_snapshot(const std::string& cid, size_t posts, uint64_t now_ms, const std::string& re = {});
     // Who to name as the snapshot's provider in announcements.
     void set_storage_provider(std::string peer, std::vector<std::string> addrs) {
         provider_peer_ = std::move(peer);
@@ -131,13 +143,30 @@ public:
 
     // Ask peers for history. The network's store nodes may keep nothing (the
     // logos.test fleet keeps no archive), so a node back from offline asks the
-    // forum itself: a peer holding more posts answers with a snapshot on Logos
-    // Storage (see on_history_wanted). Carries only a count, nothing identifying.
-    void request_history(uint64_t now_ms);
+    // forum itself. First through Logos Storage (a peer announces a snapshot);
+    // if that cannot be fetched, again with `via_delivery`, and a peer sends
+    // the posts themselves as bundles on the Delivery topic, which crosses NAT.
+    // Carries only a count and a timestamp, nothing identifying. Returns the id.
+    std::string request_history(uint64_t now_ms, bool via_delivery = false);
 
-    // A peer asked for history and holds fewer posts than we do. The embedder
-    // answers by announcing a snapshot. At most once per `kAnswerEveryMs`.
-    std::function<void(size_t their_posts)> on_history_wanted;
+    // A peer asked for history over Logos Storage and holds fewer posts than
+    // we do: the embedder answers with announce_snapshot(…, req.id).
+    // Delivery-path requests are answered by the engine itself.
+    //
+    // Nobody answers at once. Every peer that could answer waits a random
+    // 0…kAnswerJitterMs (call tick() to let the wait run out) and stands down
+    // if it sees another peer's answer to the same request first — so one
+    // newcomer costs the network one answer, not one per peer. A peer also
+    // answers at most once per kAnswerEveryMs.
+    std::function<void(const HistoryRequest&)> on_history_wanted;
+    void tick(uint64_t now_ms);
+    std::function<uint64_t()> jitter;  // default: uniform random in [0, kAnswerJitterMs)
+    static constexpr uint64_t kAnswerJitterMs = 3000;
+    // Delivery-path bundles: at most this many recent posts, in messages under
+    // the network's size limit (logos.test: 150 KiB).
+    static constexpr size_t kMaxFallbackPosts = 1000;
+    static constexpr size_t kBundleBytes = 100 * 1024;
+    std::vector<std::string> bundles(uint64_t since_ms, const std::string& re) const;
     static constexpr uint64_t kAnswerEveryMs = 30000;
 
     // Called for every new post, local or remote, after it is stored.
@@ -157,6 +186,9 @@ private:
     std::string forum_, topic_;
     RateLimiter limiter_{5, 20};
     uint64_t last_answer_ms_ = 0;
+    std::optional<HistoryRequest> pending_;
+    uint64_t pending_due_ms_ = 0;
+    void stand_down(const std::string& re);
     std::string provider_peer_;
     std::vector<std::string> provider_addrs_;
     bool answered_ = false;

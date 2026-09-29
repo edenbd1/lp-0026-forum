@@ -86,6 +86,7 @@ constexpr int kSubscribeRetryMs = 3000;
 constexpr size_t kUploadChunk = 48 * 1024;
 constexpr int kDownloadChunk = 64 * 1024;
 constexpr size_t kMaxSnapshotBytes = 32u * 1024 * 1024;
+constexpr int kDownloadWatchdogMs = 45000;
 
 } // namespace
 
@@ -145,12 +146,13 @@ void LogosForumBackend::bootstrap() {
         if (!request.empty()) inFlight_.insert(q(request), q(id));
     };
     engine_->on_snapshot = [this](const forum::Announcement& an) { fetchSnapshot(an); };
-    engine_->on_history_wanted = [this](size_t theirs) {
-        log("a peer with " + std::to_string(theirs) + " posts asked for history");
+    engine_->on_history_wanted = [this](const forum::HistoryRequest& r) {
+        log("answering a history request from a peer with " + std::to_string(r.have) + " posts");
+        answerRe_ = r.id;
         // Off the delivery event's call stack: answering calls back into modules.
         QTimer::singleShot(0, [this]() {
             if (!lastSnapshotCid_.empty() && postsAtLastSnapshot_ == store_->count())
-                engine_->announce_snapshot(lastSnapshotCid_, postsAtLastSnapshot_, now_ms());  // unchanged: same CID
+                engine_->announce_snapshot(lastSnapshotCid_, postsAtLastSnapshot_, now_ms(), answerRe_);  // unchanged: same CID
             else
                 saveSnapshot();
         });
@@ -200,8 +202,19 @@ void LogosForumBackend::wireDelivery() {
     d.on("messageReceived", [this](const QVariantList& data) {
         if (data.size() < 3 || !engine_) return;
         if (data.at(1).toString() != contentTopic()) return;  // another app's traffic
-        const bool fresh = engine_->receive(data.at(2).toByteArray().toStdString(), now_ms());
-        log(std::string("received ") + (fresh ? "a new post" : "a known or foreign message"));
+        const std::string payload = data.at(2).toByteArray().toStdString();
+        const size_t before = store_->count();
+        engine_->receive(payload, now_ms());
+        const size_t added = store_->count() - before;
+        if (payload.find("\"logos-forum-snapshot\"") != std::string::npos) {
+            log("received a history bundle: " + std::to_string(added) + " new");
+            if (added > 0) {
+                lastSnapshot_ = QStringLiteral("History from peers · %1 new").arg(added);
+                publishHistory();
+            }
+        } else {
+            log(std::string("received ") + (added ? "a new post" : "a known or foreign message"));
+        }
     });
     d.on("nodeStarted", [this](const QVariantList& data) {
         const bool up = !data.isEmpty() && data.at(0).toBool();
@@ -287,6 +300,7 @@ void LogosForumBackend::refreshStatus() {
 
 void LogosForumBackend::pump() {
     if (!engine_) return;
+    engine_->tick(now_ms());  // lets a pending history answer go out once its wait has passed
     if (engine_->pump(now_ms()) > 0 || outboxCount() != static_cast<int>(store_->outbox().size())) publishOutbox();
 }
 
@@ -686,6 +700,8 @@ void LogosForumBackend::wireStorage() {
             lastSnapshot_ = QStringLiteral("Loaded a snapshot · %1 new").arg(added);
             log("snapshot imported: " + std::to_string(added) + " new");
             publishHistory();
+        } else {
+            historyOverDelivery("snapshot download failed");
         }
         downloadBuf_.clear();
     });
@@ -773,7 +789,7 @@ void LogosForumBackend::finishUpload() {
         seenSnapshots_.insert(cid);  // our own; nothing to fetch
         postsAtLastSnapshot_ = uploadPosts_;
         lastSnapshotCid_ = cid;
-        QTimer::singleShot(0, [this, cid]() { engine_->announce_snapshot(cid, uploadPosts_, now_ms()); });
+        QTimer::singleShot(0, [this, cid]() { engine_->announce_snapshot(cid, uploadPosts_, now_ms(), answerRe_); });
         lastSnapshot_ = QStringLiteral("Snapshot %1 saved %2").arg(q(cid.substr(0, 10)) + QStringLiteral("…"), hhmm(now_ms()));
         log("snapshot saved as " + cid + " (" + std::to_string(uploadPosts_) + " posts)");
         publishHistory();
@@ -807,6 +823,19 @@ void LogosForumBackend::learnStorageIdentity() {
     });
 }
 
+void LogosForumBackend::historyOverDelivery(const char* why) {
+    // Logos Storage could not bring the snapshot here — typically two storage
+    // nodes behind NAT that cannot reach each other. Ask again, this time for
+    // the posts themselves on the Delivery topic, which crosses NAT. At most
+    // once a minute: the answer comes from whoever has it, not from retrying.
+    if (!engine_ || now_ms() < lastDeliveryAsk_ + 60000) return;
+    lastDeliveryAsk_ = now_ms();
+    engine_->request_history(now_ms(), /*via_delivery=*/true);
+    log(std::string(why) + ": asked peers to send history over Delivery");
+    lastSnapshot_ = QStringLiteral("Getting history from peers over Delivery…");
+    publishHistory();
+}
+
 void LogosForumBackend::fetchSnapshot(const forum::Announcement& an) {
     // One download at a time, each announced snapshot once.
     if (!downloadSession_.isEmpty() || seenSnapshots_.count(an.cid)) return;
@@ -823,12 +852,20 @@ void LogosForumBackend::fetchSnapshot(const forum::Announcement& an) {
                 log("snapshot " + cid + " unavailable: " + s(r.getError()));
                 downloadSession_.clear();
                 seenSnapshots_.erase(cid);  // a later announcement may succeed
-                lastSnapshot_ = QStringLiteral("A peer's snapshot was unavailable");
-                publishHistory();
+                historyOverDelivery("snapshot unavailable");
                 return;
             }
             downloadSession_ = r.getString();
         }, Timeout(120000));
+        // A download that never finishes is as good as a failed one.
+        QTimer::singleShot(kDownloadWatchdogMs, [this, cid]() {
+            if (downloadSession_ != q(cid)) return;
+            modules().storage_module.downloadCancelAsync(downloadSession_, [](LogosResult) {});
+            downloadSession_.clear();
+            downloadBuf_.clear();
+            seenSnapshots_.erase(cid);
+            historyOverDelivery("snapshot download timed out");
+        });
     };
     if (an.peer.empty()) {
         download();

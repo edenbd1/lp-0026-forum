@@ -74,6 +74,7 @@ private:
     void finishUpload();
     void failUpload(const QString& why);
     void fetchSnapshot(const forum::Announcement& an);
+    void historyOverDelivery(const char* why);
     void learnStorageIdentity();
 
     QString dataDir() const;
@@ -106,6 +107,8 @@ private:
     bool uploading_ = false;
     QString uploadSession_;
     std::string lastSnapshotCid_;
+    std::string answerRe_;          // the history request our next announcement answers
+    uint64_t lastDeliveryAsk_ = 0;
     std::string uploadDoc_;
     size_t uploadOffset_ = 0, uploadPosts_ = 0, postsAtLastSnapshot_ = 0;
     QString downloadSession_;

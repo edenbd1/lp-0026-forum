@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -318,12 +319,13 @@ TEST(a_node_back_from_offline_gets_history_from_a_peer_through_storage) {
     Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
     std::map<std::string, std::string> storage;
     int answers = 0;
-    ea.on_history_wanted = [&](size_t) {
+    ea.jitter = [] { return uint64_t{0}; };
+    ea.on_history_wanted = [&](const HistoryRequest& r) {
         ++answers;
         const std::string doc = ea.snapshot();
         const std::string cid = "cid-" + std::to_string(std::hash<std::string>{}(doc));
         storage[cid] = doc;
-        ea.announce_snapshot(cid, sa.count(), 0);
+        ea.announce_snapshot(cid, sa.count(), 0, r.id);
     };
     eb.on_snapshot = [&](const Announcement& an) {
         CHECK(an.peer == "16Uiu2-alice-storage" && an.addrs.size() == 1);   // B can dial A directly
@@ -339,11 +341,87 @@ TEST(a_node_back_from_offline_gets_history_from_a_peer_through_storage) {
     b.up = true;
     CHECK(eb.catch_up(40) == 0);                // store query: nothing
     eb.request_history(41);
-    CHECK(answers == 1 && sb.count() == 2 && sb.replies(t).size() == 1);
+    CHECK(answers == 0);                        // nobody answers at once…
+    ea.tick(41);
+    CHECK(answers == 1 && sb.count() == 2 && sb.replies(t).size() == 1);   // …but after the wait
     eb.request_history(42);                     // asked again at once: A stays quiet
+    ea.tick(42 + Engine::kAnswerJitterMs);
     CHECK(answers == 1);
-    ea.request_history(43);                     // A has more than B claims? no: B has as many, so B stays quiet
+    ea.request_history(43);                     // B holds as many as A claims: B stays quiet
+    eb.tick(43 + Engine::kAnswerJitterMs);
     CHECK(answers == 1);
+}
+
+TEST(one_newcomer_costs_one_answer_not_one_per_peer) {
+    // Five peers hold the forum; a newcomer asks. Each peer waits a different
+    // time; the first to answer is seen by the rest, who stand down.
+    Bus bus; std::vector<std::unique_ptr<FakeNet>> nets; std::vector<std::unique_ptr<Store>> stores;
+    std::vector<std::unique_ptr<Engine>> peers;
+    Account alice{"alice", Keypair::generate()};
+    Post shared = author_as(alice, topic("shared history"));
+    int answers = 0;
+    for (int i = 0; i < 5; ++i) {
+        nets.push_back(std::make_unique<FakeNet>(bus));
+        stores.push_back(std::make_unique<Store>(":memory:"));
+        peers.push_back(std::make_unique<Engine>(*stores.back(), *nets.back(), "Logos Forum"));
+        nets.back()->engine = peers.back().get();
+        stores.back()->put(shared, 1);
+        Engine* e = peers.back().get();
+        e->jitter = [i] { return uint64_t(500 * (i + 1)); };
+        e->on_history_wanted = [&answers, e](const HistoryRequest& r) { ++answers; e->announce_snapshot("cid-x", 1, 0, r.id); };
+    }
+    FakeNet nn(bus); Store sn(":memory:"); Engine newcomer(sn, nn, "Logos Forum"); nn.engine = &newcomer;
+    newcomer.request_history(1000);
+    for (uint64_t t = 1000; t <= 1000 + Engine::kAnswerJitterMs; t += 100)
+        for (auto& p : peers) p->tick(t);
+    CHECK(answers == 1);
+}
+
+TEST(history_crosses_nat_over_delivery_when_storage_cannot) {
+    // B could not fetch A's snapshot (their storage nodes cannot reach each
+    // other), so it asks again via Delivery: A sends the posts themselves, in
+    // bundles under the network's message size, and B checks every one.
+    Bus bus; FakeNet a(bus), b(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
+    ea.jitter = [] { return uint64_t{0}; };
+    Account alice{"alice", Keypair::generate()};
+    b.up = false;
+    const std::string big(900, 'x');
+    for (int i = 0; i < 300; ++i) ea.post_topic(&alice, "t" + std::to_string(i), big, "", 1000 + i);
+    for (uint64_t t = 1000; sa.outbox().size(); t += 60000) ea.pump(t);
+    bus.log.clear();
+    b.up = true;
+    const size_t before = bus.log.size();
+    eb.request_history(5000000, /*via_delivery=*/true);
+    ea.tick(5000000);
+    CHECK(sb.count() == 300);                                   // everything arrived
+    size_t bundles = 0, largest = 0;
+    for (size_t i = before; i < bus.log.size(); ++i)
+        if (bus.log[i].find("logos-forum-snapshot\"") != std::string::npos) { ++bundles; largest = std::max(largest, bus.log[i].size()); }
+    CHECK(bundles >= 3 && largest < 150 * 1024);               // split under the network's limit
+    // A forged post inside a bundle is dropped like any other.
+    Post forged = author_as(alice, topic("forged")); forged.body = "edited";
+    auto doc = nlohmann::json::parse(ea.bundles(0, "r")[0]);
+    doc["posts"].push_back(encode(forged));
+    CHECK(!eb.receive(doc.dump(), 6000000) && sb.count() == 300);
+}
+
+TEST(a_returning_node_asks_only_for_what_is_newer) {
+    Bus bus; FakeNet a(bus), b(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
+    ea.jitter = [] { return uint64_t{0}; };
+    Account alice{"alice", Keypair::generate()};
+    const std::string old_t = ea.post_topic(&alice, "old", "b", "", 1000);
+    ea.pump(1000);                                              // B has this one
+    b.up = false;
+    ea.post_topic(&alice, "new", "b", "", 10'000'000);
+    ea.pump(10'000'000);
+    b.up = true;
+    eb.request_history(10'000'100, true);
+    ea.tick(10'000'100);
+    CHECK(sb.count() == 2 && sb.has(old_t));
+    CHECK(ea.bundles(10'000'000 - 3600000, "r").size() == 1 &&
+          nlohmann::json::parse(ea.bundles(10'000'000 - 3600000, "r")[0])["posts"].size() == 1);  // only the new one
 }
 
 TEST(mistyped_traffic_is_ignored_not_fatal) {
