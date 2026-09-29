@@ -58,7 +58,7 @@ Item {
     palette.highlightedText: "#ffffff"
     palette.placeholderText: dim
     palette.mid: line
-    palette.dark: accentStrong
+    palette.dark: accent          // combo-box arrows, same light orange as the bullets
     palette.light: raised
     palette.midlight: line
     palette.shadow: "#000000"
@@ -203,39 +203,33 @@ Item {
         }
     }
 
-    // The main action button: the icon's gradient cropped to a strip (red
-    // core on the left, warming to terracotta), a soft top sheen and a light
-    // rim, with the same 6 px corners as every other control. Drawn natively
-    // so the rounded corners clip it.
+    // The main action button: a dark button outlined in the icon's gradient
+    // (red core to gold corner), with warm orange text. The rim is a gradient
+    // rectangle showing 2 px around an inset dark fill.
     component AccentButton: Button {
         id: ab
         contentItem: Text {
-            text: ab.text; font: ab.font; color: ab.enabled ? "#ffffff" : root.dim
+            text: ab.text; font: ab.font
+            color: ab.enabled ? (ab.hovered ? "#f7a370" : "#f28a55") : root.dim
             horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
         }
         background: Rectangle {
             implicitWidth: 100; implicitHeight: 40
-            radius: 6
-            color: root.raised
-            gradient: ab.enabled ? accentFill : null
-            border.width: ab.enabled ? 1 : 0
-            border.color: Qt.rgba(1, 1, 1, 0.18)
-            opacity: ab.down ? 0.85 : 1.0
+            radius: 7
+            color: root.line
+            opacity: ab.down ? 0.8 : 1.0
+            gradient: ab.enabled ? rim : null
             Gradient {
-                id: accentFill
+                id: rim
                 orientation: Gradient.Horizontal
-                GradientStop { position: 0.0;  color: "#e5391a" }
-                GradientStop { position: 0.45; color: "#e2502f" }
-                GradientStop { position: 0.8;  color: "#df6c48" }
-                GradientStop { position: 1.0;  color: "#e28a5c" }
+                GradientStop { position: 0.0;  color: "#e92203" }
+                GradientStop { position: 0.35; color: "#e5391a" }
+                GradientStop { position: 0.65; color: "#df6c48" }
+                GradientStop { position: 1.0;  color: "#ecb158" }
             }
-            Rectangle {   // sheen
-                visible: ab.enabled
-                anchors.fill: parent; anchors.margins: 1; radius: 5
-                gradient: Gradient {
-                    GradientStop { position: 0.0;  color: Qt.rgba(1, 1, 1, ab.hovered ? 0.22 : 0.16) }
-                    GradientStop { position: 0.55; color: Qt.rgba(1, 1, 1, 0) }
-                }
+            Rectangle {   // the dark fill inside the rim
+                anchors.fill: parent; anchors.margins: 2; radius: 5
+                color: ab.hovered && ab.enabled ? "#262028" : root.panel
             }
         }
     }
