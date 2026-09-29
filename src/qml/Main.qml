@@ -322,22 +322,28 @@ Item {
         RowLayout {
             Layout.fillWidth: true
             spacing: 12
+            // Takes what the right-hand controls leave and elides, so a narrow
+            // window shrinks the header instead of pushing the controls off-screen.
             ColumnLayout {
+                Layout.fillWidth: true; Layout.minimumWidth: 0
                 spacing: 0
                 RowLayout {
+                    Layout.fillWidth: true
                     spacing: 8
-                    Text { text: root.forumName; color: root.text; font.pixelSize: 20; font.bold: true }
-                    Dim { text: "v" + root.appVersion }
+                    Text { Layout.maximumWidth: implicitWidth; Layout.fillWidth: true; elide: Text.ElideRight
+                           text: root.forumName; color: root.text; font.pixelSize: 20; font.bold: true }
+                    Dim { text: "v" + root.appVersion; wrapMode: Text.NoWrap }
+                    Item { Layout.fillWidth: true }
                 }
-                Dim { text: "No server · every post signed and verified · Logos Delivery + Logos Storage" }
+                Dim { Layout.fillWidth: true; wrapMode: Text.NoWrap; elide: Text.ElideRight
+                      text: "No server · every post signed and verified · Logos Delivery + Logos Storage" }
             }
-            Item { Layout.fillWidth: true }
             Rectangle {
                 width: 8; height: 8; radius: 4
                 color: root.status === "Connected" ? root.ok
                      : root.status.indexOf("fail") >= 0 ? "#e5484d" : root.warn
             }
-            Dim { text: root.status }
+            Dim { text: root.status; wrapMode: Text.NoWrap }
             Dim { visible: root.outboxCount > 0; color: root.warn
                   text: root.outboxCount + " waiting to send" }
             AppCombo {
