@@ -1,0 +1,17 @@
+{
+  "_note": "Basecamp 0.3.0 and logos-module-builder read metadata.json, not this file. This module.json only mirrors it for tools that look for the older name; metadata.json is the source of truth.",
+  "source_of_truth": "metadata.json",
+  "name": "logos_forum",
+  "display_name": "Logos Forum",
+  "version": "0.1.8",
+  "type": "ui_qml",
+  "category": "social",
+  "description": "A forum with no server. Topics and replies travel over Logos Messaging (Logos Delivery), history is kept on this device and on Logos Storage, and every post is signed and verified on arrival. Post as an account, under an alias, or anonymously.",
+  "icon": "assets/icon.png",
+  "view": "qml/Main.qml",
+  "main": "logos_forum_plugin",
+  "dependencies": [
+    "delivery_module",
+    "storage_module"
+  ]
+}

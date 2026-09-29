@@ -26,6 +26,16 @@ jobs:
       - name: Dependencies (macOS)
         if: runner.os == 'macOS'
         run: brew install libsodium sqlite nlohmann-json pkg-config
+      - name: module.json mirrors metadata.json
+        if: runner.os == 'Linux'
+        run: |
+          python3 - <<'PY'
+          import json
+          m = json.load(open("metadata.json")); j = json.load(open("module.json"))
+          bad = [k for k in j if k not in ("_note", "source_of_truth") and j[k] != m.get(k)]
+          assert not bad, f"module.json differs from metadata.json on: {bad}"
+          print("module.json matches metadata.json")
+          PY
       - name: Build
         run: cmake -S core -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
       - name: Test
