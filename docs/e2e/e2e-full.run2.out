@@ -1,0 +1,27 @@
+forum: e2e-full-1790718445
+ok   four nodes joined the forum
+ok   forum-full-b received Alice's topic
+ok   forum-full-c received Alice's topic
+ok   forum-full-d received Alice's topic
+ok   the topic carries Alice's key on every node
+ok   forum-full-a received Bob's alias reply
+ok   forum-full-c received Bob's alias reply
+ok   forum-full-d received Bob's alias reply
+ok   the alias reply shows as Ghost and is signed by Bob's key
+ok   forum-full-a received both anonymous replies
+ok   forum-full-b received both anonymous replies
+ok   forum-full-d received both anonymous replies
+ok   the two anonymous replies have two unrelated keys, none of C's
+ok   b received Alice2's topic
+ok   the second account signs with a key unrelated to the first
+ok   b received the post made after rotation
+ok   after rotation, posts carry the new key and nothing links it to the old one
+ok   the offline post waits in D's outbox and reached no one
+ok   forum-full-a received D's offline post after D reconnected
+ok   forum-full-b received D's offline post after D reconnected
+ok   forum-full-c received D's offline post after D reconnected
+ok   D's outbox emptied once the network confirmed it
+ok   the newcomer recovered all 7 posts
+ok   the newcomer holds exactly the same posts as A
+PASS (24 checks)
+exit=0

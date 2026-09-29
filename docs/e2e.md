@@ -4,7 +4,7 @@
 
 [`scripts/e2e-full.sh`](../scripts/e2e-full.sh) runs five Basecamp nodes on
 logos.test on a forum of its own, drives each through the forum's interface
-and checks every node's store ([run](e2e/e2e-full.run1.out)):
+and checks every node's store. Two consecutive runs, both 24/24: [run 1](e2e/e2e-full.run1.out), [run 2](e2e/e2e-full.run2.out).
 
 | Who | What | Checked on the other nodes |
 |---|---|---|
