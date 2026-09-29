@@ -203,6 +203,25 @@ Item {
         }
     }
 
+    // The main action button, filled with the icon's own gradient (red core,
+    // gold corner) so the app and its tile read as one thing.
+    component AccentButton: Button {
+        id: ab
+        contentItem: Text {
+            text: ab.text; font: ab.font; color: ab.enabled ? "#ffffff" : root.dim
+            horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+        }
+        background: Rectangle {
+            implicitWidth: 100; implicitHeight: 40
+            radius: 6; clip: true
+            color: ab.enabled ? "transparent" : root.raised
+            Image {
+                anchors.fill: parent; source: "accent.png"; fillMode: Image.Stretch
+                visible: ab.enabled; opacity: ab.down ? 0.85 : (ab.hovered ? 1.0 : 0.95)
+            }
+        }
+    }
+
     // Choose how to sign the next post.
     component SignAs: RowLayout {
         property alias mode: modeBox.currentIndex
@@ -301,7 +320,7 @@ Item {
                         Item { Layout.fillWidth: true }
                         Button { text: "↻"; onClicked: root.call(root.backend.catchUp(), function () { root.refreshTopics() })
                                  ToolTip.visible: hovered; ToolTip.text: "Fetch what was posted while you were away" }
-                        Button { text: "New topic"; highlighted: true; onClicked: newTopic.open() }
+                        AccentButton { text: "New topic"; onClicked: newTopic.open() }
                     }
                     TextField {
                         Layout.fillWidth: true
@@ -379,7 +398,7 @@ Item {
                         }
                     }
                     Dim { Layout.fillWidth: true; text: "Pick a topic on the left, or start one." }
-                    Button { text: "New topic"; highlighted: true; onClicked: newTopic.open() }
+                    AccentButton { text: "New topic"; onClicked: newTopic.open() }
                 }
 
                 ColumnLayout {
@@ -426,10 +445,9 @@ Item {
                             SignAs { id: replyAs; Layout.fillWidth: true }
                             Dim { visible: replyBody.length > 16000; color: replyBody.length > 20000 ? "#e5484d" : root.dim
                                   text: replyBody.length + " / 20000" }
-                            Button {
+                            AccentButton {
                                 text: "Reply"
                                 enabled: replyBody.text.trim().length > 0
-                                highlighted: enabled   // an accent-coloured button that cannot be pressed reads as broken
                                 onClicked: root.call(root.backend.reply(root.openId, replyBody.text, replyAs.mode, replyAs.alias), function (r) {
                                     if (root.result(r)) {
                                         replyBody.text = ""
@@ -469,11 +487,10 @@ Item {
                   color: topicBody.length > 20000 ? "#e5484d" : root.dim
                   text: "title " + topicTitle.length + " / 200 · body " + topicBody.length + " / 20000" }
             SignAs { id: topicAs; Layout.fillWidth: true }
-            Button {
+            AccentButton {
                 Layout.alignment: Qt.AlignRight
                 text: "Post"
                 enabled: topicTitle.text.trim().length > 0 && topicBody.text.trim().length > 0
-                highlighted: enabled
                 onClicked: root.call(root.backend.createTopic(topicTitle.text, topicBody.text, topicAs.mode, topicAs.alias), function (r) {
                     if (root.result(r)) {
                         topicTitle.text = ""; topicBody.text = ""
