@@ -289,7 +289,7 @@ Item {
         AppCombo {
             id: modeBox
             model: [root.myLabel || "My account", "Alias", "Anonymous"]
-            implicitWidth: 150
+            implicitWidth: 132
         }
         AppField {
             id: aliasField
