@@ -39,6 +39,7 @@ Item {
     readonly property color text: "#e7e9ee"
     readonly property color dim: "#8b93a1"
     readonly property color accent: "#f5925e"      // Logos orange, light: text and markers
+    readonly property color focusRing: "#f7b58a"      // light orange: the border of the field being typed in
     readonly property color accentStrong: "#e2552b"   // Logos orange: buttons and selection
     readonly property color ok: "#4cc38a"
     readonly property color warn: "#f2c14e"          // amber, kept apart from the orange accent
@@ -110,6 +111,11 @@ Item {
         var y = new Date(root.now - 86400000)
         if (d.toDateString() === y.toDateString()) return "yesterday " + Qt.formatTime(d, "HH:mm")
         return d.getFullYear() === n.getFullYear() ? Qt.formatDate(d, "d MMM") : Qt.formatDate(d, "d MMM yyyy")
+    }
+    // "3694648d…f586b945" -> "3694…b945", the way wallets show an address.
+    function shortKey(k) {
+        var h = (k || "").replace("…", "")
+        return h.length > 10 ? h.substring(0, 4) + "…" + h.substring(h.length - 4) : h
     }
     function exact(ms) { return Qt.formatDateTime(new Date(ms), "d MMM yyyy, HH:mm") }
     function result(r) {
@@ -203,14 +209,14 @@ Item {
         }
     }
 
-    // The main action button: a dark button outlined in the icon's gradient
-    // (red core to gold corner), with warm orange text. The rim is a gradient
-    // rectangle showing 2 px around an inset dark fill.
+    // The main action button: a dark button outlined in a bright version of
+    // the icon's gradient (orange to gold), with white text.
     component AccentButton: Button {
         id: ab
+        HoverHandler { cursorShape: ab.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor }
         contentItem: Text {
             text: ab.text; font: ab.font
-            color: ab.enabled ? (ab.hovered ? "#f7a370" : "#f28a55") : root.dim
+            color: ab.enabled ? "#ffffff" : root.dim
             horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
         }
         background: Rectangle {
@@ -222,14 +228,26 @@ Item {
             Gradient {
                 id: rim
                 orientation: Gradient.Horizontal
-                GradientStop { position: 0.0;  color: "#e92203" }
-                GradientStop { position: 0.35; color: "#e5391a" }
-                GradientStop { position: 0.65; color: "#df6c48" }
-                GradientStop { position: 1.0;  color: "#ecb158" }
+                GradientStop { position: 0.0; color: "#ee5a2c" }
+                GradientStop { position: 0.1; color: "#f07a42" }
+                GradientStop { position: 0.55; color: "#f29a58" }
+                GradientStop { position: 1.0; color: "#f3c46c" }
             }
-            Rectangle {   // the dark fill inside the rim
+            Rectangle {
                 anchors.fill: parent; anchors.margins: 2; radius: 5
-                color: ab.hovered && ab.enabled ? "#262028" : root.panel
+                color: root.panel
+            }
+            Rectangle {
+                visible: ab.enabled && 0.0 > 0
+                anchors.fill: parent; anchors.margins: 2; radius: 5
+                opacity: 0.0
+                gradient: Gradient {
+                    orientation: Gradient.Horizontal
+                GradientStop { position: 0.0; color: "#ee5a2c" }
+                GradientStop { position: 0.1; color: "#f07a42" }
+                GradientStop { position: 0.55; color: "#f29a58" }
+                GradientStop { position: 1.0; color: "#f3c46c" }
+                }
             }
         }
     }
@@ -238,10 +256,11 @@ Item {
     component AppField: TextField {
         id: tf
         color: root.text; placeholderTextColor: root.dim
-        background: Rectangle { implicitHeight: 40; radius: 6; color: root.bg; border.color: tf.activeFocus ? root.accentStrong : root.line }
+        background: Rectangle { implicitHeight: 40; radius: 6; color: root.bg; border.color: tf.activeFocus ? root.focusRing : root.line }
     }
     component AppCombo: ComboBox {
         id: cb
+        HoverHandler { cursorShape: cb.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor }
         background: Rectangle { implicitWidth: 120; implicitHeight: 40; radius: 6; color: cb.down ? root.line : root.raised; border.width: 1; border.color: Qt.rgba(1, 1, 1, 0.06) }
         popup.palette: root.palette
     }
@@ -249,13 +268,14 @@ Item {
     // Every other button: the same 6 px corners, raised grey.
     component AppButton: Button {
         id: nb
+        HoverHandler { cursorShape: nb.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor }
         contentItem: Text {
             text: nb.text; font: nb.font; color: nb.enabled ? root.text : root.dim
             horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
         }
         background: Rectangle {
             implicitWidth: 80; implicitHeight: 40; radius: 6
-            color: nb.down ? root.line : (nb.hovered ? "#262b33" : root.raised)
+            color: nb.down ? root.line : root.raised
             border.width: 1; border.color: Qt.rgba(1, 1, 1, 0.06)
         }
     }
@@ -268,21 +288,26 @@ Item {
         Dim { text: "Post as" }
         AppCombo {
             id: modeBox
-            model: [root.myLabel || "account", "alias", "anonymous"]
+            model: [root.myLabel || "My account", "Alias", "Anonymous"]
             implicitWidth: 150
         }
         AppField {
             id: aliasField
             visible: modeBox.currentIndex === 1
-            placeholderText: "alias"
+            placeholderText: "Name to show"
             maximumLength: 40
-            implicitWidth: 140
+            implicitWidth: 150
         }
+        // What the others will see, and what it means for privacy. The label
+        // ("Account 1") is local; peers only ever see the key.
         Dim {
             Layout.fillWidth: true
-            text: modeBox.currentIndex === 2 ? "A key made for this post only, then wiped."
-                : modeBox.currentIndex === 1 ? "Signed by " + root.myLabel + ", shown under the alias."
-                : "Signed by " + root.myLabel + " (" + root.myKey + ")."
+            elide: Text.ElideRight; maximumLineCount: 1
+            text: modeBox.currentIndex === 2
+                ? "Shown as “anonymous”. One-time key: can’t be linked to you."
+                : modeBox.currentIndex === 1
+                ? "Shown as “" + (aliasField.text.trim() || "…") + "”, signed by your key."
+                : "Others see your key " + root.shortKey(root.myKey) + ". Your posts are linked."
         }
     }
 
@@ -317,8 +342,8 @@ Item {
                   text: root.outboxCount + " waiting to send" }
             AppCombo {
                 id: accountBox
-                implicitWidth: 170
-                    model: root.accounts.map(function (a) { return a.label + "  " + a.key })
+                implicitWidth: 200
+                    model: root.accounts.map(function (a) { return a.label + " · " + root.shortKey(a.key) })
                 currentIndex: root.accounts.findIndex(function (a) { return a.selected })
                 onActivated: function (i) { root.call(root.backend.selectAccount(root.accounts[i].label), root.plain) }
             }
@@ -372,7 +397,7 @@ Item {
                             height: col.implicitHeight + 16
                             radius: 4
                             color: modelData.id === root.openId ? root.line : "transparent"
-                            MouseArea { anchors.fill: parent; onClicked: root.openThread(modelData.id) }
+                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.openThread(modelData.id) }
                             ColumnLayout {
                                 id: col
                                 anchors.left: parent.left; anchors.right: parent.right
@@ -474,7 +499,7 @@ Item {
                             Layout.fillWidth: true; Layout.preferredHeight: 80
                             placeholderText: "Write a reply"; wrapMode: TextArea.Wrap
                             color: root.text; placeholderTextColor: root.dim
-                            background: Rectangle { color: root.bg; radius: 6; border.color: replyBody.activeFocus ? root.accentStrong : root.line }
+                            background: Rectangle { color: root.bg; radius: 6; border.color: replyBody.activeFocus ? root.focusRing : root.line }
                         }
                         RowLayout {
                             Layout.fillWidth: true
@@ -518,7 +543,7 @@ Item {
             AppField { id: topicTitle; Layout.fillWidth: true; placeholderText: "Title"; maximumLength: 200 }
             TextArea { id: topicBody; Layout.fillWidth: true; Layout.preferredHeight: 160; placeholderText: "What do you want to say?"; wrapMode: TextArea.Wrap
                             color: root.text; placeholderTextColor: root.dim
-                            background: Rectangle { color: root.bg; radius: 6; border.color: topicBody.activeFocus ? root.accentStrong : root.line } }
+                            background: Rectangle { color: root.bg; radius: 6; border.color: topicBody.activeFocus ? root.focusRing : root.line } }
             Dim { Layout.alignment: Qt.AlignRight; visible: topicBody.length > 16000 || topicTitle.length > 160
                   color: topicBody.length > 20000 ? "#e5484d" : root.dim
                   text: "title " + topicTitle.length + " / 200 · body " + topicBody.length + " / 20000" }
@@ -560,7 +585,7 @@ Item {
                     Layout.fillWidth: true
                     Layout.maximumWidth: accountsDialog.availableWidth
                     Label2 { text: modelData.label; font.bold: modelData.selected }
-                    Dim { text: modelData.key + " · " + modelData.posts + " posts on this key"; Layout.fillWidth: true }
+                    Dim { text: root.shortKey(modelData.key) + " · " + modelData.posts + " posts on this key"; Layout.fillWidth: true }
                     // Only the actions that do something are shown.
                     Dim { visible: modelData.selected; text: "in use"; color: root.ok }
                     AppButton { visible: !modelData.selected; text: "Use"; onClicked: root.call(root.backend.selectAccount(modelData.label), root.plain) }
