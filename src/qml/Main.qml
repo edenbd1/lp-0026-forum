@@ -203,8 +203,10 @@ Item {
         }
     }
 
-    // The main action button, filled with the icon's own gradient (red core,
-    // gold corner) so the app and its tile read as one thing.
+    // The main action button: the icon's gradient cropped to a strip (red
+    // core on the left, warming to terracotta), a soft top sheen and a light
+    // rim, with the same 6 px corners as every other control. Drawn natively
+    // so the rounded corners clip it.
     component AccentButton: Button {
         id: ab
         contentItem: Text {
@@ -213,12 +215,54 @@ Item {
         }
         background: Rectangle {
             implicitWidth: 100; implicitHeight: 40
-            radius: 6; clip: true
-            color: ab.enabled ? "transparent" : root.raised
-            Image {
-                anchors.fill: parent; source: "accent.png"; fillMode: Image.Stretch
-                visible: ab.enabled; opacity: ab.down ? 0.85 : (ab.hovered ? 1.0 : 0.95)
+            radius: 6
+            color: root.raised
+            gradient: ab.enabled ? accentFill : null
+            border.width: ab.enabled ? 1 : 0
+            border.color: Qt.rgba(1, 1, 1, 0.18)
+            opacity: ab.down ? 0.85 : 1.0
+            Gradient {
+                id: accentFill
+                orientation: Gradient.Horizontal
+                GradientStop { position: 0.0;  color: "#e5391a" }
+                GradientStop { position: 0.45; color: "#e2502f" }
+                GradientStop { position: 0.8;  color: "#df6c48" }
+                GradientStop { position: 1.0;  color: "#e28a5c" }
             }
+            Rectangle {   // sheen
+                visible: ab.enabled
+                anchors.fill: parent; anchors.margins: 1; radius: 5
+                gradient: Gradient {
+                    GradientStop { position: 0.0;  color: Qt.rgba(1, 1, 1, ab.hovered ? 0.22 : 0.16) }
+                    GradientStop { position: 0.55; color: Qt.rgba(1, 1, 1, 0) }
+                }
+            }
+        }
+    }
+
+    // Fields and pickers: the same 6 px corners and dark fill as the text areas.
+    component AppField: TextField {
+        id: tf
+        color: root.text; placeholderTextColor: root.dim
+        background: Rectangle { implicitHeight: 40; radius: 6; color: root.bg; border.color: tf.activeFocus ? root.accentStrong : root.line }
+    }
+    component AppCombo: ComboBox {
+        id: cb
+        background: Rectangle { implicitWidth: 120; implicitHeight: 40; radius: 6; color: cb.down ? root.line : root.raised; border.width: 1; border.color: Qt.rgba(1, 1, 1, 0.06) }
+        popup.palette: root.palette
+    }
+
+    // Every other button: the same 6 px corners, raised grey.
+    component AppButton: Button {
+        id: nb
+        contentItem: Text {
+            text: nb.text; font: nb.font; color: nb.enabled ? root.text : root.dim
+            horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+        }
+        background: Rectangle {
+            implicitWidth: 80; implicitHeight: 40; radius: 6
+            color: nb.down ? root.line : (nb.hovered ? "#262b33" : root.raised)
+            border.width: 1; border.color: Qt.rgba(1, 1, 1, 0.06)
         }
     }
 
@@ -228,13 +272,12 @@ Item {
         property alias alias: aliasField.text
         spacing: 8
         Dim { text: "Post as" }
-        ComboBox {
+        AppCombo {
             id: modeBox
             model: [root.myLabel || "account", "alias", "anonymous"]
             implicitWidth: 150
-            popup.palette: root.palette
         }
-        TextField {
+        AppField {
             id: aliasField
             visible: modeBox.currentIndex === 1
             placeholderText: "alias"
@@ -278,15 +321,14 @@ Item {
             Dim { text: root.status }
             Dim { visible: root.outboxCount > 0; color: root.warn
                   text: root.outboxCount + " waiting to send" }
-            ComboBox {
+            AppCombo {
                 id: accountBox
                 implicitWidth: 170
-                popup.palette: root.palette
-                model: root.accounts.map(function (a) { return a.label + "  " + a.key })
+                    model: root.accounts.map(function (a) { return a.label + "  " + a.key })
                 currentIndex: root.accounts.findIndex(function (a) { return a.selected })
                 onActivated: function (i) { root.call(root.backend.selectAccount(root.accounts[i].label), root.plain) }
             }
-            Button { text: "Accounts…"; onClicked: accountsDialog.open() }
+            AppButton { text: "Accounts…"; onClicked: accountsDialog.open() }
         }
         Dim { Layout.fillWidth: true; text: root.historyStatus }
         Text {
@@ -318,11 +360,11 @@ Item {
                                    text: root.unreadCount + " new" }
                         }
                         Item { Layout.fillWidth: true }
-                        Button { text: "↻"; onClicked: root.call(root.backend.catchUp(), function () { root.refreshTopics() })
+                        AppButton { text: "↻"; onClicked: root.call(root.backend.catchUp(), function () { root.refreshTopics() })
                                  ToolTip.visible: hovered; ToolTip.text: "Fetch what was posted while you were away" }
                         AccentButton { text: "New topic"; onClicked: newTopic.open() }
                     }
-                    TextField {
+                    AppField {
                         Layout.fillWidth: true
                         placeholderText: "Search topics"
                         onTextChanged: root.search = text
@@ -438,7 +480,7 @@ Item {
                             Layout.fillWidth: true; Layout.preferredHeight: 80
                             placeholderText: "Write a reply"; wrapMode: TextArea.Wrap
                             color: root.text; placeholderTextColor: root.dim
-                            background: Rectangle { color: root.bg; radius: 4; border.color: replyBody.activeFocus ? root.accentStrong : root.line }
+                            background: Rectangle { color: root.bg; radius: 6; border.color: replyBody.activeFocus ? root.accentStrong : root.line }
                         }
                         RowLayout {
                             Layout.fillWidth: true
@@ -474,15 +516,15 @@ Item {
         width: Math.min(640, root.width - 40)
         footer: Item {
             implicitHeight: 56
-            Button { anchors.right: parent.right; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter
+            AppButton { anchors.right: parent.right; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter
                      text: "Cancel"; onClicked: newTopic.close() }
         }
         ColumnLayout {
             anchors.fill: parent; spacing: 8
-            TextField { id: topicTitle; Layout.fillWidth: true; placeholderText: "Title"; maximumLength: 200 }
+            AppField { id: topicTitle; Layout.fillWidth: true; placeholderText: "Title"; maximumLength: 200 }
             TextArea { id: topicBody; Layout.fillWidth: true; Layout.preferredHeight: 160; placeholderText: "What do you want to say?"; wrapMode: TextArea.Wrap
                             color: root.text; placeholderTextColor: root.dim
-                            background: Rectangle { color: root.bg; radius: 4; border.color: topicBody.activeFocus ? root.accentStrong : root.line } }
+                            background: Rectangle { color: root.bg; radius: 6; border.color: topicBody.activeFocus ? root.accentStrong : root.line } }
             Dim { Layout.alignment: Qt.AlignRight; visible: topicBody.length > 16000 || topicTitle.length > 160
                   color: topicBody.length > 20000 ? "#e5484d" : root.dim
                   text: "title " + topicTitle.length + " / 200 · body " + topicBody.length + " / 20000" }
@@ -512,7 +554,7 @@ Item {
         width: Math.min(820, root.width - 40)
         footer: Item {
             implicitHeight: 56
-            Button { anchors.right: parent.right; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter
+            AppButton { anchors.right: parent.right; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter
                      text: "Close"; onClicked: accountsDialog.close() }
         }
         property var rot: { try { return JSON.parse(root.rotationJson) } catch (e) { return {} } }
@@ -527,33 +569,33 @@ Item {
                     Dim { text: modelData.key + " · " + modelData.posts + " posts on this key"; Layout.fillWidth: true }
                     // Only the actions that do something are shown.
                     Dim { visible: modelData.selected; text: "in use"; color: root.ok }
-                    Button { visible: !modelData.selected; text: "Use"; onClicked: root.call(root.backend.selectAccount(modelData.label), root.plain) }
-                    Button { visible: root.accounts.length > 1; text: "Delete"; onClicked: root.call(root.backend.deleteAccount(modelData.label), root.plain) }
+                    AppButton { visible: !modelData.selected; text: "Use"; onClicked: root.call(root.backend.selectAccount(modelData.label), root.plain) }
+                    AppButton { visible: root.accounts.length > 1; text: "Delete"; onClicked: root.call(root.backend.deleteAccount(modelData.label), root.plain) }
                 }
             }
             RowLayout {
-                TextField { id: newLabel; placeholderText: "new account name"; Layout.fillWidth: true }
-                Button { text: "Create"; onClicked: root.call(root.backend.createAccount(newLabel.text), function (r) { if (root.plain(r)) newLabel.text = "" }) }
+                AppField { id: newLabel; placeholderText: "new account name"; Layout.fillWidth: true }
+                AppButton { text: "Create"; onClicked: root.call(root.backend.createAccount(newLabel.text), function (r) { if (root.plain(r)) newLabel.text = "" }) }
             }
             Rectangle { Layout.fillWidth: true; height: 1; color: root.line }
             Label2 { text: "Identity rotation"; font.bold: true }
             Dim { Layout.fillWidth: true
                   text: "Replace the selected account's key with a fresh one. Nothing links the old key to the new one, so earlier posts stop being attributable to what you post next." }
             RowLayout {
-                Button { text: "Rotate now"; onClicked: root.call(root.backend.rotateAccount(), root.plain) }
+                AppButton { text: "Rotate now"; onClicked: root.call(root.backend.rotateAccount(), root.plain) }
                 Dim { text: "Automatically after" }
                 SpinBox { id: rotPosts; implicitWidth: 120; from: 0; to: 10000; value: accountsDialog.rot.maxPosts || 0; editable: true }
                 Dim { text: "posts or" }
                 SpinBox { id: rotDays; implicitWidth: 120; from: 0; to: 3650; value: accountsDialog.rot.maxDays || 0; editable: true }
                 Dim { text: "days" }
-                Button { text: "Save"; onClicked: root.call(root.backend.setRotation(rotPosts.value, rotDays.value), root.plain) }
+                AppButton { text: "Save"; onClicked: root.call(root.backend.setRotation(rotPosts.value, rotDays.value), root.plain) }
             }
             Dim { text: "0 means never." }
             Rectangle { Layout.fillWidth: true; height: 1; color: root.line }
             Label2 { text: "History"; font.bold: true }
             RowLayout {
-                Button { text: "Fetch missed posts"; onClicked: root.call(root.backend.catchUp()) }
-                Button { text: "Save snapshot to Logos Storage"; onClicked: root.call(root.backend.saveSnapshot(), root.plain) }
+                AppButton { text: "Fetch missed posts"; onClicked: root.call(root.backend.catchUp()) }
+                AppButton { text: "Save snapshot to Logos Storage"; onClicked: root.call(root.backend.saveSnapshot(), root.plain) }
             }
         }
     }
