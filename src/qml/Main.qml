@@ -204,7 +204,7 @@ Item {
             // A post the node accepted but the network has not confirmed stays
             // "sending" for a few seconds; after that, say what is going on.
             text: post ? ((post.state === "sending" && root.now - post.ts < 30000)
-                          ? "· sending…" : "· waiting for the network — will retry") : ""
+                          ? "· sending…" : "· waiting for the network, will retry") : ""
             color: root.warn; font.pixelSize: 12
         }
     }
@@ -342,7 +342,7 @@ Item {
                   text: root.outboxCount + " waiting to send" }
             AppCombo {
                 id: accountBox
-                implicitWidth: 200
+                implicitWidth: 192
                     model: root.accounts.map(function (a) { return a.label + " · " + root.shortKey(a.key) })
                 currentIndex: root.accounts.findIndex(function (a) { return a.selected })
                 onActivated: function (i) { root.call(root.backend.selectAccount(root.accounts[i].label), root.plain) }
@@ -418,14 +418,14 @@ Item {
                                       text: modelData.author
                                             + " · " + modelData.replies + (modelData.replies === 1 ? " reply" : " replies")
                                             + " · " + root.when(modelData.last) }
-                                Dim { visible: modelData.state !== ""; color: root.warn; text: "not sent yet — will retry" }
+                                Dim { visible: modelData.state !== ""; color: root.warn; text: "not sent yet, will retry" }
                             }
                         }
                         Dim { anchors.centerIn: parent; visible: root.topics.length > 0 && root.shownTopics.length === 0
                               text: "No topic matches \"" + root.search + "\"." }
                         Dim { anchors.centerIn: parent; width: parent.width - 32; horizontalAlignment: Text.AlignHCenter
                               visible: root.topics.length === 0
-                              text: "No topics yet. Start one — or wait a moment: when you join, peers who were here before you send their history." }
+                              text: "No topics yet. Start one, or wait a moment: when you join, peers who were here before you send their history." }
                     }
                 }
             }
@@ -441,7 +441,7 @@ Item {
                     spacing: 14
                     Text { text: "Welcome to " + root.forumName; color: root.text; font.pixelSize: 18; font.bold: true }
                     Label2 { Layout.fillWidth: true; color: root.dim
-                             text: "There is no server here. Posts travel peer to peer over Logos Delivery, history is shared through Logos Storage, and every post is signed — the ✓ next to an author means this app checked the signature itself." }
+                             text: "There is no server here. Posts travel peer to peer over Logos Delivery, history is shared through Logos Storage, and every post is signed. The ✓ next to an author means this app checked the signature itself." }
                     Repeater {
                         model: [
                             ["Your account", "Posts are signed by your account's key, so they link to each other. You can hold several accounts and rotate a key at any time."],
@@ -474,7 +474,7 @@ Item {
                             spacing: 14
                             Text {
                                 Layout.fillWidth: true
-                                text: root.openTopic ? root.openTopic.title : "Topic not received yet — its replies are shown below."
+                                text: root.openTopic ? root.openTopic.title : "Topic not received yet. Its replies are shown below."
                                 color: root.text; font.pixelSize: 18; font.bold: true; wrapMode: Text.Wrap
                             }
                             Byline { post: root.openTopic; visible: root.openTopic !== null }

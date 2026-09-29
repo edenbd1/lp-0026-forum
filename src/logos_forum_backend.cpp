@@ -295,7 +295,7 @@ void LogosForumBackend::subscribe() {
 void LogosForumBackend::refreshStatus() {
     if (!subscribed_) return;
     // A node with no peers still accepts sends; say so rather than "Connected".
-    setStatus(connectionState_.isEmpty() ? QStringLiteral("Joined — waiting for peers") : connectionState_);
+    setStatus(connectionState_.isEmpty() ? QStringLiteral("Joined, waiting for peers") : connectionState_);
 }
 
 void LogosForumBackend::pump() {
@@ -639,7 +639,7 @@ void LogosForumBackend::runCatchUp(const char* why) {
         const QString why = err.find("DIAL") != std::string::npos ? QStringLiteral("no store node reachable")
                                                                     : q(err.substr(0, 60));
         lastCatchUp_ = peer.empty()
-            ? QStringLiteral("History: %1 — asking peers").arg(why)
+            ? QStringLiteral("History: %1, asking peers").arg(why)
             : QStringLiteral("Caught up %1 · %2 new").arg(hhmm(now_ms())).arg(added);
         publishHistory();
         // Store nodes may keep no archive at all; ask the peers too.
