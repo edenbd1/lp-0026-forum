@@ -38,10 +38,10 @@ Item {
     readonly property color line: "#2a2f37"
     readonly property color text: "#e7e9ee"
     readonly property color dim: "#8b93a1"
-    readonly property color accent: "#6ea8fe"
-    readonly property color accentStrong: "#3d7be6"
+    readonly property color accent: "#f5925e"      // Logos orange, light: text and markers
+    readonly property color accentStrong: "#e2552b"   // Logos orange: buttons and selection
     readonly property color ok: "#4cc38a"
-    readonly property color warn: "#f0b35b"
+    readonly property color warn: "#f2c14e"          // amber, kept apart from the orange accent
 
     // Every stock control (buttons, combo boxes, fields, spin boxes, popups)
     // reads its colours from the palette, so one dark palette here keeps the
@@ -67,7 +67,7 @@ Item {
     palette.disabled.buttonText: "#5d646f"
     palette.disabled.button: "#191c21"
     palette.disabled.text: "#5d646f"
-    palette.disabled.dark: "#1f2a3d"
+    palette.disabled.dark: "#3a241c"
     palette.disabled.brightText: "#7d8594"
 
     property string search: ""
@@ -429,7 +429,7 @@ Item {
                             Button {
                                 text: "Reply"
                                 enabled: replyBody.text.trim().length > 0
-                                highlighted: enabled   // a blue button that cannot be pressed reads as broken
+                                highlighted: enabled   // an accent-coloured button that cannot be pressed reads as broken
                                 onClicked: root.call(root.backend.reply(root.openId, replyBody.text, replyAs.mode, replyAs.alias), function (r) {
                                     if (root.result(r)) {
                                         replyBody.text = ""
