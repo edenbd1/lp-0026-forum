@@ -533,11 +533,7 @@ Item {
         title: "New topic"
         modal: true; anchors.centerIn: parent
         width: Math.min(640, root.width - 40)
-        footer: Item {
-            implicitHeight: 56
-            AppButton { anchors.right: parent.right; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter
-                     text: "Cancel"; onClicked: newTopic.close() }
-        }
+        footer: Item { implicitHeight: 12 }
         ColumnLayout {
             anchors.fill: parent; spacing: 8
             AppField { id: topicTitle; Layout.fillWidth: true; placeholderText: "Title"; maximumLength: 200 }
@@ -548,8 +544,11 @@ Item {
                   color: topicBody.length > 20000 ? "#e5484d" : root.dim
                   text: "title " + topicTitle.length + " / 200 · body " + topicBody.length + " / 20000" }
             SignAs { id: topicAs; Layout.fillWidth: true }
-            AccentButton {
-                Layout.alignment: Qt.AlignRight
+            RowLayout {
+              Layout.alignment: Qt.AlignRight
+              spacing: 10
+              AppButton { text: "Cancel"; onClicked: newTopic.close() }
+              AccentButton {
                 text: "Post"
                 enabled: topicTitle.text.trim().length > 0 && topicBody.text.trim().length > 0
                 onClicked: root.call(root.backend.createTopic(topicTitle.text, topicBody.text, topicAs.mode, topicAs.alias), function (r) {
@@ -559,6 +558,7 @@ Item {
                         root.refreshTopics(); root.openThread(r)
                     }
                 })
+              }
             }
         }
     }
