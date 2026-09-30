@@ -6,6 +6,7 @@ import QtQuick.Controls
 // width from a phone to a wide desktop without running Basecamp.
 //
 //   qml tests/qml/Harness.qml -- <width> <height> <state> <out.png>
+//   out.png "live" keeps the window open (to resize it by hand) instead of saving.
 //   state: welcome | list | thread | alias | anonymous | newtopic | accounts | offline | stress
 Window {
     id: win
@@ -114,7 +115,7 @@ Window {
             var popups = m.data.filter(function (o) { return o.title !== undefined && o.open !== undefined })
             if (win.state === "newtopic") popups.filter(function (p) { return p.title === "New topic" })[0].open()
             if (win.state === "accounts") popups.filter(function (p) { return p.title === "Accounts" })[0].open()
-            shot.start()
+            if (win.args[3] !== "live") shot.start()
         }
     }
     Timer {
