@@ -65,7 +65,7 @@ jobs:
           print("name", m["name"], "version", m["version"], "variants", variants)
           print("dependencies", m["dependencies"])
           assert m["type"] == "ui_qml" and m["view"] == "qml/Main.qml"
-          assert {"name": "storage_module", "version": "~2.1.2"} in m["dependencies"]
+          assert {"name": "storage_module", "version": "~3.0.0"} in m["dependencies"]
           for v in variants:
               main = m["main"][v]
               assert os.path.exists(f"pkg/variants/{v}/{main}"), main
