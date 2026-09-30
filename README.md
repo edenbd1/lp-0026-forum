@@ -1,11 +1,23 @@
-![Logos Forum: a forum with no server, inside Logos Basecamp](docs/screens/banner.png)
+<p align="center">
+  <img src="assets/icon.png" width="128" alt="Logos Forum icon">
+</p>
 
-# Logos Forum (LP-0026)
+<h1 align="center">Logos Forum</h1>
 
-A forum for Logos Basecamp with no server anywhere: topics and replies travel
-over **Logos Messaging** (Logos Delivery), history is kept locally and on
-**Logos Storage**, and every post is signed and checked on arrival. You post as
-yourself, under an alias, or as no one at all.
+<p align="center"><b>A forum with no server, inside Logos Basecamp. Every post signed, every author verified.</b></p>
+
+<p align="center">
+A community-built <a href="https://github.com/logos-co/logos-basecamp">Logos Basecamp</a> module for <a href="https://github.com/logos-co/lambda-prize/blob/master/prizes/LP-0026.md">λPrize LP-0026</a>.
+Topics and replies travel peer to peer over <b>Logos Messaging</b>, each device keeps the history and shares it with newcomers,
+and every post is checked by the app itself on arrival.
+</p>
+
+<p align="center">
+  <img alt="Logos Basecamp 0.3.0" src="https://img.shields.io/badge/Logos%20Basecamp-0.3.0-2f6b4f">
+  <img alt="Logos Messaging (delivery_module) 0.2.1" src="https://img.shields.io/badge/Logos%20Messaging-0.2.1-2f6b4f">
+  <a href="https://github.com/edenbd1/logos-forum-catalog"><img alt="catalog 0.2.0" src="https://img.shields.io/badge/catalog-0.2.0-e2552b"></a>
+  <img alt="licence MIT / Apache-2.0" src="https://img.shields.io/badge/licence-MIT%20%2F%20Apache--2.0-7a9a3a">
+</p>
 
 [![Watch the demo on YouTube (3:43)](https://img.youtube.com/vi/xNY5EzhCtuI/maxresdefault.jpg)](https://youtu.be/xNY5EzhCtuI)
 
