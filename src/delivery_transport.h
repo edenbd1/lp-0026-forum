@@ -52,6 +52,11 @@ public:
     static std::vector<std::string> default_store_peers();
 
 private:
+    // Async callbacks may arrive after this object is gone: they check this.
+    std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
+public:
+    ~DeliveryTransport() override { *alive_ = false; }
+private:
     struct Query;
     void query_page(std::shared_ptr<Query> q);
     LogosModules& modules_;

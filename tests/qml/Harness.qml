@@ -30,7 +30,8 @@ Window {
         id: backend
         signal postArrived(string id, string topicId)
         signal postStateChanged(string id, string state, string detail)
-        property string status: win.state === "offline" ? "Joined, waiting for peers" : "Connected"
+        property string status: win.state === "offline" ? "Joined, waiting for peers"
+                              : win.state === "inject" ? 'Node failed <img src="http://127.0.0.1:8977/node.png">' : "Connected"
         property string forumName: "Logos Forum"
         property string appVersion: "0.1.9"
         property string myLabel: "Alice"
@@ -41,7 +42,8 @@ Window {
         property string rotationJson: JSON.stringify({ maxPosts: 0, maxDays: 30 })
         property int outboxCount: win.state === "offline" ? 1 : 0
         property string historyStatus: win.state === "offline" ? "History: no store node reachable, asking peers · Storage ready"
-                                                                 : "Caught up 14:02 · 0 new · Storage ready"
+                                     : win.state === "inject" ? 'History: store node said 400 <img src="http://127.0.0.1:8977/status.png">'
+                                                              : "Caught up 14:02 · 0 new · Storage ready"
         readonly property double t0: Date.now()
         function post(id, author, key, mode, mine, ago, body, extra) {
             var p = { id: id, author: author, authorKey: key, mode: mode, mine: mine, ts: t0 - ago * 60000, body: body, state: "" }
@@ -97,6 +99,11 @@ Window {
 
     Loader { id: view; anchors.fill: parent; source: "../../src/qml/Main.qml" }
 
+    // Positive control for scripts/check-no-remote-fetch.py: this one element is
+    // rich text on purpose, so a check that sees no request at all has proven
+    // nothing and fails.
+    Text { visible: win.state === "inject"; textFormat: Text.RichText; text: '<img src="http://127.0.0.1:8977/control.png">' }
+
     function find(item, pred) {
         if (!item) return null
         if (pred(item)) return item
@@ -116,6 +123,7 @@ Window {
             var replyAs = find(m, function (o) { return o.objectName === "replyAs" })
             if (win.state === "alias") { replyAs.mode = 1; replyAs.alias = "Ghost" }
             if (win.state === "stress") { replyAs.mode = 1; replyAs.alias = "A-forty-character-alias-that-never-ends-x" }
+            if (win.state === "inject") m.lastError = 'A post did not go out (<img src="http://127.0.0.1:8977/error.png">); it will be retried.'
             if (win.state === "anonymous") replyAs.mode = 2
             var popups = m.data.filter(function (o) { return o.title !== undefined && o.open !== undefined })
             if (win.state === "newtopic") popups.filter(function (p) { return p.title === "New topic" })[0].open()

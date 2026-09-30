@@ -545,6 +545,187 @@ TEST(a_history_request_cannot_make_a_node_flood_the_topic) {
     CHECK(bytes < 1500 * 1024);                                 // was 6.5 MB
 }
 
+TEST(sustained_requests_cost_a_node_a_bounded_budget) {
+    // One tiny request a minute for three hours: what a node sends stays within
+    // its hourly budget, not proportional to the requests.
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    ea.jitter = [] { return uint64_t{0}; };
+    Account alice{"alice", Keypair::generate()};
+    const std::string big(2000, 'x');
+    for (int i = 0; i < 300; ++i) sa.put(author_as(alice, topic("t" + std::to_string(i), big)), 1);
+    const size_t before = bus.log.size();
+    for (int m = 0; m < 180; ++m) {
+        const uint64_t t = 1000 + uint64_t(m) * 60000;
+        a.now = t;
+        ea.receive(R"({"logos-forum-want":1,"forum":"Logos Forum","have":0,"via":"delivery","since":0,"id":"s)" +
+                       std::to_string(m) + "\"}", t);
+        for (uint64_t u = t; u < t + 60000; u += 6000) { ea.tick(u); ea.pump(u); }
+    }
+    size_t bytes = 0;
+    for (size_t i = before; i < bus.log.size(); ++i) bytes += bus.log[i].size();
+    CHECK(bytes <= 3 * Engine::kAnswerBudgetBytes);             // three hours, three budgets
+}
+
+TEST(an_empty_or_forged_bundle_does_not_silence_the_answerers) {
+    Bus bus; FakeNet a(bus), x(bus); Store sa(":memory:"), sx(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    ea.jitter = [] { return uint64_t{1000}; };
+    Account alice{"alice", Keypair::generate()};
+    sa.put(author_as(alice, topic("history")), 1);
+    const size_t before = bus.log.size();
+    ea.receive(R"({"logos-forum-want":1,"forum":"Logos Forum","have":0,"via":"delivery","since":0,"id":"r1"})", 10);
+    Post forged = author_as(alice, topic("x")); forged.body = "edited";
+    const nlohmann::json fake{{"logos-forum-snapshot", 1}, {"forum", "Logos Forum"}, {"re", "r1"},
+                              {"posts", nlohmann::json::array({encode(forged)})}};
+    ea.receive(fake.dump(), 20);                                 // "already answered", with nothing real in it
+    ea.tick(2000); ea.pump(2000);
+    bool answered = false;
+    for (size_t i = before; i < bus.log.size(); ++i) answered = answered || bus.log[i].find("\"re\":\"r1\"") != std::string::npos;
+    CHECK(answered);
+}
+
+TEST(a_replayed_partial_bundle_does_not_silence_the_answerers) {
+    // Every post is public, so anyone can replay one. Standing down needs the
+    // bundle to carry what we would have sent: our newest posts in the range.
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    ea.jitter = [] { return uint64_t{1000}; };
+    Account alice{"alice", Keypair::generate()};
+    Post old = topic("old"); old.ts_ms = 1000; const Post o = author_as(alice, old);
+    Post fresh = topic("fresh"); fresh.ts_ms = 5000;
+    sa.put(o, 1); sa.put(author_as(alice, fresh), 1);
+    const size_t before = bus.log.size();
+    ea.receive(R"({"logos-forum-want":1,"forum":"Logos Forum","have":0,"via":"delivery","since":0,"id":"r1"})", 10);
+    const nlohmann::json replay{{"logos-forum-snapshot", 1}, {"forum", "Logos Forum"}, {"re", "r1"},
+                                {"posts", nlohmann::json::array({encode(o)})}};
+    ea.receive(replay.dump(), 20);
+    ea.receive(R"({"logos-forum-snapshot-at":1,"forum":"Logos Forum","cid":"x","re":"r1"})", 30);  // nor does an announcement
+    ea.tick(2000); ea.pump(2000);
+    bool answered = false;
+    for (size_t i = before; i < bus.log.size(); ++i) answered = answered || bus.log[i].find("\"re\":\"r1\"") != std::string::npos;
+    CHECK(answered);
+}
+
+TEST(a_node_away_for_long_gets_everything_it_missed_over_delivery) {
+    // Answers are capped; a full one says so, and the asker pages down until
+    // it has everything since it left.
+    Bus bus; FakeNet a(bus), b(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
+    ea.jitter = [] { return uint64_t{0}; };
+    Account alice{"alice", Keypair::generate()};
+    const std::string big(2000, 'x');
+    for (int i = 0; i < 300; ++i) { Post p = topic("t" + std::to_string(i), big); p.ts_ms = 1'000'000 + i * 1000; sa.put(author_as(alice, p), 1); }
+    uint64_t t = 10'000'000;
+    a.now = b.now = t;
+    eb.request_history(t, true);
+    for (int step = 0; step < 400 && sb.count() < 300; ++step, t += 6000) {
+        a.now = b.now = t;
+        ea.tick(t); ea.pump(t); eb.tick(t);
+    }
+    CHECK(sb.count() == 300);
+}
+
+// Drives two nodes like the backend does: A answers, B asks every five minutes
+// (its periodic catch-up) and follows pages; returns how many posts B holds.
+static size_t catch_up_over_hours(Engine& ea, Engine& eb, FakeNet& a, FakeNet& b, Store& sb, uint64_t t0, double hours,
+                                  const std::function<void(uint64_t)>& attacker = {}) {
+    uint64_t t = t0;
+    for (uint64_t end = t0 + uint64_t(hours * 3600000); t < end; t += 5000) {
+        a.now = b.now = t;
+        if ((t - t0) % 300000 == 0) eb.request_history(t, true);
+        if (attacker) attacker(t);
+        ea.tick(t); ea.pump(t); eb.tick(t);
+    }
+    return sb.count();
+}
+
+TEST(a_backlog_larger_than_the_hourly_budget_still_arrives) {
+    // 1,500 posts of 2 KB behind one peer: more than its 1 MB an hour. The
+    // pages carry on across the periodic requests from where they stopped.
+    Bus bus; FakeNet a(bus), b(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
+    ea.jitter = [] { return uint64_t{0}; };
+    Account alice{"alice", Keypair::generate()};
+    const std::string big(2000, 'x');
+    for (int i = 0; i < 1500; ++i) { Post p = topic("t" + std::to_string(i), big); p.ts_ms = 1'000'000 + i * 1000; sa.put(author_as(alice, p), 1); }
+    CHECK(catch_up_over_hours(ea, eb, a, b, sb, 10'000'000, 6) == 1500);
+}
+
+TEST(posts_sharing_one_date_do_not_loop_the_pages) {
+    Bus bus; FakeNet a(bus), b(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
+    ea.jitter = [] { return uint64_t{0}; };
+    const std::string big(2000, 'x');
+    for (int i = 0; i < 300; ++i) { Post p = topic("t" + std::to_string(i), big); p.ts_ms = 2'000'000; sa.put(author_anonymously(p), 1); }
+    CHECK(catch_up_over_hours(ea, eb, a, b, sb, 10'000'000, 0.25) == 300);   // three pages, not a crawl
+}
+
+TEST(a_forged_page_marker_cannot_derail_the_paging) {
+    // An attacker answers every request with "more" and no posts, or with a
+    // replayed old post and "more": neither moves B's cursor past what it has
+    // not received from A.
+    Bus bus; FakeNet a(bus), b(bus), x(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
+    ea.jitter = [] { return uint64_t{2000}; };
+    Account alice{"alice", Keypair::generate()};
+    const std::string big(2000, 'x');
+    std::string oldest_post;
+    for (int i = 0; i < 300; ++i) {
+        Post p = topic("t" + std::to_string(i), big); p.ts_ms = 1'000'000 + i * 1000;
+        const Post signed_post = author_as(alice, p); sa.put(signed_post, 1);
+        if (i == 0) oldest_post = encode(signed_post);
+    }
+    size_t seen = 0;
+    auto attacker = [&](uint64_t t) {
+        for (; seen < bus.log.size(); ++seen) {
+            const auto w = nlohmann::json::parse(bus.log[seen], nullptr, false);
+            if (!w.is_object() || !w.contains("logos-forum-want")) continue;
+            const std::string re = w.value("id", "");
+            x.now = t;
+            x.send("", nlohmann::json{{"logos-forum-snapshot", 1}, {"forum", "Logos Forum"}, {"re", re}, {"more", true},
+                                      {"oldest", 1}, {"posts", nlohmann::json::array()}}.dump());
+            x.send("", nlohmann::json{{"logos-forum-snapshot", 1}, {"forum", "Logos Forum"}, {"re", re}, {"more", true},
+                                      {"posts", nlohmann::json::array({oldest_post})}}.dump());
+        }
+    };
+    CHECK(catch_up_over_hours(ea, eb, a, b, sb, 10'000'000, 2, attacker) == 300);
+}
+
+TEST(a_replay_of_the_newest_posts_does_not_silence_the_answerers) {
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    ea.jitter = [] { return uint64_t{1000}; };
+    Account alice{"alice", Keypair::generate()};
+    std::vector<std::string> newest;
+    const std::string big(2000, 'x');
+    for (int i = 0; i < 100; ++i) {
+        Post p = topic("t" + std::to_string(i), big); p.ts_ms = 1000 + i;
+        const Post sp = author_as(alice, p); sa.put(sp, 1);
+        if (i >= 97) newest.push_back(encode(sp));
+    }
+    const size_t before = bus.log.size();
+    ea.receive(R"({"logos-forum-want":1,"forum":"Logos Forum","have":0,"via":"delivery","since":0,"id":"r1"})", 10);
+    ea.receive(nlohmann::json{{"logos-forum-snapshot", 1}, {"forum", "Logos Forum"}, {"re", "r1"}, {"posts", newest}}.dump(), 20);
+    ea.tick(2000); ea.pump(2000);
+    bool answered = false;
+    for (size_t i = before; i < bus.log.size(); ++i) answered = answered || bus.log[i].find("\"re\":\"r1\"") != std::string::npos;
+    CHECK(answered);
+}
+
+TEST(a_storage_request_is_answered_over_delivery_by_a_private_node) {
+    // A node that does not answer over Storage (it would announce its storage
+    // address) still answers, with bundles, so nobody is left without history.
+    Bus bus; FakeNet a(bus), b(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
+    ea.jitter = [] { return uint64_t{0}; };
+    Account alice{"alice", Keypair::generate()};
+    sa.put(author_as(alice, topic("history")), 1);
+    eb.request_history(100);                                     // a Storage-path request
+    ea.tick(100); ea.pump(100);
+    CHECK(sb.count() == 1);
+}
+
 TEST(a_post_dated_in_the_future_is_refused) {
     Bus bus; FakeNet a(bus); Store sa(":memory:");
     Engine ea(sa, a, "Logos Forum");
@@ -561,6 +742,8 @@ TEST(a_post_dated_in_the_future_is_refused) {
     ea.request_history(now, true);
     const auto w = nlohmann::json::parse(bus.log.back());
     CHECK(w["since"].get<uint64_t>() <= now);
+    for (const auto& b : ea.bundles(0, "r", now + Engine::kMaxClockSkewMs))
+        CHECK(b.find("already stored") == std::string::npos);     // and it is never sent on
 }
 
 TEST(an_unconfirmed_post_is_resent_less_and_less_often) {
@@ -606,9 +789,19 @@ TEST(announced_addresses_must_be_public) {
     CHECK(!is_public_multiaddr("/ip6/fe80::1/tcp/1"));
     CHECK(!is_public_multiaddr("/dns4/localhost/tcp/1"));
     CHECK(!is_public_multiaddr("/ip4/999.1.1.1/tcp/1"));
+    // Spellings found by review: every one of these reaches this machine or is not an address.
+    for (const char* a : {"/dns4/localhost./tcp/1", "/dns4/LOCALHOST/tcp/1", "/dns4/a.localhost/tcp/1",
+                          "/dns4/127.0.0.1.nip.io/tcp/1", "/dns4/node-01.do-ams3.logos.test.status.im/tcp/30303",
+                          "/ip6/0:0:0:0:0:0:0:1/tcp/1", "/ip6/0::1/tcp/1", "/ip6/0:0::0/tcp/1", "/ip6/::127.0.0.1/tcp/1",
+                          "/ip6/::ffff:127.0.0.1/tcp/1", "/ip6/64:ff9b::7f00:1/tcp/1", "/ip6/fec0::1/tcp/1",
+                          "/ip4/0177.0.0.1/tcp/1", "/ip4/+8.8.8.8/tcp/1", "/ip4/8.8.8.8 /tcp/1", "/ip4/8.8.8/tcp/1",
+                          "ip4/8.8.8.8/tcp/1", "/ip4//tcp/1", "",
+                          "/ip6/::ffff:0:7f00:1/tcp/1", "/ip6/2002:7f00:1::/tcp/1", "/ip6/100::1/tcp/1",
+                          "/ip6/2001:0:4136::1/tcp/1", "/ip4/192.0.0.8/tcp/1", "/ip4/192.0.2.1/tcp/1"})
+        CHECK(!is_public_multiaddr(a));
     CHECK(is_public_multiaddr("/ip4/8.8.8.8/tcp/30303"));
+    CHECK(is_public_multiaddr("/ip4/8.8.8.8"));
     CHECK(is_public_multiaddr("/ip6/2a01:4f8::1/tcp/1"));
-    CHECK(is_public_multiaddr("/dns4/node-01.do-ams3.logos.test.status.im/tcp/30303"));
 }
 
 TEST(a_large_import_is_one_commit) {

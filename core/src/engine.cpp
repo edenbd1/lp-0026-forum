@@ -10,6 +10,8 @@
 #include <cstdint>
 #include <cstdio>
 
+#include <arpa/inet.h>
+
 namespace forum {
 namespace {
 using json = nlohmann::json;
@@ -43,36 +45,68 @@ size_t utf8_cut(const std::string& s, size_t from, size_t max) {
 }
 
 bool is_public_multiaddr(const std::string& addr) {
-    auto part = [&](size_t i) {
+    // /ip4/<a>/… or /ip6/<a>/… only. DNS names are refused: they can resolve
+    // to anything, including this machine ("localhost.", "127.0.0.1.nip.io").
+    auto seg = [&](size_t n) {
         size_t start = 0;
-        for (size_t k = 0; k < i; ++k) {
-            start = addr.find('/', start + 1);
-            if (start == std::string::npos) return std::string();
+        for (size_t k = 0; k <= n; ++k) {
+            if (start >= addr.size() || addr[start] != '/') return std::string();
+            const size_t end = addr.find('/', start + 1);
+            if (k == n) return addr.substr(start + 1, end == std::string::npos ? std::string::npos : end - start - 1);
+            if (end == std::string::npos) return std::string();
+            start = end;
         }
-        const size_t end = addr.find('/', start + 1);
-        return addr.substr(start + 1, end == std::string::npos ? std::string::npos : end - start - 1);
+        return std::string();
     };
-    const std::string proto = part(0), host = part(1);
-    if (proto == "dns4" || proto == "dns6" || proto == "dns") return !host.empty() && host != "localhost";
+    const std::string proto = seg(0), host = seg(1);
     if (proto == "ip4") {
-        unsigned a = 0, b = 0, c = 0, d = 0;
-        char tail = 0;
-        if (std::sscanf(host.c_str(), "%u.%u.%u.%u%c", &a, &b, &c, &d, &tail) != 4 || a > 255 || b > 255 || c > 255 || d > 255)
-            return false;
-        if (a == 0 || a == 10 || a == 127 || a >= 224) return false;           // this net, private, loopback, multicast
+        // Strict dotted decimal: no leading zeros (octal), signs or spaces.
+        unsigned v[4];
+        size_t i = 0;
+        for (int k = 0; k < 4; ++k) {
+            if (i >= host.size() || !std::isdigit(static_cast<unsigned char>(host[i]))) return false;
+            if (host[i] == '0' && i + 1 < host.size() && std::isdigit(static_cast<unsigned char>(host[i + 1]))) return false;
+            unsigned x = 0;
+            size_t d = 0;
+            while (i < host.size() && std::isdigit(static_cast<unsigned char>(host[i]))) { x = x * 10 + (host[i++] - '0'); if (++d > 3) return false; }
+            if (x > 255) return false;
+            v[k] = x;
+            if (k < 3) { if (i >= host.size() || host[i] != '.') return false; ++i; }
+        }
+        if (i != host.size()) return false;
+        const unsigned a = v[0], b = v[1];
+        if (a == 0 || a == 10 || a == 127 || a >= 224) return false;           // this net, private, loopback, multicast/reserved
         if (a == 169 && b == 254) return false;                                // link-local
         if (a == 172 && b >= 16 && b <= 31) return false;                      // private
         if (a == 192 && b == 168) return false;                                // private
         if (a == 100 && b >= 64 && b <= 127) return false;                     // carrier-grade NAT
+        if (a == 198 && (b == 18 || b == 19)) return false;                    // benchmarking
+        if (a == 192 && b == 0 && (v[2] == 0 || v[2] == 2)) return false;      // IETF protocol assignments, documentation
+        if (a == 198 && b == 51 && v[2] == 100) return false;                  // documentation
+        if (a == 203 && b == 0 && v[2] == 113) return false;                   // documentation
         return true;
     }
     if (proto == "ip6") {
-        std::string h;
-        for (char ch : host) h.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
-        if (h.empty() || h == "::" || h == "::1") return false;
-        if (h.rfind("fe8", 0) == 0 || h.rfind("fe9", 0) == 0 || h.rfind("fea", 0) == 0 || h.rfind("feb", 0) == 0) return false;
-        if (h.rfind("fc", 0) == 0 || h.rfind("fd", 0) == 0 || h.rfind("ff", 0) == 0) return false;
-        if (h.rfind("::ffff:", 0) == 0) return false;                          // mapped IPv4: check it as IPv4 instead
+        unsigned char b[16];
+        if (host.empty() || inet_pton(AF_INET6, host.c_str(), b) != 1) return false;
+        bool zero12 = true;
+        for (int k = 0; k < 12; ++k) zero12 = zero12 && b[k] == 0;
+        if (zero12) return false;                                              // ::, ::1, and v4-compatible ::a.b.c.d
+        bool mapped = true;
+        for (int k = 0; k < 10; ++k) mapped = mapped && b[k] == 0;
+        if (mapped && b[10] == 0xff && b[11] == 0xff) return false;            // v4-mapped ::ffff:a.b.c.d
+        bool zero8 = true;
+        for (int k = 0; k < 8; ++k) zero8 = zero8 && b[k] == 0;
+        if (zero8 && b[8] == 0xff && b[9] == 0xff) return false;               // v4-translated ::ffff:0:a.b.c.d
+        if (b[0] == 0x20 && b[1] == 0x02) return false;                        // 6to4 2002::/16 embeds any IPv4
+        if (b[0] == 0x01 && b[1] == 0x00 && b[2] == 0 && b[3] == 0 && b[4] == 0 && b[5] == 0 && b[6] == 0 && b[7] == 0) return false;  // discard 100::/64
+        if (b[0] == 0x20 && b[1] == 0x01 && b[2] == 0x00 && b[3] == 0x00) return false;   // Teredo 2001::/32 embeds any IPv4
+        if (b[0] == 0x00 && b[1] == 0x64 && b[2] == 0xff && b[3] == 0x9b) return false;   // NAT64 64:ff9b::/96
+        if ((b[0] & 0xfe) == 0xfc) return false;                               // unique local fc00::/7
+        if (b[0] == 0xfe && (b[1] & 0xc0) == 0x80) return false;               // link-local fe80::/10
+        if (b[0] == 0xfe && (b[1] & 0xc0) == 0xc0) return false;               // site-local fec0::/10
+        if (b[0] == 0xff) return false;                                        // multicast
+        if (b[0] == 0x20 && b[1] == 0x01 && b[2] == 0x0d && b[3] == 0xb8) return false;   // documentation
         return true;
     }
     return false;
@@ -137,8 +171,8 @@ std::string Engine::compose(Post p, Account* as, const std::string& alias, uint6
     p.ts_ms = now_ms;
     const Post signed_post = as ? author_as(*as, std::move(p), alias) : author_anonymously(std::move(p));
     const std::string id = signed_post.id();
+    if (!store_.enqueue(id, encode(signed_post), now_ms)) return {};  // could not be kept to send: refuse it
     if (store_.put(signed_post, now_ms) && on_post) on_post(signed_post, id);
-    store_.enqueue(id, encode(signed_post), now_ms);
     return id;
 }
 
@@ -193,17 +227,20 @@ bool Engine::receive(const std::string& payload, uint64_t now_ms) {
         if (a.is_object() && int_at(a, kWantTag) == 1 && str_at(a, "forum") == forum_) {
             const int64_t theirs = int_at(a, "have");
             const size_t ours = store_.count(forum_);
-            const int path = str_at(a, "via") == "delivery" ? 1 : 0;
+            // A Storage request, when this node does not answer those (it keeps
+            // its storage address to itself), is answered over Delivery instead.
+            const int path = str_at(a, "via") == "delivery" || !on_history_wanted ? 1 : 0;
             const uint64_t every = path == 1 ? kDeliveryAnswerEveryMs : kAnswerEveryMs;
             const bool quiet = !answered_[path] || now_ms >= last_answer_ms_[path] + every;
-            const bool can = path == 1 || static_cast<bool>(on_history_wanted);
-            if (can && quiet && !pending_ && theirs >= 0 && static_cast<size_t>(theirs) < ours) {
+            if (quiet && !pending_ && theirs >= 0 && static_cast<size_t>(theirs) < ours) {
                 HistoryRequest r;
                 r.id = str_at(a, "id").substr(0, 64);
                 r.have = static_cast<size_t>(theirs);
-                r.via_delivery = str_at(a, "via") == "delivery";
-                const int64_t since = int_at(a, "since");
+                r.via_delivery = path == 1;
+                const int64_t since = int_at(a, "since"), until = int_at(a, "until");
                 r.since_ms = since > 0 ? static_cast<uint64_t>(since) : 0;
+                r.until_ms = until > 0 ? static_cast<uint64_t>(until) : 0;
+                r.until_id = str_at(a, "until_id").substr(0, 64);
                 pending_ = r;
                 pending_due_ms_ = now_ms + (jitter ? jitter() : randombytes_uniform(kAnswerJitterMs));
             }
@@ -212,15 +249,53 @@ bool Engine::receive(const std::string& payload, uint64_t now_ms) {
         // History sent as bundles over Delivery: the snapshot format, carried
         // inline. Every post in it is checked as if it had arrived alone.
         if (a.is_object() && int_at(a, kSnapshotTag) == 1 && str_at(a, "forum") == forum_) {
-            stand_down(str_at(a, "re"));
-            return import_snapshot(payload, now_ms) > 0;
+            std::vector<Post> valid;
+            const int added = import_snapshot(payload, now_ms, &valid);
+            const std::string re = str_at(a, "re");
+            // Someone else answered the request we were about to answer: stand
+            // down only if they sent everything our own first page would have
+            // carried. Anything less (empty, forged, a replay of a few posts)
+            // must not silence the honest answerers; the whole page is harmless.
+            if (pending_ && pending_->via_delivery && !re.empty() && pending_->id == re) {
+                bool covers = true;
+                for (const auto& id : first_page_ids(*pending_, now_ms)) {
+                    bool in = false;
+                    for (const auto& p : valid) in = in || p.id() == id;
+                    covers = covers && in;
+                }
+                if (covers) pending_.reset();
+            }
+            // Our own request: note the answer, and if it says there is more,
+            // where the next page starts. That is worked out from the verified
+            // posts in it, never taken from the unsigned fields.
+            const auto mine = asked_.find(re);
+            if (mine != asked_.end() && now_ms <= mine->second.closes_ms && !valid.empty()) {
+                mine->second.answered = true;
+                const auto more = a.find("more");
+                if (more != a.end() && more->is_boolean() && more->get<bool>()) {
+                    mine->second.more = true;
+                    const Post* last = &valid.front();
+                    for (const auto& p : valid)
+                        if (p.ts_ms < last->ts_ms || (p.ts_ms == last->ts_ms && p.id() > last->id())) last = &p;
+                    // Of several answers, the least advanced cursor (newest post) wins.
+                    const bool first = !follow_up_for_ || *follow_up_for_ != re;
+                    const bool higher = last->ts_ms > follow_up_.ts || (last->ts_ms == follow_up_.ts && last->id() < follow_up_.id);
+                    if ((first || higher) && follow_ups_ < kMaxFollowUps) {
+                        follow_up_for_ = re;
+                        follow_up_ = Cursor{true, mine->second.since_ms, last->ts_ms, last->id()};
+                        if (first) follow_up_due_ms_ = now_ms + kDeliveryAnswerEveryMs + 1000;
+                    }
+                }
+            }
+            return added > 0;
         }
-        if (a.is_object() && int_at(a, kAnnounceTag) == 1 && str_at(a, "forum") == forum_)
+        // An announcement answers a Storage request only.
+        if (a.is_object() && int_at(a, kAnnounceTag) == 1 && str_at(a, "forum") == forum_ && pending_ && !pending_->via_delivery)
             stand_down(str_at(a, "re"));
         if (on_snapshot && a.is_object() && int_at(a, kAnnounceTag) == 1 && str_at(a, "forum") == forum_) {
             // Only an answer to a request of ours, while it is open, and once.
             const auto open = asked_.find(str_at(a, "re"));
-            if (open == asked_.end() || now_ms > open->second) return false;
+            if (open == asked_.end() || now_ms > open->second.closes_ms) return false;
             const std::string cid = str_at(a, "cid");
             const int64_t n = int_at(a, "posts");
             if (!cid.empty() && cid.size() <= 128) {
@@ -278,7 +353,7 @@ std::string Engine::snapshot() const {
     return json{{kSnapshotTag, 1}, {"forum", forum_}, {"posts", posts}}.dump();
 }
 
-int Engine::import_snapshot(const std::string& doc, uint64_t now_ms) {
+int Engine::import_snapshot(const std::string& doc, uint64_t now_ms, std::vector<Post>* valid) {
     const json s = json::parse(doc, nullptr, false);
     if (!s.is_object() || int_at(s, kSnapshotTag) != 1 || str_at(s, "forum") != forum_) return 0;
     const auto it = s.find("posts");
@@ -290,26 +365,51 @@ int Engine::import_snapshot(const std::string& doc, uint64_t now_ms) {
     for (const auto& m : *it) {
         if (!m.is_string()) continue;
         const auto p = decode(m.get<std::string>());
+        if (p && p->forum == forum_ && valid) valid->push_back(*p);
         if (p && accept(*p, now_ms)) ++added;
     }
     return added;
 }
 
 std::string Engine::request_history(uint64_t now_ms, bool via_delivery) {
+    if (!session_start_ms_) session_start_ms_ = now_ms;
+    uint64_t since = 0;
+    if (via_delivery) {
+        // Ask for what is newer than what we held when this session began,
+        // with an hour's margin for clocks and posts that arrived out of order.
+        // Not the newest post now: after a partial answer that would skip the
+        // older part of what was missed. A post dated after now (kept from
+        // before dates were checked) does not count either.
+        const uint64_t limit = now_ms >= kRealClockMs ? now_ms + kMaxClockSkewMs : static_cast<uint64_t>(INT64_MAX);
+        const uint64_t newest = store_.newest_ts(forum_, limit, session_start_ms_);
+        since = newest > 3600000 ? newest - 3600000 : 0;
+        // Part-way through a backlog: carry on from where the pages stopped.
+        if (cursor_.active) return send_request(now_ms, true, cursor_.since_ms, cursor_.ts, cursor_.id);
+        follow_ups_ = 0;
+    }
+    return send_request(now_ms, via_delivery, since, 0);
+}
+
+std::string Engine::send_request(uint64_t now_ms, bool via_delivery, uint64_t since_ms, uint64_t until_ms,
+                                 const std::string& until_id) {
     uint8_t raw[8];
     randombytes_buf(raw, sizeof raw);
     const std::string id = to_hex(raw, sizeof raw);
-    for (auto it = asked_.begin(); it != asked_.end();) it = now_ms > it->second ? asked_.erase(it) : std::next(it);
-    asked_[id] = now_ms + kRequestOpenMs;
+    for (auto it = asked_.begin(); it != asked_.end();) {
+        if (now_ms <= it->second.closes_ms) { ++it; continue; }
+        // A paged request answered without "more": the backlog is done.
+        if (it->second.paged && it->second.answered && !it->second.more) cursor_.active = false;
+        it = asked_.erase(it);
+    }
+    asked_[id] = Asked{now_ms + kRequestOpenMs, since_ms, until_ms != 0};
     json w{{kWantTag, 1}, {"forum", forum_}, {"have", store_.count(forum_)}, {"id", id}};
     if (via_delivery) {
-        // Ask only for what is newer than what we hold, with an hour's margin
-        // for clocks and for posts that arrived out of order. A post dated
-        // after now (kept from before dates were checked) does not count.
-        const uint64_t limit = now_ms >= kRealClockMs ? now_ms + kMaxClockSkewMs : UINT64_MAX;
-        const uint64_t newest = store_.newest_ts(forum_, limit);
         w["via"] = "delivery";
-        w["since"] = newest > 3600000 ? newest - 3600000 : 0;
+        w["since"] = since_ms;
+        if (until_ms) {
+            w["until"] = until_ms;
+            w["until_id"] = until_id;
+        }
     }
     net_.send(topic_, w.dump());
     return id;
@@ -320,31 +420,73 @@ void Engine::stand_down(const std::string& re) {
 }
 
 void Engine::tick(uint64_t now_ms) {
+    if (follow_up_for_ && now_ms >= follow_up_due_ms_) {
+        follow_up_for_.reset();
+        ++follow_ups_;
+        cursor_ = follow_up_;
+        send_request(now_ms, true, cursor_.since_ms, cursor_.ts, cursor_.id);
+    }
     if (!pending_ || now_ms < pending_due_ms_) return;
     const HistoryRequest r = *pending_;
     pending_.reset();
     answered_[r.via_delivery] = true;
     last_answer_ms_[r.via_delivery] = now_ms;
     if (r.via_delivery) {
-        // Capped whatever was asked, and paced by pump() like any other send.
-        size_t bytes = 0;
-        for (auto& b : bundles(r.since_ms, r.id)) {
-            if (bytes + b.size() > kMaxAnswerBytes && bytes > 0) break;
+        // Capped per answer and per hour whatever was asked, and paced by
+        // pump() like any other send.
+        if (now_ms >= budget_since_ms_ + 3600000) {
+            budget_since_ms_ = now_ms;
+            budget_used_ = 0;
+        }
+        const size_t cap = std::min(kMaxAnswerBytes, kAnswerBudgetBytes - std::min(budget_used_, kAnswerBudgetBytes));
+        size_t bytes = 0, sent = 0;
+        // A cursor at or beyond the date limit is the same as starting from the top.
+        const bool top = !r.until_ms || r.until_ms > upper(0, now_ms);
+        auto all = top ? bundles(r.since_ms, r.id, upper(0, now_ms), "") : bundles(r.since_ms, r.id, r.until_ms, r.until_id);
+        for (auto& b : all) {
+            if (bytes + b.size() > cap) break;
             bytes += b.size();
             answers_.push_back(std::move(b));
+            ++sent;
+        }
+        budget_used_ += bytes;
+        // Cut short: say so, so the asker can ask for the page below.
+        if (sent > 0 && sent < all.size()) {
+            json last = json::parse(answers_.back(), nullptr, false);
+            last["more"] = true;
+            budget_used_ += 16;
+            answers_.back() = last.dump();
         }
     } else if (on_history_wanted) {
         on_history_wanted(r);
     }
 }
 
-std::vector<std::string> Engine::bundles(uint64_t since_ms, const std::string& re) const {
-    std::vector<Post> posts;
-    for (const auto& p : store_.all(forum_))
-        if (p.ts_ms >= since_ms) posts.push_back(p);
-    // The most recent first, so a cap keeps what a returning reader wants.
-    std::sort(posts.begin(), posts.end(), [](const Post& a, const Post& b) { return a.ts_ms > b.ts_ms; });
-    if (posts.size() > kMaxFallbackPosts) posts.resize(kMaxFallbackPosts);
+uint64_t Engine::upper(uint64_t, uint64_t now_ms) const {
+    // Everything dated up to now + skew (a test clock: everything).
+    return now_ms >= kRealClockMs ? now_ms + kMaxClockSkewMs + 1 : static_cast<uint64_t>(INT64_MAX);
+}
+
+std::vector<std::string> Engine::first_page_ids(const HistoryRequest& r, uint64_t now_ms) const {
+    const bool top = !r.until_ms || r.until_ms > upper(0, now_ms);
+    std::vector<std::string> ids;
+    size_t bytes = 0;
+    for (const auto& p : store_.recent(forum_, r.since_ms, top ? upper(0, now_ms) : r.until_ms, top ? "" : r.until_id,
+                                       kMaxFallbackPosts)) {
+        const size_t n = encode(p).size() + 3;
+        if (bytes + n > kBundleBytes && !ids.empty()) break;
+        bytes += n;
+        ids.push_back(p.id());
+    }
+    return ids;
+}
+
+std::vector<std::string> Engine::bundles(uint64_t since_ms, const std::string& re, uint64_t until_ms,
+                                         const std::string& until_id) const {
+    // The most recent first, so a cap keeps what a returning reader wants,
+    // from the cursor down. Never a post dated in the future.
+    const uint64_t before = until_ms ? until_ms : static_cast<uint64_t>(INT64_MAX);
+    const std::vector<Post> posts = store_.recent(forum_, since_ms, before, until_ms ? until_id : std::string(), kMaxFallbackPosts);
     std::vector<std::string> out;
     json cur = json::array();
     size_t bytes = 0;

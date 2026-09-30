@@ -10,31 +10,30 @@
 namespace forum {
 namespace {
 
+// Never throws: the store is called from network callbacks, where an escaping
+// exception would abort the process. A failed statement reads as "no rows"
+// (and a failed write as "nothing changed"); the next call tries again.
 struct Stmt {
     sqlite3_stmt* s = nullptr;
     Stmt(sqlite3* db, const char* sql) {
-        if (sqlite3_prepare_v2(db, sql, -1, &s, nullptr) != SQLITE_OK)
-            throw std::runtime_error(std::string("sqlite prepare: ") + sqlite3_errmsg(db));
+        if (sqlite3_prepare_v2(db, sql, -1, &s, nullptr) != SQLITE_OK) s = nullptr;
     }
     ~Stmt() { sqlite3_finalize(s); }
     Stmt& text(int i, const std::string& v) {
-        sqlite3_bind_text(s, i, v.data(), static_cast<int>(v.size()), SQLITE_TRANSIENT);
+        if (s) sqlite3_bind_text(s, i, v.data(), static_cast<int>(v.size()), SQLITE_TRANSIENT);
         return *this;
     }
     Stmt& blob(int i, const void* d, size_t n) {
-        sqlite3_bind_blob(s, i, d, static_cast<int>(n), SQLITE_TRANSIENT);
+        if (s) sqlite3_bind_blob(s, i, d, static_cast<int>(n), SQLITE_TRANSIENT);
         return *this;
     }
     Stmt& i64(int i, int64_t v) {
-        sqlite3_bind_int64(s, i, v);
+        if (s) sqlite3_bind_int64(s, i, v);
         return *this;
     }
-    bool step() {
-        const int rc = sqlite3_step(s);
-        if (rc == SQLITE_ROW) return true;
-        if (rc == SQLITE_DONE) return false;
-        throw std::runtime_error(std::string("sqlite step: ") + sqlite3_errmsg(sqlite3_db_handle(s)));
-    }
+    bool step() { return s && sqlite3_step(s) == SQLITE_ROW; }
+    // For writes: true once the statement ran to completion.
+    bool run() { return s && sqlite3_step(s) == SQLITE_DONE; }
     std::string str(int c) const {
         const auto* t = sqlite3_column_text(s, c);
         return t ? std::string(reinterpret_cast<const char*>(t), sqlite3_column_bytes(s, c)) : std::string();
@@ -95,10 +94,24 @@ Store::Store(const std::string& path) {
     exec(kSchema);
     // Stores from before resends were counted.
     sqlite3_exec(db_, "ALTER TABLE outbox ADD COLUMN resends INTEGER NOT NULL DEFAULT 0", nullptr, nullptr, nullptr);
+    // Once, on upgrade: secure_delete only zeroes pages freed from now on, so
+    // rewrite the file to drop keys retired before it was turned on.
+    int version = 0;
+    {
+        Stmt v(db_, "PRAGMA user_version");
+        if (v.step()) version = static_cast<int>(v.num(0));
+    }
+    if (version < 1 && sqlite3_exec(db_, "VACUUM", nullptr, nullptr, nullptr) == SQLITE_OK) {
+        scrub();  // in WAL mode the rewritten pages reach the file at a checkpoint
+        exec("PRAGMA user_version=1;");
+    }
 }
 
-Store::Batch::Batch(Store& s) : s_(s) { s_.exec("BEGIN"); }
+Store::Batch::Batch(Store& s) : s_(s) {
+    began_ = sqlite3_get_autocommit(s_.db_) && sqlite3_exec(s_.db_, "BEGIN", nullptr, nullptr, nullptr) == SQLITE_OK;
+}
 Store::Batch::~Batch() {
+    if (!began_) return;
     if (sqlite3_exec(s_.db_, "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK)
         sqlite3_exec(s_.db_, "ROLLBACK", nullptr, nullptr, nullptr);
 }
@@ -122,8 +135,7 @@ bool Store::put(const Post& p, uint64_t received_ms) {
         .text(5, p.title).text(6, p.body).i64(7, static_cast<int>(p.mode)).text(8, p.alias)
         .i64(9, static_cast<int64_t>(p.ts_ms)).blob(10, p.author.data(), 32).blob(11, p.sig.data(), 64)
         .i64(12, static_cast<int64_t>(received_ms));
-    q.step();
-    return sqlite3_changes(db_) == 1;
+    return q.run() && sqlite3_changes(db_) == 1;
 }
 
 bool Store::has(const std::string& id) const {
@@ -177,11 +189,22 @@ size_t Store::count(const std::string& forum) const {
     return static_cast<size_t>(q.num(0));
 }
 
-uint64_t Store::newest_ts(const std::string& forum, uint64_t limit_ms) const {
-    Stmt q(db_, "SELECT COALESCE(MAX(ts),0) FROM posts WHERE forum=? AND ts<=?");
-    q.text(1, forum).i64(2, static_cast<int64_t>(limit_ms));
+uint64_t Store::newest_ts(const std::string& forum, uint64_t limit_ms, uint64_t received_before_ms) const {
+    Stmt q(db_, "SELECT COALESCE(MAX(ts),0) FROM posts WHERE forum=? AND ts<=? AND received<?");
+    q.text(1, forum).i64(2, static_cast<int64_t>(limit_ms)).i64(3, static_cast<int64_t>(received_before_ms));
     q.step();
     return static_cast<uint64_t>(q.num(0));
+}
+
+std::vector<Post> Store::recent(const std::string& forum, uint64_t since_ms, uint64_t before_ts,
+                                const std::string& after_id, size_t limit) const {
+    Stmt q(db_, (std::string("SELECT ") + kCols +
+                 " FROM posts WHERE forum=? AND ts>=? AND (ts<? OR (ts=? AND id>?)) ORDER BY ts DESC, id LIMIT ?").c_str());
+    q.text(1, forum).i64(2, static_cast<int64_t>(since_ms)).i64(3, static_cast<int64_t>(before_ts))
+        .i64(4, static_cast<int64_t>(before_ts)).text(5, after_id).i64(6, static_cast<int64_t>(limit));
+    std::vector<Post> out;
+    while (q.step()) out.push_back(row_to_post(q));
+    return out;
 }
 
 std::vector<Post> Store::all(const std::string& forum) const {
@@ -192,10 +215,10 @@ std::vector<Post> Store::all(const std::string& forum) const {
     return out;
 }
 
-void Store::enqueue(const std::string& id, const std::string& payload, uint64_t now_ms) {
+bool Store::enqueue(const std::string& id, const std::string& payload, uint64_t now_ms) {
     Stmt q(db_, "INSERT OR IGNORE INTO outbox(id,payload,next_try) VALUES (?,?,?)");
     q.text(1, id).text(2, payload).i64(3, static_cast<int64_t>(now_ms));
-    q.step();
+    return q.run();
 }
 
 static std::vector<OutboxItem> read_outbox(sqlite3* db, const char* sql, const int64_t* now) {
@@ -227,8 +250,7 @@ int Store::awaiting(const std::string& id, uint64_t now_ms, uint64_t window_ms) 
     {
         Stmt q(db_, "SELECT resends FROM outbox WHERE id=?");
         q.text(1, id);
-        if (!q.step()) return 0;
-        resends = static_cast<int>(q.num(0));
+        if (q.step()) resends = static_cast<int>(q.num(0));  // unreadable: start from the base window
     }
     const uint64_t wait = std::min<uint64_t>(window_ms << std::min(resends, 10), 3600000);
     Stmt u(db_, "UPDATE outbox SET next_try=?, resends=resends+1 WHERE id=?");
@@ -257,7 +279,7 @@ void Store::failed(const std::string& id, const std::string& error, uint64_t now
 }
 
 void Store::save_account(const Account& a, bool selected) {
-    if (selected) exec("UPDATE accounts SET selected=0");
+    if (selected) sqlite3_exec(db_, "UPDATE accounts SET selected=0", nullptr, nullptr, nullptr);
     Stmt q(db_, "INSERT INTO accounts VALUES (?,?,?,?,?,?) ON CONFLICT(label) DO UPDATE SET "
                 "pk=excluded.pk, sk=excluded.sk, created=excluded.created, posts=excluded.posts, "
                 "selected=MAX(selected, excluded.selected)");

@@ -14,7 +14,7 @@ yourself, under an alias, or as no one at all.
 > **Status:** the forum runs in **Logos Basecamp 0.3.0** (macOS and Linux) and is
 > installable from its [catalog](#install-in-basecamp). It has been tested end to
 > end on five real nodes on the logos.test network, 24 checks
-> ([`docs/e2e.md`](docs/e2e.md)); the core has 38 tests of its own; CI is green
+> ([`docs/e2e.md`](docs/e2e.md)); the core has 47 tests of its own; CI is green
 > on Linux and macOS.
 
 ![A thread with replies from an account, an anonymous key and an alias, each marked as verified](docs/screens/04-thread.png)
@@ -37,18 +37,19 @@ yourself, under an alias, or as no one at all.
   queued; if the network is down it is retried with back-off until it goes.
 - **Coming back online catches up, even on a network that keeps nothing.**
   A returning node asks the network's store nodes, and it asks the forum: a
-  peer holding more posts answers with a snapshot on **Logos Storage**, names
-  its storage node so it can be dialled directly, and every post in the
-  snapshot is checked like a live one. On logos.test today the store nodes
-  keep no archive at all (measured, see [`docs/e2e.md`](docs/e2e.md)), so this
-  is the path that actually works. Duplicates are impossible because ids are
-  content.
+  peer holding more posts sends the most recent ones as bundles over **Logos
+  Delivery**, through the relays, so neither side learns the other's address,
+  and every post is checked like a live one. On logos.test today the store
+  nodes keep no archive at all (measured, see [`docs/e2e.md`](docs/e2e.md)), so
+  this is the path that actually works. A node can also opt in to fetching a
+  peer's full snapshot from **Logos Storage**, at the cost of connecting to that
+  peer. Duplicates are impossible because ids are content.
 - **It does not flood the network.** Sends are paced by a token bucket, and
   history answers are capped and paced too.
 - **Unsigned traffic cannot steer it.** Titles and names from other people are
-  shown as plain text, a snapshot announcement is followed only when it answers
-  your own request and never into a private address, and posts dated in the
-  future are refused. See [`docs/security.md`](docs/security.md), written after
+  shown as plain text, what a stranger's request can make a node send is
+  capped per hour, nothing makes the forum connect to an address a stranger
+  chose, and posts dated in the future are refused. See [`docs/security.md`](docs/security.md), written after
   an [external review](https://github.com/edenbd1/lp-0026-forum/issues/1).
 
 ## LP-0026 criteria
@@ -60,7 +61,7 @@ yourself, under an alias, or as no one at all.
 | Reply by id, by alias, or revealing no id | `Mode::Identity`, `Mode::Alias`, `Mode::Anonymous` |
 | Privacy of a long-lived identity; rotation | `RotationPolicy`, `rotate()`; per-post anonymous keys |
 | No centralised server or service | Logos Delivery for posts, Logos Storage for history, SQLite on the device |
-| If offline when a message arrived, obtain past messages | store query, then `Engine::request_history` → a peer's snapshot on Logos Storage (`import_snapshot`); tested between two nodes |
+| If offline when a message arrived, obtain past messages | store query, then `Engine::request_history` → peers' bundles over Delivery, or (opt-in) a peer's snapshot on Logos Storage (`import_snapshot`); tested on five nodes |
 | If a send fails, the text stays locally to retry | the outbox, `Store::failed` + `backoff_ms` |
 | Does not flood the network | `RateLimiter` |
 | Basecamp app, loadable, in a module catalog | loads in Basecamp 0.3.0; served by [`logos-forum-catalog`](https://github.com/edenbd1/logos-forum-catalog), installed from it on a blank Basecamp |
@@ -118,7 +119,7 @@ blockchain out of scope, and the forum runs no server. What plays that role:
 | Module catalog | `https://raw.githubusercontent.com/edenbd1/logos-forum-catalog/main/logos-repo.json` |
 | Network | Logos Delivery, `logos.test` preset (cluster 2) |
 | Forum topic | `/logos-forum/1/logos-forum-934410ad/json`, on shard `/waku/2/rs/2/6` |
-| History | peers' snapshots on Logos Storage (`logos.test`), and bundles over Delivery |
+| History | peers' bundles over Delivery; peers' snapshots on Logos Storage (`logos.test`) when opted in |
 | Store nodes queried | the four `logos.test` fleet nodes (`node-01.do-ams3`, `node-01.gc-us-central1-a`, `node-01.ac-cn-hongkong-c`, `node-02.do-ams3`) |
 | Data on your machine | `<Basecamp user dir>/module_data/logos_forum/` (`forum.db`, `forum.log`) |
 

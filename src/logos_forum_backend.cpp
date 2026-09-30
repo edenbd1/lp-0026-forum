@@ -100,6 +100,22 @@ constexpr int kArrivalBatchMs = 150;
 // may announcements name, and fetches dial, private addresses.
 bool localPeersAllowed() { return qEnvironmentVariableIsSet("LOGOS_FORUM_LOCAL_PEERS"); }
 
+// Fetching a snapshot from Logos Storage means connecting to whoever provides
+// it, which tells them this node's address. History comes over Delivery relays
+// instead, unless the user opts in (LOGOS_FORUM_FETCH_SNAPSHOTS, or
+// "fetchSnapshots": true in settings.json).
+bool g_fetchSnapshots = false;
+
+// Anything thrown inside a module event or timer callback would abort the
+// ui-host: log it and drop the message instead.
+template <typename F> void guarded(const char* what, F&& f) {
+    try {
+        f();
+    } catch (const std::exception& e) {
+        log(std::string(what) + ": dropped after an error: " + e.what());
+    }
+}
+
 } // namespace
 
 LogosForumBackend::LogosForumBackend() {
@@ -109,7 +125,9 @@ LogosForumBackend::LogosForumBackend() {
     setContentTopic(q(forum::content_topic(s(name))));
 }
 
-LogosForumBackend::~LogosForumBackend() = default;
+LogosForumBackend::~LogosForumBackend() {
+    if (settingsScheduled_) saveSettings();  // a read marker saved "soon" is not lost on quit
+}
 
 QString LogosForumBackend::dataDir() const {
     // Basecamp's --user-dir is exported to every child process as
@@ -126,7 +144,7 @@ QString LogosForumBackend::dataDir() const {
 void LogosForumBackend::onContextReady() {
     // Node creation blocks briefly; return first so the view's replica can
     // come up, then bootstrap on the next turn of the event loop.
-    QTimer::singleShot(0, [this]() { bootstrap(); });
+    QTimer::singleShot(0, this, [this]() { bootstrap(); });
 }
 
 void LogosForumBackend::bootstrap() {
@@ -153,26 +171,42 @@ void LogosForumBackend::bootstrap() {
     };
     net_->on_send_result = [this](const std::string& payload, bool sent, const std::string& request,
                                   const std::string& error) {
-        const auto p = forum::decode(payload);
-        if (!p || !engine_) return;  // a history answer or a request: nothing to track
-        const std::string id = p->id();
-        if (sent) {
-            log("handed " + id.substr(0, 12) + " to delivery as request " + request);
-            if (!request.empty()) inFlight_.insert(q(request), q(id));
-        } else {
-            log("delivery refused " + id.substr(0, 12) + ": " + error);
-            if (engine_->requeue(id, error.empty() ? "send failed" : error, now_ms())) publishOutbox();
-        }
+        guarded("send result", [&]() {
+            const auto p = forum::decode(payload);
+            if (!p || !engine_) return;  // a history answer or a request: nothing to track
+            const std::string id = p->id();
+            if (sent) {
+                log("handed " + id.substr(0, 12) + " to delivery as request " + request);
+                if (request.empty()) return;
+                // The network may have confirmed it before this reply reached us.
+                if (earlyConfirms_.remove(q(request)) > 0) {
+                    engine_->confirm(id);
+                    log("confirmed " + id.substr(0, 12) + " (before its send reply)");
+                    publishOutbox();
+                    emit postStateChanged(q(id), QStringLiteral("sent"), QString());
+                    return;
+                }
+                inFlight_.insert(q(request), q(id));
+            } else {
+                log("delivery refused " + id.substr(0, 12) + ": " + error);
+                if (engine_->requeue(id, error.empty() ? "send failed" : error, now_ms())) publishOutbox();
+                emit postStateChanged(q(id), QStringLiteral("failed"), q(error));
+            }
+        });
     };
     // Accepted by the node, not yet out: a post stays in the outbox until the
     // network confirms it (messagePropagated / messageSent below). The request
     // id arrives with the asynchronous send result (on_send_result above).
-    engine_->on_snapshot = [this](const forum::Announcement& an) { fetchSnapshot(an); };
-    engine_->on_history_wanted = [this](const forum::HistoryRequest& r) {
+    g_fetchSnapshots = qEnvironmentVariableIsSet("LOGOS_FORUM_FETCH_SNAPSHOTS") || fetchSnapshots_;
+    if (g_fetchSnapshots) engine_->on_snapshot = [this](const forum::Announcement& an) { fetchSnapshot(an); };
+    log(std::string("history from peers: ") + (g_fetchSnapshots ? "Logos Storage snapshots, then Delivery" : "Delivery only"));
+    // Storage-path answers announce this node's storage address: only when the
+    // user opted in. Otherwise the engine answers every request over Delivery.
+    if (g_fetchSnapshots) engine_->on_history_wanted = [this](const forum::HistoryRequest& r) {
         log("answering a history request from a peer with " + std::to_string(r.have) + " posts");
         answerRe_ = r.id;
         // Off the delivery event's call stack: answering calls back into modules.
-        QTimer::singleShot(0, [this]() {
+        QTimer::singleShot(0, this, [this]() {
             if (!lastSnapshotCid_.empty() && postsAtLastSnapshot_ == store_->count())
                 engine_->announce_snapshot(lastSnapshotCid_, postsAtLastSnapshot_, now_ms(), answerRe_);  // unchanged: same CID
             else
@@ -198,7 +232,7 @@ void LogosForumBackend::bootstrap() {
     pumpTimer_.start(kPumpMs);
     connect(&historyTimer_, &QTimer::timeout, [this]() { runCatchUp("periodic"); });
     historyTimer_.start(kCatchUpMs);
-    connect(&snapshotTimer_, &QTimer::timeout, [this]() {
+    if (g_fetchSnapshots) connect(&snapshotTimer_, &QTimer::timeout, [this]() {
         if (store_ && store_->count() != postsAtLastSnapshot_) saveSnapshot();
     });
     snapshotTimer_.start(kSnapshotMs);
@@ -216,7 +250,7 @@ void LogosForumBackend::wireDelivery() {
         refreshStatus();
         // Back from offline: fetch what was missed and flush the outbox.
         if (connectionState_ == QLatin1String("Connected") && prev != connectionState_)
-            QTimer::singleShot(0, [this]() {
+            QTimer::singleShot(0, this, [this]() {
                 runCatchUp("reconnected");
                 if (engine_ && engine_->reconnected(now_ms()) > 0) publishOutbox();
             });
@@ -224,19 +258,21 @@ void LogosForumBackend::wireDelivery() {
     d.on("messageReceived", [this](const QVariantList& data) {
         if (data.size() < 3 || !engine_) return;
         if (data.at(1).toString() != contentTopic()) return;  // another app's traffic
-        const std::string payload = data.at(2).toByteArray().toStdString();
-        const size_t before = store_->count();
-        engine_->receive(payload, now_ms());
-        const size_t added = store_->count() - before;
-        if (payload.find("\"logos-forum-snapshot\"") != std::string::npos) {
-            log("received a history bundle: " + std::to_string(added) + " new");
-            if (added > 0) {
-                lastSnapshot_ = QStringLiteral("History from peers · %1 new").arg(added);
-                publishHistory();
+        guarded("received message", [&]() {
+            const std::string payload = data.at(2).toByteArray().toStdString();
+            const size_t before = store_->count();
+            engine_->receive(payload, now_ms());
+            const size_t added = store_->count() - before;
+            if (payload.find("\"logos-forum-snapshot\"") != std::string::npos) {
+                log("received a history bundle: " + std::to_string(added) + " new");
+                if (added > 0) {
+                    lastSnapshot_ = QStringLiteral("History from peers · %1 new").arg(added);
+                    publishHistory();
+                }
+            } else {
+                log(std::string("received ") + (added ? "a new post" : "a known or foreign message"));
             }
-        } else {
-            log(std::string("received ") + (added ? "a new post" : "a known or foreign message"));
-        }
+        });
     });
     d.on("nodeStarted", [this](const QVariantList& data) {
         const bool up = !data.isEmpty() && data.at(0).toBool();
@@ -246,7 +282,7 @@ void LogosForumBackend::wireDelivery() {
             return;
         }
         subscribeAttempts_ = 0;
-        QTimer::singleShot(0, [this]() {
+        QTimer::singleShot(0, this, [this]() {
             subscribe();
             runCatchUp("node started");
         });
@@ -255,7 +291,19 @@ void LogosForumBackend::wireDelivery() {
     auto confirmed = [this](const QVariantList& data, const char* how) {
         const QString request = data.value(0).toString();
         const auto it = inFlight_.constFind(request);
-        if (it == inFlight_.constEnd()) return;  // not ours, or already confirmed
+        if (it == inFlight_.constEnd()) {
+            // Not ours, already confirmed, or ahead of our own send reply: keep
+            // it briefly so that reply can still match it.
+            // delivery_module is shared: other apps' confirmations land here too,
+            // so the oldest are dropped rather than refusing ours.
+            if (!request.isEmpty()) {
+                earlyConfirms_.insert(request);
+                earlyOrder_.append(request);
+                while (earlyOrder_.size() > 512) earlyConfirms_.remove(earlyOrder_.takeFirst());
+                QTimer::singleShot(30000, this, [this, request]() { earlyConfirms_.remove(request); });
+            }
+            return;
+        }
         const QString id = it.value();
         inFlight_.remove(request);
         if (engine_) engine_->confirm(s(id));
@@ -316,7 +364,7 @@ void LogosForumBackend::subscribe() {
         // affected either way: it runs off the local store.
         setStatus(QStringLiteral("Joining the forum topic… (attempt %1)").arg(subscribeAttempts_));
         if (subscribeAttempts_ < kMaxSubscribeAttempts)
-            QTimer::singleShot(kSubscribeRetryMs, [this]() { subscribe(); });
+            QTimer::singleShot(kSubscribeRetryMs, this, [this]() { subscribe(); });
     });
 }
 
@@ -328,8 +376,10 @@ void LogosForumBackend::refreshStatus() {
 
 void LogosForumBackend::pump() {
     if (!engine_) return;
-    engine_->tick(now_ms());  // lets a pending history answer go out once its wait has passed
-    if (engine_->pump(now_ms()) > 0 || outboxCount() != static_cast<int>(store_->outbox().size())) publishOutbox();
+    guarded("pump", [&]() {
+        engine_->tick(now_ms());  // lets a pending history answer go out once its wait has passed
+        if (engine_->pump(now_ms()) > 0 || outboxCount() != static_cast<int>(store_->outbox().size())) publishOutbox();
+    });
 }
 
 void LogosForumBackend::publishOutbox() {
@@ -361,18 +411,21 @@ QString LogosForumBackend::compose(bool topic, const QString& target, const QStr
         if (!as) return QStringLiteral("error: no account selected");
         if (rotation_.due(*as, now_ms())) {
             forum::rotate(*as, now_ms());
+            store_->save_account(*as, true);
+            store_->scrub();
             log("rotated account " + as->label + " by policy");
         }
     }
     const std::string a = mode == 1 ? s(alias.trimmed()) : std::string();
     const std::string id = topic ? engine_->post_topic(as, s(title.trimmed()), s(text), a, now_ms())
                                  : engine_->post_reply(as, s(target), s(text), a, now_ms());
+    if (id.empty()) return QStringLiteral("error: the post could not be saved on this device");
     if (as) {
         store_->save_account(*as, true);
         publishAccounts();
     }
     publishOutbox();
-    QTimer::singleShot(0, [this]() { pump(); });
+    QTimer::singleShot(0, this, [this]() { pump(); });
     return q(id);
 }
 
@@ -430,6 +483,8 @@ QString LogosForumBackend::listTopics() {
     for (const auto& o : store_->outbox()) outbox.insert(q(o.id), o.attempts);
     QJsonArray out;
     for (const auto& t : store_->topics(s(forumName()))) {
+        // Kept from before dates were checked: not pinned above everything.
+        if (t.topic.ts_ms > now_ms() + forum::Engine::kMaxClockSkewMs) continue;
         QJsonObject o = postJson(t.topic, t.id, accounts_, outbox);
         o.insert("replies", t.replies);
         o.insert("last", static_cast<double>(t.last_activity_ms));
@@ -469,7 +524,7 @@ QString LogosForumBackend::markRead(QString topicId) {
 void LogosForumBackend::saveSettingsSoon() {
     if (settingsScheduled_) return;
     settingsScheduled_ = true;
-    QTimer::singleShot(2000, [this]() {
+    QTimer::singleShot(2000, this, [this]() {
         settingsScheduled_ = false;
         saveSettings();
     });
@@ -479,7 +534,7 @@ void LogosForumBackend::postArrivedSoon(const QString& id, const QString& topicI
     arrivals_.insert(topicId, id);
     if (arrivalsScheduled_) return;
     arrivalsScheduled_ = true;
-    QTimer::singleShot(kArrivalBatchMs, [this]() {
+    QTimer::singleShot(kArrivalBatchMs, this, [this]() {
         arrivalsScheduled_ = false;
         // A few: one signal each, so an open topic refreshes and is marked read.
         // Many (an import): one signal with no topic, and the view refreshes once.
@@ -599,6 +654,7 @@ void LogosForumBackend::loadSettings() {
     // A first launch has read nothing, and a forum full of "new" is noise:
     // what was there before the first launch counts as seen, what comes after
     // does not.
+    fetchSnapshots_ = o.value("fetchSnapshots").toBool(false);
     readSince_ = o.value("readSince").toDouble(0);
     if (readSince_ <= 0) {
         readSince_ = static_cast<double>(now_ms());
@@ -630,6 +686,7 @@ void LogosForumBackend::saveSettings() {
                         {"storePeers", peers},
                         {"storagePort", storagePort_},
                         {"readUpTo", readJson()},
+                        {"fetchSnapshots", fetchSnapshots_},
                         {"readSince", readSince_}};
     QFile f(dataDir() + QStringLiteral("/settings.json"));
     if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) f.write(QJsonDocument(o).toJson());
@@ -698,8 +755,10 @@ void LogosForumBackend::runCatchUp(const char* why) {
             : QStringLiteral("Caught up %1 · %2 new").arg(hhmm(now_ms())).arg(added);
         publishHistory();
         // Store nodes may keep no archive at all; ask the peers too.
-        QTimer::singleShot(0, [this]() {
-            if (engine_) engine_->request_history(now_ms());
+        QTimer::singleShot(0, this, [this]() {
+            // Over Storage first only when the user opted in; by default the
+            // answer comes over Delivery relays and nobody learns our address.
+            if (engine_) engine_->request_history(now_ms(), /*via_delivery=*/!g_fetchSnapshots);
             log("asked peers for history");
         });
     });
@@ -717,18 +776,18 @@ void LogosForumBackend::wireStorage() {
         storageReady_ = bool_at(j, "success");
         log(std::string("storage start: ") + (storageReady_ ? "ok" : s(payload)));
         publishHistory();
-        if (storageReady_) QTimer::singleShot(0, [this]() { learnStorageIdentity(); });
+        if (storageReady_) QTimer::singleShot(0, this, [this]() { learnStorageIdentity(); });
     });
     st.onStorageUploadProgress([this](const QString& payload) {
         const auto j = nlohmann::json::parse(s(payload), nullptr, false);
         if (!j.is_object() || q(str_at(j, "sessionId")) != uploadSession_) return;
-        ++uploadProgress_;
+        armUploadWatchdog();
         log("upload progress: " + s(payload).substr(0, 200));
         if (!bool_at(j, "success")) {
             failUpload(QStringLiteral("Snapshot upload failed: %1").arg(q(str_at(j, "error"))));
             return;
         }
-        QTimer::singleShot(0, [this]() {
+        QTimer::singleShot(0, this, [this]() {
             if (uploadOffset_ < uploadDoc_.size()) uploadNextChunk();
             else finishUpload();
         });
@@ -752,7 +811,8 @@ void LogosForumBackend::wireStorage() {
         downloadSession_.clear();
         log("download done: " + s(payload).substr(0, 200) + ", " + std::to_string(downloadBuf_.size()) + " bytes");
         if (bool_at(j, "success") && engine_) {
-            const int added = engine_->import_snapshot(downloadBuf_, now_ms());
+            int added = 0;
+            guarded("snapshot import", [&]() { added = engine_->import_snapshot(downloadBuf_, now_ms()); });
             lastSnapshot_ = QStringLiteral("Loaded a snapshot · %1 new").arg(added);
             log("snapshot imported: " + std::to_string(added) + " new");
             publishHistory();
@@ -780,7 +840,11 @@ void LogosForumBackend::initStorage(bool withDiscPort) {
     const QString cfg = QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact));
     if (ok(st.init(cfg))) {
         log(std::string("storage init ok") + (withDiscPort ? "" : " (without disc-port)"));
-        ok(st.start());
+        if (!ok(st.start())) {
+            log("storage start refused");
+            lastSnapshot_ = QStringLiteral("Storage failed to start");
+            publishHistory();
+        }
         return;
     }
     if (withDiscPort) {
@@ -804,6 +868,7 @@ QString LogosForumBackend::saveSnapshot() {
     if (!engine_) return QStringLiteral("the forum is still starting");
     if (uploading_) return QStringLiteral("a snapshot is already being saved");
     uploading_ = true;
+    armUploadWatchdog();
     uploadDoc_ = engine_->snapshot();
     uploadOffset_ = 0;
     uploadPosts_ = store_->count();
@@ -820,6 +885,7 @@ QString LogosForumBackend::saveSnapshot() {
             }
             uploadSession_ = r.getString();
             log("upload session " + s(uploadSession_) + ", " + std::to_string(uploadDoc_.size()) + " bytes");
+            armUploadWatchdog();
             uploadNextChunk();
         });
     return QString();
@@ -838,14 +904,7 @@ void LogosForumBackend::uploadNextChunk() {
     // a UTF-8 character would come back as U+FFFD and break its post's signature.
     const std::string chunk = uploadDoc_.substr(uploadOffset_, forum::utf8_cut(uploadDoc_, uploadOffset_, kUploadChunk));
     uploadOffset_ += chunk.size();
-    // An upload whose progress event never comes is as good as a failed one.
-    const int seen = uploadProgress_;
-    const QString session = uploadSession_;
-    QTimer::singleShot(kUploadWatchdogMs, [this, seen, session]() {
-        if (!uploading_ || uploadSession_ != session || uploadProgress_ != seen) return;
-        modules().storage_module.uploadCancelAsync(session, [](LogosResult) {});
-        failUpload(QStringLiteral("Snapshot upload stalled"));
-    });
+    armUploadWatchdog();
     // Completion arrives as a storageUploadProgress event for this session.
     modules().storage_module.uploadChunkAsync(uploadSession_, q(chunk), [this](LogosResult r) {
         if (!r.success) {
@@ -855,7 +914,20 @@ void LogosForumBackend::uploadNextChunk() {
     });
 }
 
+void LogosForumBackend::armUploadWatchdog() {
+    // One per upload, re-armed at every step: init, each chunk, finalize. An
+    // upload whose next step never answers is as good as a failed one, and
+    // must not block snapshots until a restart.
+    const int gen = ++uploadProgress_;
+    QTimer::singleShot(kUploadWatchdogMs, this, [this, gen]() {
+        if (!uploading_ || uploadProgress_ != gen) return;
+        if (!uploadSession_.isEmpty()) modules().storage_module.uploadCancelAsync(uploadSession_, [](LogosResult) {});
+        failUpload(QStringLiteral("Snapshot upload stalled"));
+    });
+}
+
 void LogosForumBackend::finishUpload() {
+    armUploadWatchdog();
     modules().storage_module.uploadFinalizeAsync(uploadSession_, [this](LogosResult r) {
         if (!r.success) {
             failUpload(QStringLiteral("Snapshot upload failed: %1").arg(r.getError()));
@@ -869,7 +941,7 @@ void LogosForumBackend::finishUpload() {
         lastSnapshotCid_ = cid;
         // Peers act only on an announcement that answers their own request.
         if (!answerRe_.empty())
-            QTimer::singleShot(0, [this, cid]() {
+            QTimer::singleShot(0, this, [this, cid]() {
                 engine_->announce_snapshot(cid, uploadPosts_, now_ms(), answerRe_);
                 answerRe_.clear();
             });
@@ -946,7 +1018,7 @@ void LogosForumBackend::fetchSnapshot(const forum::Announcement& an) {
             downloadSession_ = r.getString();
         }, Timeout(120000));
         // A download that never finishes is as good as a failed one.
-        QTimer::singleShot(kDownloadWatchdogMs, [this, cid]() {
+        QTimer::singleShot(kDownloadWatchdogMs, this, [this, cid]() {
             if (downloadSession_ != q(cid)) return;
             modules().storage_module.downloadCancelAsync(downloadSession_, [](LogosResult) {});
             downloadSession_.clear();
@@ -968,6 +1040,6 @@ void LogosForumBackend::fetchSnapshot(const forum::Announcement& an) {
     modules().storage_module.connectAsync(q(an.peer), addrs, [this, download](LogosResult r) {
         if (!r.success) log("dial failed: " + s(r.getError()) + " — trying the DHT");
         // The connect result arrives as a storageConnect event; give it a moment.
-        QTimer::singleShot(r.success ? 1500 : 0, download);
+        QTimer::singleShot(r.success ? 1500 : 0, this, download);
     });
 }

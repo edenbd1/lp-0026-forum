@@ -59,9 +59,17 @@ public:
     size_t count(const std::string& forum) const;
     // The newest post date in a forum no later than `limit_ms` (0 if none), so
     // a post dated in the future cannot stand in for "the newest".
-    uint64_t newest_ts(const std::string& forum, uint64_t limit_ms) const;
+    // Only posts received before `received_before_ms` count, if given.
+    uint64_t newest_ts(const std::string& forum, uint64_t limit_ms, uint64_t received_before_ms = UINT64_MAX >> 1) const;
     // Every post of a forum, oldest first.
     std::vector<Post> all(const std::string& forum) const;
+    // Posts in the order history is paged (newest first, ties by id), dated
+    // from `since_ms`, strictly after the cursor (`before_ts`, `after_id`): a
+    // post is after it if older, or as old with a greater id. The cursor
+    // (`before_ts`, "") starts with everything dated before `before_ts`.
+    // At most `limit`, read without loading the rest.
+    std::vector<Post> recent(const std::string& forum, uint64_t since_ms, uint64_t before_ts,
+                             const std::string& after_id, size_t limit) const;
 
     // Many writes as one commit (a history import), instead of one each.
     class Batch {
@@ -72,9 +80,11 @@ public:
         Batch& operator=(const Batch&) = delete;
     private:
         Store& s_;
+        bool began_ = false;  // not nested, never throwing: it runs inside network callbacks
     };
 
-    void enqueue(const std::string& id, const std::string& payload, uint64_t now_ms);
+    // False if it could not be written (the post would never be sent).
+    bool enqueue(const std::string& id, const std::string& payload, uint64_t now_ms);
     std::vector<OutboxItem> due(uint64_t now_ms) const;
     std::vector<OutboxItem> outbox() const;
     void sent(const std::string& id);

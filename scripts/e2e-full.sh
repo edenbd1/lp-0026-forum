@@ -70,7 +70,9 @@ pick_mode() {  # pick_mode <pid> <0 account | 1 alias | 2 anonymous>: click the 
   front "$1"; cliclick "c:$((cx + cw / 2)),$y"; sleep 0.6
 }
 new_topic() {  # new_topic <pid> <title> <body> <mode> [alias]
-  click_ax "$1" 'button "New topic" of group 1 of window 1' || fail "no New topic button"; sleep 1
+  # The view may still be loading (a node just restarted): give it a few seconds.
+  local i; for i in $(seq 15); do click_ax "$1" 'button "New topic" of group 1 of window 1' && break; sleep 1; done
+  [ "$i" -lt 15 ] || fail "no New topic button"; sleep 1
   ui "$1" "set value of text field -2 of group 1 of window 1 to \"$2\"" > /dev/null
   ui "$1" "set value of text field -1 of group 1 of window 1 to \"$3\"" > /dev/null
   pick_mode "$1" "$4"

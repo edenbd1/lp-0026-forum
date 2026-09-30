@@ -53,7 +53,10 @@ std::vector<std::string> DeliveryTransport::default_store_peers() {
 }
 
 forum::SendResult DeliveryTransport::send(const std::string& content_topic, const std::string& payload) {
-    modules_.delivery_module.sendAsync(qs(content_topic), QByteArray::fromStdString(payload), [this, payload](LogosResult r) {
+    std::weak_ptr<bool> alive = alive_;
+    modules_.delivery_module.sendAsync(qs(content_topic), QByteArray::fromStdString(payload), [this, alive, payload](LogosResult r) {
+        const auto a = alive.lock();
+        if (!a || !*a) return;
         if (on_send_result) on_send_result(payload, r.success, string_of(r), error_of(r));
     });
     return {true, {}, {}, false};
@@ -106,9 +109,12 @@ void DeliveryTransport::query_page(std::shared_ptr<Query> q) {
     if (qEnvironmentVariable("LOGOS_FORUM_DIAG_SHARD") == QLatin1String("all")) req.erase("pubsubTopic");
     if (!q->cursor.empty()) req["paginationCursor"] = q->cursor;
     const std::string peer = peers_[q->peer];
+    std::weak_ptr<bool> alive = alive_;
     modules_.delivery_module.storeQueryAsync(
         qs(req.dump()), qs(peer), kHistoryTimeoutMs,
-        [this, q, peer](LogosResult r) {
+        [this, alive, q, peer](LogosResult r) {
+            const auto a = alive.lock();
+            if (!a || !*a) return;
             // One peer is finished with — answered or not — when it fails, runs
             // out of pages, or hits the page bound.
             // Every store node is asked: retention differs between them, and

@@ -13,6 +13,8 @@
 
 #include <memory>
 #include <set>
+
+#include <QSet>
 #include <string>
 
 #include <QHash>
@@ -83,6 +85,7 @@ private:
     void saveSettingsSoon();
     void postArrivedSoon(const QString& id, const QString& topicId);
     void initStorage(bool withDiscPort);
+    void armUploadWatchdog();
     QJsonObject readJson() const;
 
     std::unique_ptr<forum::Store> store_;
@@ -118,7 +121,10 @@ private:
     std::string downloadBuf_;
     std::set<std::string> seenSnapshots_;
     QString lastCatchUp_, lastSnapshot_;
-    int uploadProgress_ = 0;        // bumped on every upload event, for the upload watchdog
+    int uploadProgress_ = 0;        // upload watchdog generation, bumped at every upload step
+    bool fetchSnapshots_ = false;   // settings.json "fetchSnapshots": opt in to Storage fetches
+    QSet<QString> earlyConfirms_;   // confirmations that arrived before our send reply
+    QList<QString> earlyOrder_;     // their arrival order, to drop the oldest
 
     // Arrivals are told to the view at most once per short window: a large
     // import would otherwise mean one full refresh per post.

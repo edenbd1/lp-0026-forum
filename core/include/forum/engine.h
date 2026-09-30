@@ -72,11 +72,11 @@ std::string pubsub_topic(const std::string& content_topic, int cluster = 2, int 
 // never cut a character in two.
 size_t utf8_cut(const std::string& s, size_t from, size_t max);
 
-// Whether a multiaddr names a publicly routable host. Loopback, private, link-
-// local and carrier-grade NAT ranges are not: an announcement is unsigned, and
-// must not be able to make every reader connect into its own machine or LAN.
-// DNS names are accepted (they resolve to whatever the name's owner chose,
-// like any public address).
+// Whether a multiaddr names a publicly routable IP address. Loopback, private,
+// link-local, carrier-grade NAT, NAT64, mapped and compatible IPv6 forms are
+// not, and neither is any DNS name (it can resolve to this machine): an
+// announcement is unsigned, and must not make a reader connect into its own
+// machine or LAN. Addresses are parsed, not matched as text.
 bool is_public_multiaddr(const std::string& addr);
 
 // Where a snapshot lives. The storage peer is optional: when present, a
@@ -97,6 +97,10 @@ struct HistoryRequest {
     size_t have = 0;       // how many posts the asker holds
     bool via_delivery = false;
     uint64_t since_ms = 0; // the asker's newest post, less a margin
+    // 0: from the newest. Otherwise a page further down: posts after the
+    // cursor (until_ms, until_id) in newest-first order.
+    uint64_t until_ms = 0;
+    std::string until_id;
 };
 
 class Engine {
@@ -146,7 +150,8 @@ public:
     // post in it exactly as if it had arrived live — a snapshot is a bundle of
     // signed posts, not a source of trust. Returns how many were new.
     std::string snapshot() const;
-    int import_snapshot(const std::string& doc, uint64_t now_ms);
+    // `valid`, if given, receives its well-signed posts of this forum, new or not.
+    int import_snapshot(const std::string& doc, uint64_t now_ms, std::vector<Post>* valid = nullptr);
 
     // Announce a snapshot stored under `cid` on the forum's topic, so peers who
     // were away for longer than the network keeps history can fetch it.
@@ -165,6 +170,10 @@ public:
     // the posts themselves as bundles on the Delivery topic, which crosses NAT.
     // Carries only a count and a timestamp, nothing identifying. Returns the id.
     std::string request_history(uint64_t now_ms, bool via_delivery = false);
+    // A Delivery answer is capped; when it says there is more, the engine asks
+    // again for the page below (at most kMaxFollowUps per session), so a node
+    // away for long gets everything since it left, not only the newest part.
+    static constexpr int kMaxFollowUps = 50;
 
     // A peer asked for history over Logos Storage and holds fewer posts than
     // we do: the embedder answers with announce_snapshot(…, req.id).
@@ -187,9 +196,15 @@ public:
     // the most recent posts up to this size. The asker can ask again later.
     static constexpr size_t kMaxAnswerBytes = 256 * 1024;
     // How long our own history request stays open for answers.
-    static constexpr uint64_t kRequestOpenMs = 2 * 60 * 1000;
-    std::vector<std::string> bundles(uint64_t since_ms, const std::string& re) const;
-    static constexpr uint64_t kAnswerEveryMs = 30000;
+    static constexpr uint64_t kRequestOpenMs = 10 * 60 * 1000;
+    // All Delivery answers of one node, per hour, whoever asks and however
+    // often: the sustained cost a stranger can make a node pay.
+    static constexpr size_t kAnswerBudgetBytes = 1024 * 1024;
+    std::vector<std::string> bundles(uint64_t since_ms, const std::string& re, uint64_t until_ms = 0,
+                                     const std::string& until_id = {}) const;
+    // Storage answers mean a snapshot upload: at most one every ten minutes
+    // (in between, the embedder re-announces the last snapshot).
+    static constexpr uint64_t kAnswerEveryMs = 10 * 60 * 1000;
     // Delivery answers carry the posts themselves, so they are rarer.
     static constexpr uint64_t kDeliveryAnswerEveryMs = 60000;
 
@@ -209,8 +224,34 @@ public:
 private:
     std::string compose(Post p, Account* as, const std::string& alias, uint64_t now_ms);
     bool accept(const Post& p, uint64_t now_ms);
-    // Our own open history requests, by id, with when they close.
-    std::map<std::string, uint64_t> asked_;
+    // What Delivery answers have cost this hour, and when someone last sent
+    // history bundles here (then there is no need for us to send ours).
+    uint64_t budget_since_ms_ = 0;
+    size_t budget_used_ = 0;
+    // Our own open history requests, by id.
+    struct Asked {
+        uint64_t closes_ms = 0, since_ms = 0;
+        bool paged = false;     // carried the paging cursor
+        bool answered = false;  // got a bundle with real posts
+        bool more = false;      // and one said there is more
+    };
+    std::map<std::string, Asked> asked_;
+    uint64_t session_start_ms_ = 0;     // posts received before it define "what we had"
+    // Paging through a backlog. The cursor survives an answer that never came
+    // (the next request resumes from it) and ends when a paged request is
+    // answered without "more". A follow-up waits a little, so that of several
+    // answers to one request the least advanced cursor is used: a replayed
+    // old post cannot make us skip what lies between.
+    struct Cursor { bool active = false; uint64_t since_ms = 0, ts = 0; std::string id; };
+    Cursor cursor_;
+    std::optional<std::string> follow_up_for_;   // the request whose answers set the next page
+    uint64_t follow_up_due_ms_ = 0;
+    Cursor follow_up_;
+    int follow_ups_ = 0;
+    std::string send_request(uint64_t now_ms, bool via_delivery, uint64_t since_ms, uint64_t until_ms,
+                             const std::string& until_id = {});
+    std::vector<std::string> first_page_ids(const HistoryRequest& r, uint64_t now_ms) const;
+    uint64_t upper(uint64_t until_ms, uint64_t now_ms) const;
     // Delivery answers waiting for the rate limit, like the outbox.
     std::deque<std::string> answers_;
     Store& store_;

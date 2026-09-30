@@ -126,6 +126,7 @@ Item {
         var h = (k || "").replace("…", "")
         return h.length > 10 ? h.substring(0, 4) + "…" + h.substring(h.length - 4) : h
     }
+    function esc(t) { return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;") }
     function exact(ms) { return Qt.formatDateTime(new Date(ms), "d MMM yyyy, HH:mm") }
     function result(r) {
         // Posting slots return the new id, or "error: …".
@@ -157,7 +158,7 @@ Item {
             root.refreshTopics()
             if (root.openId !== "" && (topicId === root.openId || topicId === "")) {
                 root.refreshThread()
-                root.call(root.backend.markRead(topicId))  // the user is looking at it
+                root.call(root.backend.markRead(root.openId))  // the user is looking at it
             }
         }
         function onPostStateChanged(id, state, detail) {
@@ -393,15 +394,17 @@ Item {
             }
             Dim {
                 Layout.fillWidth: true
+                // Styled for the orange count only: both status strings can carry
+                // text from the network (a store node's error), so they are escaped.
                 textFormat: Text.StyledText
-                text: root.status
+                text: root.esc(root.status)
                       + (root.outboxCount > 0 ? " · <font color=\"" + root.warn + "\">" + root.outboxCount + " waiting to send</font>" : "")
-                      + (root.historyStatus !== "" ? " · " + root.historyStatus : "")
+                      + (root.historyStatus !== "" ? " · " + root.esc(root.historyStatus) : "")
             }
         }
         Text {
             Layout.fillWidth: true; visible: root.lastError !== ""
-            text: root.lastError; color: root.warn; font.pixelSize: 13; wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+            text: root.lastError; textFormat: Text.PlainText; color: root.warn; font.pixelSize: 13; wrapMode: Text.WrapAtWordBoundaryOrAnywhere
         }
 
         RowLayout {

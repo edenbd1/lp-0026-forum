@@ -1,0 +1,9 @@
+ok   both nodes joined the forum
+ok   B received A's topic
+ok   same author key on both nodes
+ok   A received B's anonymous reply
+ok   the anonymous key is none of B's accounts
+ok   fresh B loaded history from a peer's snapshot
+ok   through Logos Storage: zDvZRwzmCK9Fkxrm7eMx5bhnRuyFKuGLe2sdcgXKw6SDcAfoBNE1
+PASS
+exit=0

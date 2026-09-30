@@ -40,11 +40,25 @@ click_in_window() {  # click_in_window <pid> <dx> <dy>: a point relative to the 
   cliclick "c:$((x + $2)),$((y + $3))"
 }
 db() { sqlite3 "$1/module_data/logos_forum/forum.db" "$2"; }
+pick_mode() {  # pick_mode <pid> <0 account | 1 alias | 2 anonymous>: click the item itself
+  local pos; pos=$(ui "$1" 'get {position, size} of menu button -1 of group 1 of window 1' | tr -d ' ')
+  IFS=, read -r cx cy cw ch <<< "$pos"
+  local wpos; wpos=$(ui "$1" 'get {position, size} of window 1' | tr -d ' '); IFS=, read -r wx wy ww wh <<< "$wpos"
+  click_ax "$1" 'menu button -1 of group 1 of window 1' || fail "no Post-as picker"; sleep 0.8
+  local y
+  if [ $((cy + ch + 3 * ch)) -gt $((wy + wh)) ]; then y=$((cy - (3 - $2) * ch + ch / 2))   # opens upward
+  else y=$((cy + ch + $2 * ch + ch / 2)); fi                                           # opens downward
+  front "$1"; cliclick "c:$((cx + cw / 2)),$y"; sleep 0.6
+}
 start() {
-  (LOGOS_FORUM_LOCAL_PEERS=1 LOGOS_FORUM_NAME="e2e $$" "$BASECAMP" --user-dir "$1" > "$1.log" 2>&1 &)
+  (LOGOS_FORUM_LOCAL_PEERS=1 LOGOS_FORUM_FETCH_SNAPSHOTS=1 LOGOS_FORUM_NAME="e2e $$" "$BASECAMP" --user-dir "$1" > "$1.log" 2>&1 &)
   local pid=""; for _ in $(seq 30); do pid=$(pgrep -n -f "LogosBasecamp.bin --user-dir $1\$" || true); [ -n "$pid" ] && break; sleep 1; done
   [ -n "$pid" ] || fail "Basecamp did not start for $1"; sleep 10
-  ui "$pid" 'click button "Logos Forum" of window 1' > /dev/null
+  # Basecamp may still be loading its sidebar: retry until the forum has started.
+  for _ in $(seq 10); do
+    ui "$pid" 'click button "Logos Forum" of window 1' > /dev/null 2>&1 || true
+    sleep 3; [ -f "$1/module_data/logos_forum/forum.log" ] && break
+  done
   echo "$pid"
 }
 wait_for() {  # wait_for <seconds> <description> <command…>
@@ -75,12 +89,11 @@ echo "ok   same author key on both nodes"
 
 # 2. B replies anonymously
 ui "$pb" 'set frontmost to true' > /dev/null; sleep 0.5
-click_in_window "$pb" 200 250   # the first row of the topic list (under the search field)
+# Topic rows are accessible buttons named after the topic: open it by name.
+ui "$pb" 'perform action "AXPress" of button "Hello from node A" of group 1 of window 1' > /dev/null
 sleep 1.5
+pick_mode "$pb" 2
 ui "$pb" 'set value of text field -1 of group 1 of window 1 to "An anonymous reply from B."' > /dev/null
-click_ax "$pb" 'menu button 2 of group 1 of window 1' 2> /dev/null || click_ax "$pb" 'menu button "Account 1" of group 1 of window 1'
-sleep 0.7
-osascript -e 'tell application "System Events" to key code 125' -e 'tell application "System Events" to key code 125' -e 'tell application "System Events" to key code 36'
 sleep 0.5
 click_ax "$pb" 'button "Reply" of group 1 of window 1'
 wait_for 60 "A received B's anonymous reply" bash -c "[ \"\$(sqlite3 $A/module_data/logos_forum/forum.db 'select count(*) from posts where kind=1 and mode=2')\" = 1 ]"
