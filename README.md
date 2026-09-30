@@ -114,10 +114,10 @@ nix build .#lgx-portable                      # result/logos-logos_forum-module.
 # the two modules it depends on, from the official Logos catalog
 base=https://github.com/logos-co/logos-modules-release/releases/download
 curl -LO $base/delivery_module-v0.2.1/delivery_module-0.2.1.lgx
-curl -LO $base/storage_module-v2.1.2/storage_module-2.1.2.lgx
+curl -LO $base/storage_module-v3.0.0/storage_module-3.0.0.lgx
 
 # install all three into a Basecamp user directory and open Basecamp on it
-scripts/install-local.sh ~/basecamp-forum result/*.lgx delivery_module-0.2.1.lgx storage_module-2.1.2.lgx
+scripts/install-local.sh ~/basecamp-forum result/*.lgx delivery_module-0.2.1.lgx storage_module-3.0.0.lgx
 LogosBasecamp --user-dir ~/basecamp-forum     # macOS: ~/Applications/LogosBasecamp.app/Contents/MacOS/LogosBasecamp
 ```
 
@@ -237,7 +237,7 @@ The view adapts instead of clipping. Below 720 px it shows one pane at a time
 ## Test between two real nodes
 
 ```bash
-scripts/e2e-two-nodes.sh result/*.lgx delivery_module-0.2.1.lgx storage_module-2.1.2.lgx
+scripts/e2e-two-nodes.sh result/*.lgx delivery_module-0.2.1.lgx storage_module-3.0.0.lgx
 ```
 
 Starts two Basecamp instances on logos.test, drives the forum's own interface
