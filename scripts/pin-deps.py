@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pin the forum's dependency versions in a built .lgx.
 
-The forum is compiled against delivery_module 0.2.1 and storage_module 3.0.0.
+The forum is compiled against delivery_module 0.3.0 and storage_module 3.0.0.
 Unpinned, Basecamp's resolver would install whatever is newest in the catalog,
 and a major version changes the API (2.1 to 3.0 changed uploadInit and
 downloadChunks), so Logos Storage history would silently not work.
@@ -15,7 +15,7 @@ manifest instead, in the form the package manager resolves
 """
 import io, json, sys, tarfile
 
-PINS = {"delivery_module": "~0.2.1", "storage_module": "~3.0.0"}
+PINS = {"delivery_module": "~0.3.0", "storage_module": "~3.0.0"}
 
 src, dst = sys.argv[1], sys.argv[2]
 with tarfile.open(src) as t:

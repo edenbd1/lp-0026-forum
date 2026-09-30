@@ -7,7 +7,7 @@
     logos-module-builder.url = "github:logos-co/logos-module-builder/0.2.6";
     # Posts and live traffic. v0.2.1 is the first release with a LIDL contract,
     # which the builder needs to generate the typed wrapper.
-    delivery_module.url = "github:logos-co/logos-delivery-module/v0.2.1";
+    delivery_module.url = "github:logos-co/logos-delivery-module/v0.3.0";
     delivery_module.inputs.logos-module-builder.follows = "logos-module-builder";
     # History snapshots.
     storage_module.url = "github:logos-co/logos-storage-module/v3.0.0";

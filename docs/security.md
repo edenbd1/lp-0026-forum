@@ -88,9 +88,9 @@ request this node has open, and only public IP addresses are dialled.
   that sees it twice can tell it is the same install. With them off (the
   default), it is never announced.
 - **Shared modules.** Basecamp runs one `delivery_module` and one
-  `storage_module` for all apps. The forum pins `delivery_module ~0.2.1`, the
-  version it is tested with, so it cannot sit next to an app that needs another
-  line. Whichever app initialises `storage_module` first sets its settings for
+  `storage_module` for all apps. The forum pins `delivery_module ~0.3.0`, the
+  version it is tested with (the same line Chat 0.3.0 needs), so it cannot sit
+  next to an app that needs another line. Whichever app initialises `storage_module` first sets its settings for
   all; the forum sets only its network, data directory and port, and uses a
   node another app started as it is.
 - **History depends on peers being online.** The logos.test store nodes keep
@@ -104,7 +104,7 @@ request this node has open, and only public IP addresses are dialled.
   can be forged, altered or hidden that way: every post is checked, and nothing
   a stranger sends moves the paging past posts not yet received.
 
-## Known issue (0.2.1)
+## Known issue (since 0.2.1)
 
 With `storage_module` 3.0.0 (libstorage v0.5), fetching an opted-in snapshot
 currently fails to start (`Failed to start chunk download`) even after the

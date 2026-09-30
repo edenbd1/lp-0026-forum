@@ -1,7 +1,7 @@
 {
   "name": "logos_forum",
   "display_name": "Logos Forum",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "ui_qml",
   "interface": "universal",
   "category": "social",

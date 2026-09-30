@@ -14,9 +14,9 @@ and every post is checked by the app itself on arrival.
 
 <p align="center">
   <img alt="Logos Basecamp 0.3.0" src="https://img.shields.io/badge/Logos%20Basecamp-0.3.0-2f6b4f">
-  <img alt="Logos Messaging (delivery_module) 0.2.1" src="https://img.shields.io/badge/Logos%20Messaging-0.2.1-2f6b4f">
+  <img alt="Logos Messaging (delivery_module) 0.3.0" src="https://img.shields.io/badge/Logos%20Messaging-0.3.0-2f6b4f">
   <img alt="network logos.dev" src="https://img.shields.io/badge/network-logos.dev-2f6b4f">
-  <a href="https://github.com/edenbd1/logos-forum-catalog"><img alt="catalog 0.2.1" src="https://img.shields.io/badge/catalog-0.2.1-e2552b"></a>
+  <a href="https://github.com/edenbd1/logos-forum-catalog"><img alt="catalog 0.3.0" src="https://img.shields.io/badge/catalog-0.3.0-e2552b"></a>
   <img alt="licence MIT / Apache-2.0" src="https://img.shields.io/badge/licence-MIT%20%2F%20Apache--2.0-7a9a3a">
 </p>
 
@@ -113,11 +113,11 @@ nix build .#lgx-portable                      # result/logos-logos_forum-module.
 
 # the two modules it depends on, from the official Logos catalog
 base=https://github.com/logos-co/logos-modules-release/releases/download
-curl -LO $base/delivery_module-v0.2.1/delivery_module-0.2.1.lgx
+curl -LO $base/delivery_module-v0.3.0/delivery_module-0.3.0.lgx
 curl -LO $base/storage_module-v3.0.0/storage_module-3.0.0.lgx
 
 # install all three into a Basecamp user directory and open Basecamp on it
-scripts/install-local.sh ~/basecamp-forum result/*.lgx delivery_module-0.2.1.lgx storage_module-3.0.0.lgx
+scripts/install-local.sh ~/basecamp-forum result/*.lgx delivery_module-0.3.0.lgx storage_module-3.0.0.lgx
 LogosBasecamp --user-dir ~/basecamp-forum     # macOS: ~/Applications/LogosBasecamp.app/Contents/MacOS/LogosBasecamp
 ```
 
@@ -237,7 +237,7 @@ The view adapts instead of clipping. Below 720 px it shows one pane at a time
 ## Test between two real nodes
 
 ```bash
-scripts/e2e-two-nodes.sh result/*.lgx delivery_module-0.2.1.lgx storage_module-3.0.0.lgx
+scripts/e2e-two-nodes.sh result/*.lgx delivery_module-0.3.0.lgx storage_module-3.0.0.lgx
 ```
 
 Starts two Basecamp instances on logos.test, drives the forum's own interface
