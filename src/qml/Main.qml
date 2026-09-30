@@ -489,14 +489,17 @@ Item {
                 color: root.panel; radius: 6; border.color: root.line
 
                 Flickable {
+                    id: welcomeScroll
                     anchors.fill: parent
                     visible: root.openId === ""
-                    contentHeight: welcome.implicitHeight + 60
+                    // Centred in the pane when it fits, scrollable when it does not.
+                    contentHeight: Math.max(height, welcome.implicitHeight + 60)
                     clip: true
                     ColumnLayout {
                         id: welcome
-                        x: 30; y: Math.max(30, (parent.height - implicitHeight) / 2)
-                        width: Math.min(parent.width - 60, 560)
+                        width: Math.min(welcomeScroll.width - 60, 560)
+                        x: (welcomeScroll.width - width) / 2
+                        y: Math.max(30, (welcomeScroll.height - implicitHeight) / 2)
                         spacing: 14
                         Text { Layout.fillWidth: true; wrapMode: Text.WrapAtWordBoundaryOrAnywhere
                                text: "Welcome to " + root.forumName; color: root.text; font.pixelSize: 18; font.bold: true }
