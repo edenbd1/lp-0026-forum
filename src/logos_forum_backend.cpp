@@ -228,6 +228,9 @@ void LogosForumBackend::bootstrap() {
     wireStorage();
     startNode();
 
+    connect(&activityTimer_, &QTimer::timeout, this, [this]() { logActivity(); });
+    activityTimer_.start(qEnvironmentVariableIntValue("LOGOS_FORUM_ACTIVITY_MS") > 0
+                             ? qEnvironmentVariableIntValue("LOGOS_FORUM_ACTIVITY_MS") : 3600000);  // override for tests
     connect(&pumpTimer_, &QTimer::timeout, [this]() { pump(); });
     pumpTimer_.start(kPumpMs);
     connect(&historyTimer_, &QTimer::timeout, [this]() { runCatchUp("periodic"); });
@@ -263,6 +266,7 @@ void LogosForumBackend::wireDelivery() {
             const size_t before = store_->count();
             engine_->receive(payload, now_ms());
             const size_t added = store_->count() - before;
+            countActivity(payload, added > 0 && payload.find("\"logos-forum-snapshot\"") == std::string::npos);
             if (payload.find("\"logos-forum-snapshot\"") != std::string::npos) {
                 log("received a history bundle: " + std::to_string(added) + " new");
                 if (added > 0) {
@@ -521,6 +525,27 @@ QString LogosForumBackend::markRead(QString topicId) {
     return QString();
 }
 
+void LogosForumBackend::countActivity(const std::string& payload, bool newPost) {
+    if (newPost) ++actPosts_;
+    if (payload.find("\"logos-forum-want\"") == std::string::npos) return;
+    const auto j = nlohmann::json::parse(payload, nullptr, false);
+    if (!j.is_object() || str_at(j, "forum") != s(forumName())) return;
+    if (engine_ && engine_->is_own_request(str_at(j, "id"))) return;   // our own, echoed back
+    ++actRequests_;
+    const auto have = j.find("have");
+    if (have != j.end() && have->is_number_integer() && have->get<int64_t>() == 0) ++actFresh_;
+}
+
+void LogosForumBackend::logActivity() {
+    // Every node online asks for history about every five minutes, so twelve
+    // requests an hour are one node; a request from a node holding nothing is
+    // a fresh install.
+    log("activity (last hour, other nodes): " + std::to_string(actRequests_) + " history requests, about " +
+        std::to_string((actRequests_ + 6) / 12) + " node(s) online on average, " + std::to_string(actFresh_) +
+        " fresh install(s), " + std::to_string(actPosts_) + " new post(s)");
+    actRequests_ = actFresh_ = actPosts_ = 0;
+}
+
 void LogosForumBackend::saveSettingsSoon() {
     if (settingsScheduled_) return;
     settingsScheduled_ = true;
@@ -755,11 +780,23 @@ void LogosForumBackend::runCatchUp(const char* why) {
             : QStringLiteral("Caught up %1 · %2 new").arg(hhmm(now_ms())).arg(added);
         publishHistory();
         // Store nodes may keep no archive at all; ask the peers too.
-        QTimer::singleShot(0, this, [this]() {
+        QTimer::singleShot(0, this, [this, reason]() {
             // Over Storage first only when the user opted in; by default the
             // answer comes over Delivery relays and nobody learns our address.
             if (engine_) engine_->request_history(now_ms(), /*via_delivery=*/!g_fetchSnapshots);
             log("asked peers for history");
+            // Just started: the node may not have found its relay peers yet, and
+            // a request sent into an empty mesh is lost. Ask again shortly if
+            // nothing has arrived, rather than waiting for the periodic catch-up.
+            if (reason == "node started" || reason == "joined running node") {
+                const size_t had = store_->count();
+                for (int delay : {20000, 60000})
+                    QTimer::singleShot(delay, this, [this, had]() {
+                        if (!engine_ || store_->count() != had) return;
+                        engine_->request_history(now_ms(), !g_fetchSnapshots);
+                        log("asked peers for history again (nothing arrived yet)");
+                    });
+            }
         });
     });
 }

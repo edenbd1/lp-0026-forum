@@ -131,4 +131,11 @@ private:
     QHash<QString, QString> arrivals_;  // topic id -> latest post id
     bool arrivalsScheduled_ = false;
     bool settingsScheduled_ = false;
+
+    // Local activity counters, logged once an hour to forum.log and nowhere
+    // else. Counts only: no request id, key or address is kept.
+    void countActivity(const std::string& payload, bool newPost);
+    void logActivity();
+    int actRequests_ = 0, actFresh_ = 0, actPosts_ = 0;
+    QTimer activityTimer_;
 };

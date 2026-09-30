@@ -186,6 +186,9 @@ public:
     // answers at most once per kAnswerEveryMs.
     std::function<void(const HistoryRequest&)> on_history_wanted;
     void tick(uint64_t now_ms);
+    // Whether a history request id is one of ours (our own requests come back
+    // to us on the topic like everyone else's).
+    bool is_own_request(const std::string& id) const { return asked_.count(id) > 0; }
     std::function<uint64_t()> jitter;  // default: uniform random in [0, kAnswerJitterMs)
     static constexpr uint64_t kAnswerJitterMs = 3000;
     // Delivery-path bundles: at most this many recent posts, in messages under
