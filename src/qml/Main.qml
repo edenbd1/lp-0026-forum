@@ -194,11 +194,12 @@ Item {
             font.pixelSize: 13; font.bold: true
         }
         Rectangle {
-            visible: post && post.mode !== "identity"
+            // Aliases are marked as such; an anonymous post's name already says it.
+            visible: post && post.mode === "alias"
             radius: 3; color: root.line
             implicitWidth: badge.implicitWidth + 8; implicitHeight: badge.implicitHeight + 2
             Text { id: badge; anchors.centerIn: parent; color: root.dim; font.pixelSize: 10
-                   text: post && post.mode === "alias" ? "alias" : "anonymous" }
+                   text: "alias" }
         }
         Text {
             text: post ? (post.mode === "identity" && !post.mine ? "✓ verified" : "✓ " + post.authorKey.substring(0, 8)) : ""
