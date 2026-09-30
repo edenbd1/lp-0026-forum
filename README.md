@@ -1,15 +1,23 @@
+![Logos Forum: a forum with no server, inside Logos Basecamp](docs/screens/banner.png)
+
 # Logos Forum (LP-0026)
 
 A forum for Logos Basecamp with no server anywhere: topics and replies travel
-over **Logos Delivery**, history is kept locally and on **Logos Storage**, and
-every post is signed and checked on arrival. You post as yourself, under an
-alias, or as no one at all.
+over **Logos Messaging** (Logos Delivery), history is kept locally and on
+**Logos Storage**, and every post is signed and checked on arrival. You post as
+yourself, under an alias, or as no one at all.
 
-> **Status:** the forum runs in **Logos Basecamp 0.3.0** (macOS and Linux) and has been tested
-> end to end between two real nodes on the logos.test network
-> ([`docs/e2e.md`](docs/e2e.md)). The core has 25 tests of its own.
+[![Watch the demo on YouTube (3:43)](https://img.youtube.com/vi/xNY5EzhCtuI/maxresdefault.jpg)](https://youtu.be/xNY5EzhCtuI)
 
-![A thread: an account post, an anonymous reply and an alias reply, each with the key its signature was checked against](docs/e2e/9-thread.png)
+**▶ [Watch the 3-minute demo](https://youtu.be/xNY5EzhCtuI)**: install, two live nodes, alias, anonymous, key rotation, offline, a newcomer getting the history.
+
+> **Status:** the forum runs in **Logos Basecamp 0.3.0** (macOS and Linux) and is
+> installable from its [catalog](#install-in-basecamp). It has been tested end to
+> end on five real nodes on the logos.test network, 24 checks
+> ([`docs/e2e.md`](docs/e2e.md)); the core has 30 tests of its own; CI is green
+> on Linux and macOS.
+
+![A thread with replies from an account, an anonymous key and an alias, each marked as verified](docs/screens/04-thread.png)
 
 ## What makes it different
 
@@ -50,7 +58,7 @@ alias, or as no one at all.
 | If a send fails, the text stays locally to retry | the outbox, `Store::failed` + `backoff_ms` |
 | Does not flood the network | `RateLimiter` |
 | Basecamp app, loadable, in a module catalog | loads in Basecamp 0.3.0; served by [`logos-forum-catalog`](https://github.com/edenbd1/logos-forum-catalog), installed from it on a blank Basecamp |
-| Video demo, FURPS self-assessment | *at submission* |
+| Video demo, FURPS self-assessment | [video](https://youtu.be/xNY5EzhCtuI), [solution file](submission/LP-0026.md) |
 
 ## Install in Basecamp
 
@@ -60,7 +68,20 @@ a repository*, paste
 then *Package Manager → Social → Logos Forum → Install*. Basecamp installs
 `delivery_module` and `storage_module` from the official catalog with it.
 
-![Logos Forum in Basecamp's package manager](docs/e2e/4-catalog-in-basecamp.png)
+1. **Add the repository** in *Settings → Package Repositories*:
+
+   ![Adding the Logos Forum repository in Basecamp's settings](docs/screens/01-add-repository.png)
+
+2. **Find the forum** in *Package Manager → Social*:
+
+   ![Logos Forum in Basecamp's package manager](docs/screens/02-package-manager.png)
+
+3. **Install.** Basecamp shows the two modules it brings in from the official catalog:
+
+   ![The install dialog, with storage_module and delivery_module from Logos Official](docs/screens/03-install-with-dependencies.png)
+
+4. **Open it** from the sidebar. An account exists already, and the history
+   arrives from peers who are online.
 
 **From source**, on a clean machine (macOS or Linux, [Nix](https://nixos.org) and
 [Basecamp 0.3.0](https://github.com/logos-co/logos-basecamp/releases/tag/0.3.0)):
@@ -98,6 +119,44 @@ blockchain out of scope, and the forum runs no server. What plays that role:
 A separate forum can be run by starting Basecamp with `LOGOS_FORUM_NAME=<name>`;
 the topic is derived from the name.
 
+## Walkthrough
+
+Two real Basecamp nodes on logos.test, Alice on the left and Bob on the right,
+with no server between them. Every screenshot comes from the demo film.
+
+**A topic goes out and arrives, already verified.** Alice asks a question; a
+moment later Bob has it, with a ✓ for the signature his own app checked.
+
+![Alice posts a topic and it shows up on Bob's side](docs/screens/05-two-nodes-live.png)
+
+**Under an alias.** Bob answers as "Ghost". The name is his choice for this
+post; the post is still signed by his key, and marked **alias** for everyone.
+
+<p><img src="docs/screens/06-alias-compose.png" width="49%" alt="Bob picks Alias and types Ghost"> <img src="docs/screens/07-alias-received.png" width="49%" alt="The alias reply on both sides"></p>
+
+**Anonymously.** Alice picks *Anonymous*: the app makes a key for that one
+post, signs with it and wipes it. The explanation under the picker says what
+the others will see.
+
+![Alice replies anonymously](docs/screens/08-anonymous-compose.png)
+
+**Key rotation.** *Accounts… → Rotate now* gives the account a brand new key.
+On Bob's side, Alice's posts before and after show two unrelated keys.
+
+<p><img src="docs/screens/09-rotation.png" width="49%" alt="The Accounts dialog with Rotate now"> <img src="docs/screens/10-rotation-seen-by-others.png" width="49%" alt="Bob sees two unrelated keys"></p>
+
+**Offline.** Bob has no network. His reply is saved on his machine, marked
+*sending…*, and the header counts *1 waiting to send*. When he is back online
+it goes out on its own and Alice gets it.
+
+<p><img src="docs/screens/11-offline-waiting.png" width="49%" alt="A reply waiting for the network"> <img src="docs/screens/12-offline-delivered.png" width="49%" alt="The reply delivered once Bob is back"></p>
+
+**A newcomer gets the history.** A brand new install asks the peers already
+there and receives every topic and every reply, each checked again on arrival
+(*History from peers · 13 new*).
+
+<img src="docs/screens/13-newcomer-history.png" width="60%" alt="A fresh install with the whole history from peers">
+
 ## Using the forum
 
 **Your first minute.** Open *Logos Forum* in Basecamp's sidebar. An account
@@ -107,7 +166,7 @@ and, under it, the history state: when the forum last caught up, and whether
 Logos Storage is ready.
 
 **Read.** The left column lists topics, most recently active first, with a
-line of their text, their author and reply count; a blue dot marks activity
+line of their text, their author and reply count; an orange dot marks activity
 since you last opened a topic, and the search box filters by title, text or
 author. Click one to open it; replies follow in order.
 Every author line carries a ✓ and the first bytes of the key the post's
