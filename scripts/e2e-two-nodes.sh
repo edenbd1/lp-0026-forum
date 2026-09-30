@@ -40,15 +40,28 @@ click_in_window() {  # click_in_window <pid> <dx> <dy>: a point relative to the 
   cliclick "c:$((x + $2)),$((y + $3))"
 }
 db() { sqlite3 "$1/module_data/logos_forum/forum.db" "$2"; }
-pick_mode() {  # pick_mode <pid> <0 account | 1 alias | 2 anonymous>: click the item itself
-  local pos; pos=$(ui "$1" 'get {position, size} of menu button -1 of group 1 of window 1' | tr -d ' ')
-  IFS=, read -r cx cy cw ch <<< "$pos"
-  local wpos; wpos=$(ui "$1" 'get {position, size} of window 1' | tr -d ' '); IFS=, read -r wx wy ww wh <<< "$wpos"
-  click_ax "$1" 'menu button -1 of group 1 of window 1' || fail "no Post-as picker"; sleep 0.8
-  local y
-  if [ $((cy + ch + 3 * ch)) -gt $((wy + wh)) ]; then y=$((cy - (3 - $2) * ch + ch / 2))   # opens upward
-  else y=$((cy + ch + $2 * ch + ch / 2)); fi                                           # opens downward
-  front "$1"; cliclick "c:$((cx + cw / 2)),$y"; sleep 0.6
+pick_mode() {  # pick_mode <pid> <0 account | 1 alias | 2 anonymous>: click the item itself, then check it took
+  local attempt cur
+  # Already on that mode: leave the picker alone (opening it for nothing can
+  # leave its popup open, and the next click then only closes the popup).
+  cur=$(ui "$1" 'get name of menu button -1 of group 1 of window 1' 2> /dev/null)
+  case "$2:$cur" in 1:Alias|2:Anonymous) return 0;; 0:Alias|0:Anonymous) ;; 0:*) return 0;; esac
+  for attempt in 1 2 3 4; do
+    local pos; pos=$(ui "$1" 'get {position, size} of menu button -1 of group 1 of window 1' | tr -d ' ')
+    IFS=, read -r cx cy cw ch <<< "$pos"
+    local wpos; wpos=$(ui "$1" 'get {position, size} of window 1' | tr -d ' '); IFS=, read -r wx wy ww wh <<< "$wpos"
+    click_ax "$1" 'menu button -1 of group 1 of window 1' || fail "no Post-as picker"; sleep 0.8
+    local y
+    if [ $((cy + ch + 3 * ch)) -gt $((wy + wh)) ]; then y=$((cy - (3 - $2) * ch + ch / 2))   # opens upward
+    else y=$((cy + ch + $2 * ch + ch / 2)); fi                                           # opens downward
+    front "$1"; cliclick "c:$((cx + cw / 2)),$y"; sleep 0.6
+    # The picker names its choice: "Alias", "Anonymous", or the account's label.
+    local now; now=$(ui "$1" 'get name of menu button -1 of group 1 of window 1' 2> /dev/null)
+    case "$2:$now" in 1:Alias|2:Anonymous) return 0;; 0:Alias|0:Anonymous) ;; 0:*) return 0;; esac
+    osascript -e 'tell application "System Events" to key code 53' > /dev/null 2>&1   # close a popup left open
+    sleep 0.5
+  done
+  fail "could not pick posting mode $2"
 }
 start() {
   (LOGOS_FORUM_LOCAL_PEERS=1 LOGOS_FORUM_FETCH_SNAPSHOTS=1 LOGOS_FORUM_NAME="e2e $$" "$BASECAMP" --user-dir "$1" > "$1.log" 2>&1 &)

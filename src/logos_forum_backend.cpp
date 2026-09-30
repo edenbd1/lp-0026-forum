@@ -290,7 +290,11 @@ void LogosForumBackend::wireDelivery() {
         const bool up = !data.isEmpty() && data.at(0).toBool();
         log(std::string("nodeStarted ") + (up ? "ok" : "failed"));
         if (!up) {
-            setStatus(QStringLiteral("Node failed to start: %1").arg(data.value(1).toString()));
+            const QString why = data.value(1).toString();
+            // An RLN network refuses a node without a membership: say what to do.
+            setStatus(why.contains(QLatin1String("membership"), Qt::CaseInsensitive)
+                ? QStringLiteral("This network needs an RLN membership: register one in Basecamp's RLN membership app, then restart")
+                : QStringLiteral("Node failed to start: %1").arg(why));
             return;
         }
         subscribeAttempts_ = 0;
@@ -325,6 +329,30 @@ void LogosForumBackend::wireDelivery() {
     };
     d.on("messagePropagated", [confirmed](const QVariantList& data) { confirmed(data, "propagated"); });
     d.on("messageSent", [confirmed](const QVariantList& data) { confirmed(data, "sent"); });
+    // RLN (rate-limiting nullifiers) comes with the network preset: on a
+    // network that runs it, the node needs an active RLN membership (registered
+    // once through Basecamp's RLN membership app), and each epoch allows only
+    // so many messages. Neither is the forum's to configure; it says where it
+    // stands and what a held message is waiting for.
+    d.on("rlnStateChanged", [this](const QVariantList& data) {
+        const QString state = data.value(0).toString(), message = data.value(1).toString();
+        log("rln: " + s(state) + (message.isEmpty() ? "" : " (" + s(message) + ")"));
+        rlnState_ = state == QLatin1String("Ready") ? QStringLiteral("RLN ready")
+                  // The detail is technical (it is in forum.log); say what it means.
+                  : state == QLatin1String("Failed")
+                      ? (message.contains(QLatin1String("liblogos_rln_module"))
+                             ? QStringLiteral("RLN unavailable: this network needs the RLN modules and an RLN membership")
+                             : QStringLiteral("RLN unavailable: this network needs an RLN membership (Basecamp's RLN membership app)"))
+                  : state == QLatin1String("Initializing") ? QStringLiteral("RLN starting…") : QString();
+        refreshStatus();
+    });
+    d.on("messageQueued", [this](const QVariantList& data) {
+        const QString request = data.value(0).toString();
+        const auto it = inFlight_.constFind(request);
+        if (it == inFlight_.constEnd()) return;  // not ours
+        log("held by the RLN rate limit: " + s(it.value()).substr(0, 12) + " (goes out when the epoch's quota refills)");
+        emit postStateChanged(it.value(), QStringLiteral("queued"), QStringLiteral("rate limit"));
+    });
     d.on("messageError", [this](const QVariantList& data) {
         const QString request = data.value(0).toString();
         const auto it = inFlight_.constFind(request);
@@ -383,7 +411,8 @@ void LogosForumBackend::subscribe() {
 void LogosForumBackend::refreshStatus() {
     if (!subscribed_) return;
     // A node with no peers still accepts sends; say so rather than "Connected".
-    setStatus(connectionState_.isEmpty() ? QStringLiteral("Joined, waiting for peers") : connectionState_);
+    const QString base = connectionState_.isEmpty() ? QStringLiteral("Joined, waiting for peers") : connectionState_;
+    setStatus(rlnState_.isEmpty() ? base : base + QStringLiteral(" · ") + rlnState_);
 }
 
 void LogosForumBackend::pump() {

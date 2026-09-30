@@ -59,20 +59,42 @@ wait_for() { local t=$1 what=$2; shift 2; for _ in $(seq "$t"); do "$@" && { ok 
 has_posts() { [ "$(db "$1" "select count(*) from posts")" -ge "$2" ]; }
 has_title() { [ "$(db "$1" "select count(*) from posts where title='$2'")" = 1 ]; }
 has_body() { [ "$(db "$1" "select count(*) from posts where body='$2'")" = 1 ]; }
-pick_mode() {  # pick_mode <pid> <0 account | 1 alias | 2 anonymous>: click the item itself
-  local pos; pos=$(ui "$1" 'get {position, size} of menu button -1 of group 1 of window 1' | tr -d ' ')
-  IFS=, read -r cx cy cw ch <<< "$pos"
-  local wpos; wpos=$(ui "$1" 'get {position, size} of window 1' | tr -d ' '); IFS=, read -r wx wy ww wh <<< "$wpos"
-  click_ax "$1" 'menu button -1 of group 1 of window 1' || fail "no Post-as picker"; sleep 0.8
-  local y
-  if [ $((cy + ch + 3 * ch)) -gt $((wy + wh)) ]; then y=$((cy - (3 - $2) * ch + ch / 2))   # opens upward
-  else y=$((cy + ch + $2 * ch + ch / 2)); fi                                           # opens downward
-  front "$1"; cliclick "c:$((cx + cw / 2)),$y"; sleep 0.6
+pick_mode() {  # pick_mode <pid> <0 account | 1 alias | 2 anonymous>: click the item itself, then check it took
+  local attempt cur
+  # Already on that mode: leave the picker alone (opening it for nothing can
+  # leave its popup open, and the next click then only closes the popup).
+  cur=$(ui "$1" 'get name of menu button -1 of group 1 of window 1' 2> /dev/null)
+  case "$2:$cur" in 1:Alias|2:Anonymous) return 0;; 0:Alias|0:Anonymous) ;; 0:*) return 0;; esac
+  for attempt in 1 2 3 4; do
+    local pos; pos=$(ui "$1" 'get {position, size} of menu button -1 of group 1 of window 1' | tr -d ' ')
+    IFS=, read -r cx cy cw ch <<< "$pos"
+    local wpos; wpos=$(ui "$1" 'get {position, size} of window 1' | tr -d ' '); IFS=, read -r wx wy ww wh <<< "$wpos"
+    click_ax "$1" 'menu button -1 of group 1 of window 1' || fail "no Post-as picker"; sleep 0.8
+    local y
+    if [ $((cy + ch + 3 * ch)) -gt $((wy + wh)) ]; then y=$((cy - (3 - $2) * ch + ch / 2))   # opens upward
+    else y=$((cy + ch + $2 * ch + ch / 2)); fi                                           # opens downward
+    front "$1"; cliclick "c:$((cx + cw / 2)),$y"; sleep 0.6
+    # The picker names its choice: "Alias", "Anonymous", or the account's label.
+    local now; now=$(ui "$1" 'get name of menu button -1 of group 1 of window 1' 2> /dev/null)
+    case "$2:$now" in 1:Alias|2:Anonymous) return 0;; 0:Alias|0:Anonymous) ;; 0:*) return 0;; esac
+    osascript -e 'tell application "System Events" to key code 53' > /dev/null 2>&1   # close a popup left open
+    sleep 0.5
+  done
+  fail "could not pick posting mode $2"
+}
+open_dialog() {  # open_dialog <pid> <button> <element the dialog shows>: click until the dialog is really open
+  # A click can land before the view is ready (a node just restarted) or be
+  # lost; typing into a dialog that did not open types into the search field.
+  local i
+  for i in $(seq 15); do
+    click_ax "$1" "button \"$2\" of group 1 of window 1" > /dev/null 2>&1 || true
+    sleep 1
+    [ "$(ui "$1" "exists $3 of group 1 of window 1" 2> /dev/null)" = true ] && return 0
+  done
+  fail "the $2 dialog did not open"
 }
 new_topic() {  # new_topic <pid> <title> <body> <mode> [alias]
-  # The view may still be loading (a node just restarted): give it a few seconds.
-  local i; for i in $(seq 15); do click_ax "$1" 'button "New topic" of group 1 of window 1' && break; sleep 1; done
-  [ "$i" -lt 15 ] || fail "no New topic button"; sleep 1
+  open_dialog "$1" "New topic" 'button "Post"' 
   ui "$1" "set value of text field -2 of group 1 of window 1 to \"$2\"" > /dev/null
   ui "$1" "set value of text field -1 of group 1 of window 1 to \"$3\"" > /dev/null
   pick_mode "$1" "$4"
@@ -87,13 +109,13 @@ reply_top() {  # reply_top <pid> <body> <mode> [alias]: reply to the most recent
   sleep 0.5; click_ax "$1" 'button "Reply" of group 1 of window 1' || fail "no Reply button"; sleep 2
 }
 new_account() {  # new_account <pid> <label>: created and selected
-  click_ax "$1" 'button "Accounts…" of group 1 of window 1' || fail "no Accounts button"; sleep 1
+  open_dialog "$1" "Accounts…" 'button "Create"' 
   ui "$1" "set value of text field -1 of group 1 of window 1 to \"$2\"" > /dev/null; sleep 0.3
   click_ax "$1" 'button "Create" of group 1 of window 1' || fail "no Create button"; sleep 1
   click_ax "$1" 'button "Close" of group 1 of window 1'; sleep 0.6
 }
 rotate() {
-  click_ax "$1" 'button "Accounts…" of group 1 of window 1'; sleep 1
+  open_dialog "$1" "Accounts…" 'button "Rotate now"' 
   click_ax "$1" 'button "Rotate now" of group 1 of window 1' || fail "no Rotate button"; sleep 1
   click_ax "$1" 'button "Close" of group 1 of window 1'; sleep 0.6
 }

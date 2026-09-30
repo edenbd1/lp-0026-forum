@@ -112,6 +112,17 @@ provider is dialled; the forum then falls back to history over Delivery, so the
 history still arrives ([run](e2e/e2e-two-nodes-0.2.1-storage3.out)). Snapshots
 are off by default, so the default path is not affected.
 
+## RLN
+
+Logos Delivery 0.3 rate-limits with RLN on the networks whose preset enables
+it: `logos.test` does, `logos.dev` (where the forum runs) does not. On an RLN
+network each node needs an active RLN membership, registered once through
+Basecamp's RLN membership app from a funded LEZ testnet account; without one
+the node does not start, and the forum says so in its status line. When a
+message is held because the epoch's quota is spent, it stays queued and goes
+out when the quota refills (`messageQueued`). None of it is configured by the
+forum: RLN follows the network preset.
+
 ## Running nodes on one machine
 
 Tests run several Basecamps on one machine, which can reach each other only

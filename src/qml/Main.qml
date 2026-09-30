@@ -389,7 +389,7 @@ Item {
             Rectangle {
                 Layout.alignment: Qt.AlignTop; Layout.topMargin: 4
                 width: 8; height: 8; radius: 4
-                color: root.status === "Connected" ? root.ok
+                color: root.status.indexOf("fail") < 0 && root.status.indexOf("Connected") === 0 ? root.ok
                      : root.status.indexOf("fail") >= 0 ? "#e5484d" : root.warn
             }
             Dim {

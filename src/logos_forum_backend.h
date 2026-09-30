@@ -124,7 +124,8 @@ private:
     QString lastCatchUp_, lastSnapshot_;
     int uploadProgress_ = 0;        // upload watchdog generation, bumped at every upload step
     bool fetchSnapshots_ = false;
-    QString preset_ = QStringLiteral("logos.dev");  // the Logos Delivery network   // settings.json "fetchSnapshots": opt in to Storage fetches
+    QString preset_ = QStringLiteral("logos.dev");  // the Logos Delivery network
+    QString rlnState_;  // "RLN ready", "RLN failed: …", or empty where the network runs no RLN   // settings.json "fetchSnapshots": opt in to Storage fetches
     QSet<QString> earlyConfirms_;   // confirmations that arrived before our send reply
     QList<QString> earlyOrder_;     // their arrival order, to drop the oldest
     std::optional<forum::Announcement> pendingAnnouncement_;  // answered before storage was ready
