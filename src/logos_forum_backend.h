@@ -80,6 +80,9 @@ private:
     QString dataDir() const;
     void loadSettings();
     void saveSettings();
+    void saveSettingsSoon();
+    void postArrivedSoon(const QString& id, const QString& topicId);
+    void initStorage(bool withDiscPort);
     QJsonObject readJson() const;
 
     std::unique_ptr<forum::Store> store_;
@@ -115,4 +118,11 @@ private:
     std::string downloadBuf_;
     std::set<std::string> seenSnapshots_;
     QString lastCatchUp_, lastSnapshot_;
+    int uploadProgress_ = 0;        // bumped on every upload event, for the upload watchdog
+
+    // Arrivals are told to the view at most once per short window: a large
+    // import would otherwise mean one full refresh per post.
+    QHash<QString, QString> arrivals_;  // topic id -> latest post id
+    bool arrivalsScheduled_ = false;
+    bool settingsScheduled_ = false;
 };

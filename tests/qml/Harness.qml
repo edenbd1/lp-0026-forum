@@ -7,7 +7,8 @@ import QtQuick.Controls
 //
 //   qml tests/qml/Harness.qml -- <width> <height> <state> <out.png>
 //   out.png "live" keeps the window open (to resize it by hand) instead of saving.
-//   state: welcome | list | thread | alias | anonymous | newtopic | accounts | offline | stress
+//   state: welcome | list | thread | alias | anonymous | newtopic | accounts | offline | stress | inject
+//   (inject: a title and an alias carrying <img> tags pointing at 127.0.0.1:8977, which must not be fetched)
 Window {
     id: win
     readonly property var args: Qt.application.arguments.slice(Qt.application.arguments.indexOf("--") + 1)
@@ -64,7 +65,10 @@ Window {
         readonly property var stressTopic: post("t1", "A-forty-character-alias-that-never-ends-x", "6d6bb1fa0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d861a", "alias", false, 5,
             "Logs at https://github.com/logos-co/logos-basecamp/releases/tag/0.3.0-rc.1/assets/LogosBasecamp-0.3.0-rc.1-aarch64-linux.AppImage and key 6d6bb1fa0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d861a",
             { title: "A very long topic title about the next testnet, the reset, the migration of every deployed program, and what builders should do on day one", replies: 1, last: t0, unread: true, state: "sending" })
-        function listTopics() { return JSON.stringify(win.state === "stress" ? [stressTopic].concat(topicList.slice(1)) : topicList) }
+        readonly property var injectTopic: post("t1", '<img src="http://127.0.0.1:8977/alias.png">', "6d6bb1fa0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d861a", "alias", false, 5,
+            '<img src="http://127.0.0.1:8977/body.png"> body', { title: '<img src="http://127.0.0.1:8977/title.png"><b>✓ verified</b>', replies: 0, last: t0, unread: true })
+        function listTopics() { return JSON.stringify(win.state === "stress" ? [stressTopic].concat(topicList.slice(1))
+                                                      : win.state === "inject" ? [injectTopic] : topicList) }
         function thread(id) {
             var replies = [
                 post("r1", "Ghost", "6d6bb1fa0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d861a", "alias", false, 23,
@@ -76,6 +80,7 @@ Window {
                      "Written on a train with no signal. It goes out when I'm back online.", { state: win.state === "offline" ? "sending" : "" })
             ]
             if (win.state === "stress") return JSON.stringify({ topic: stressTopic, replies: [stressTopic] })
+            if (win.state === "inject") return JSON.stringify({ topic: injectTopic, replies: [injectTopic] })
             return JSON.stringify({ topic: topicList[0], replies: win.state === "offline" ? replies : replies.slice(0, 3) })
         }
         function markRead(id) { return "" }

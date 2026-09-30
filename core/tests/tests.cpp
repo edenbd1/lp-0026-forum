@@ -303,7 +303,8 @@ TEST(a_snapshot_announcement_reaches_peers_and_is_not_a_post) {
     Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
     std::string got; size_t n = 0;
     eb.on_snapshot = [&](const Announcement& an) { got = an.cid; n = an.posts; };
-    ea.announce_snapshot("zDvZRwzkwWtSfgKFoPMRaxzAAJ1i", 7, 10);
+    const std::string re = eb.request_history(9);
+    ea.announce_snapshot("zDvZRwzkwWtSfgKFoPMRaxzAAJ1i", 7, 10, re);
     CHECK(got == "zDvZRwzkwWtSfgKFoPMRaxzAAJ1i" && n == 7 && sb.count() == 0);
     got.clear();
     Engine elsewhere(sb, b, "Another Forum");
@@ -394,16 +395,22 @@ TEST(history_crosses_nat_over_delivery_when_storage_cannot) {
     const size_t before = bus.log.size();
     eb.request_history(5000000, /*via_delivery=*/true);
     ea.tick(5000000);
-    CHECK(sb.count() == 300);                                   // everything arrived
-    size_t bundles = 0, largest = 0;
+    for (uint64_t t = 5000000; t < 5000000 + 60000; t += 3000) ea.pump(t);   // answers are paced like any send
+    size_t bundles = 0, largest = 0, total = 0;
     for (size_t i = before; i < bus.log.size(); ++i)
-        if (bus.log[i].find("logos-forum-snapshot\"") != std::string::npos) { ++bundles; largest = std::max(largest, bus.log[i].size()); }
-    CHECK(bundles >= 3 && largest < 150 * 1024);               // split under the network's limit
+        if (bus.log[i].find("logos-forum-snapshot\"") != std::string::npos) {
+            ++bundles; largest = std::max(largest, bus.log[i].size()); total += bus.log[i].size();
+        }
+    CHECK(bundles >= 2 && largest < 150 * 1024);               // split under the network's limit
+    CHECK(total <= Engine::kMaxAnswerBytes);                    // and capped, whatever was asked
+    CHECK(sb.count() > 150 && sb.count() < 300);                // the most recent part of the history…
+    CHECK(sb.topics("Logos Forum").front().topic.title == "t299");   // …newest first
     // A forged post inside a bundle is dropped like any other.
     Post forged = author_as(alice, topic("forged")); forged.body = "edited";
     auto doc = nlohmann::json::parse(ea.bundles(0, "r")[0]);
     doc["posts"].push_back(encode(forged));
-    CHECK(!eb.receive(doc.dump(), 6000000) && sb.count() == 300);
+    const size_t had = sb.count();
+    CHECK(!eb.receive(doc.dump(), 6000000) && sb.count() == had);
 }
 
 TEST(the_delivery_fallback_is_answered_right_after_a_storage_answer) {
@@ -424,10 +431,10 @@ TEST(the_delivery_fallback_is_answered_right_after_a_storage_answer) {
     ea.tick(2000);
     CHECK(storage_answers == 1 && sb.count() == 0);             // announced, but B cannot fetch it
     eb.request_history(5000, true);
-    ea.tick(5000);
+    ea.tick(5000); ea.pump(5000);
     CHECK(sb.count() == 1);                                     // the Delivery answer still came
     eb.request_history(6000, true);                             // and the per-path limit still holds
-    ea.tick(6000);
+    ea.tick(6000); ea.pump(6000);
     CHECK(sb.count() == 1);
 }
 
@@ -443,7 +450,7 @@ TEST(a_returning_node_asks_only_for_what_is_newer) {
     ea.pump(10'000'000);
     b.up = true;
     eb.request_history(10'000'100, true);
-    ea.tick(10'000'100);
+    ea.tick(10'000'100); ea.pump(10'000'100);
     CHECK(sb.count() == 2 && sb.has(old_t));
     CHECK(ea.bundles(10'000'000 - 3600000, "r").size() == 1 &&
           nlohmann::json::parse(ea.bundles(10'000'000 - 3600000, "r")[0])["posts"].size() == 1);  // only the new one
@@ -456,12 +463,14 @@ TEST(mistyped_traffic_is_ignored_not_fatal) {
     Engine ea(sa, a, "Logos Forum");
     int calls = 0;
     ea.on_snapshot = [&](const Announcement&) { ++calls; };
-    for (const char* m : {
-             R"({"logos-forum-snapshot-at":"1","forum":"Logos Forum","cid":"x"})",
-             R"({"logos-forum-snapshot-at":1,"forum":5,"cid":"x"})",
-             R"({"logos-forum-snapshot-at":1,"forum":"Logos Forum","cid":null})",
-             R"({"logos-forum-snapshot-at":1,"forum":"Logos Forum","cid":"x","posts":"many"})",
-             R"({"v":"1","kind":7})", "[]", "null", "", "{"}) {
+    const std::string re = ea.request_history(1);
+    const std::string r = R"(,"re":")" + re + "\"";
+    for (const std::string m : {
+             R"({"logos-forum-snapshot-at":"1","forum":"Logos Forum","cid":"x")" + r + "}",
+             R"({"logos-forum-snapshot-at":1,"forum":5,"cid":"x")" + r + "}",
+             R"({"logos-forum-snapshot-at":1,"forum":"Logos Forum","cid":null)" + r + "}",
+             R"({"logos-forum-snapshot-at":1,"forum":"Logos Forum","cid":"x","posts":"many")" + r + "}",
+             std::string(R"({"v":"1","kind":7})"), std::string("[]"), std::string("null"), std::string(""), std::string("{")}) {
         CHECK(!ea.receive(m, 1));
     }
     CHECK(calls == 1);  // only the last well-formed pointer, with a bad count read as 0
@@ -469,6 +478,148 @@ TEST(mistyped_traffic_is_ignored_not_fatal) {
     CHECK(ea.import_snapshot(R"({"logos-forum-snapshot":1,"forum":null,"posts":[]})", 1) == 0);
     CHECK(ea.import_snapshot(R"({"logos-forum-snapshot":1,"forum":"Logos Forum","posts":{"a":1}})", 1) == 0);
     CHECK(sa.count() == 0);
+}
+
+// ------------------------------------------------ what unsigned traffic may do (review #1)
+
+TEST(an_unsolicited_announcement_makes_nobody_fetch_anything) {
+    // Announcements are unsigned. Acted on only as the answer to a request of
+    // ours, while it is open, and only once: nobody can make every reader dial
+    // them by announcing a fresh CID.
+    Bus bus; FakeNet a(bus), b(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
+    int fetches = 0;
+    eb.on_snapshot = [&](const Announcement&) { ++fetches; };
+    ea.announce_snapshot("cid-1", 5, 10);                        // nobody asked
+    ea.announce_snapshot("cid-2", 5, 10, "made-up-request");     // not a request of B's
+    CHECK(fetches == 0);
+    const std::string re = eb.request_history(20);
+    ea.announce_snapshot("cid-3", 5, 21, re);
+    ea.announce_snapshot("cid-4", 5, 22, re);                    // a second answer to the same request
+    CHECK(fetches == 1);
+    const std::string late = eb.request_history(100);
+    a.now = 100 + Engine::kRequestOpenMs + 1;                 // the fake network passes the sender's clock
+    ea.announce_snapshot("cid-5", 5, 0, late);                   // after the request closed
+    CHECK(fetches == 1);
+}
+
+TEST(a_snapshot_carries_posts_and_nothing_else) {
+    Bus bus; FakeNet a(bus), b(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
+    int fetches = 0, answers = 0;
+    eb.jitter = [] { return uint64_t{0}; };
+    eb.on_snapshot = [&](const Announcement&) { ++fetches; };
+    eb.on_history_wanted = [&](const HistoryRequest&) { ++answers; };
+    Account alice{"alice", Keypair::generate()};
+    auto doc = nlohmann::json::parse(ea.snapshot());
+    doc["posts"].push_back(encode(author_as(alice, topic("a real post"))));
+    doc["posts"].push_back(R"({"logos-forum-snapshot-at":1,"forum":"Logos Forum","cid":"evil"})");
+    doc["posts"].push_back(R"({"logos-forum-want":1,"forum":"Logos Forum","have":0,"id":"x"})");
+    sb.put(author_as(alice, topic("so B has one")), 1);
+    CHECK(eb.import_snapshot(doc.dump(), 50) == 1);
+    eb.tick(50 + Engine::kAnswerJitterMs);
+    CHECK(fetches == 0 && answers == 0);
+}
+
+TEST(a_history_request_cannot_make_a_node_flood_the_topic) {
+    // Ten tiny requests with fresh ids, one every 30 s: what a node puts on the
+    // network is bounded by the answer cap, the Delivery answer interval and
+    // the rate limit, not by the size of its history.
+    Bus bus; FakeNet a(bus), x(bus); Store sa(":memory:"), sx(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    ea.jitter = [] { return uint64_t{0}; };
+    Account alice{"alice", Keypair::generate()};
+    const std::string big(2000, 'x');
+    for (int i = 0; i < 300; ++i) sa.put(author_as(alice, topic("t" + std::to_string(i), big)), 1);
+    const size_t before = bus.log.size();
+    uint64_t t = 1000;
+    for (int i = 0; i < 10; ++i, t += 30000) {
+        a.now = t;
+        ea.receive(R"({"logos-forum-want":1,"forum":"Logos Forum","have":0,"via":"delivery","since":0,"id":"evil)" +
+                       std::to_string(i) + "\"}", t);
+        for (uint64_t u = t; u < t + 30000; u += 3000) { ea.tick(u); ea.pump(u); }
+    }
+    size_t bytes = 0;
+    for (size_t i = before; i < bus.log.size(); ++i) bytes += bus.log[i].size();
+    CHECK(bytes <= 5 * Engine::kMaxAnswerBytes);                // at most one answer a minute over five minutes
+    CHECK(bytes < 1500 * 1024);                                 // was 6.5 MB
+}
+
+TEST(a_post_dated_in_the_future_is_refused) {
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum");
+    const uint64_t now = 1790000000000;
+    Post p = topic("from 2036"); p.ts_ms = now + 10ull * 365 * 86400000;
+    CHECK(!ea.receive(encode(author_anonymously(p)), now));
+    Post q = topic("slightly fast clock"); q.ts_ms = now + 60000;
+    CHECK(ea.receive(encode(author_anonymously(q)), now));      // a minute of skew is fine
+    // One kept from before dates were checked cannot poison our own history request.
+    Post old = topic("already stored"); old.ts_ms = now + 10ull * 365 * 86400000;
+    sa.put(author_anonymously(old), 1);
+    Post real = topic("real"); real.ts_ms = now - 5000;
+    sa.put(author_anonymously(real), 1);
+    ea.request_history(now, true);
+    const auto w = nlohmann::json::parse(bus.log.back());
+    CHECK(w["since"].get<uint64_t>() <= now);
+}
+
+TEST(an_unconfirmed_post_is_resent_less_and_less_often) {
+    // A post the network accepts but never confirms is not resent every two
+    // minutes forever: the wait doubles, up to an hour.
+    struct Silent : Transport {
+        int sends = 0;
+        SendResult send(const std::string&, const std::string&) override { ++sends; return {true, "", "r", false}; }
+        bool subscribe(const std::string&) override { return true; }
+        std::vector<std::string> history(const std::string&) override { return {}; }
+    } net;
+    Store s(":memory:");
+    Engine e(s, net, "Logos Forum");
+    Account alice{"alice", Keypair::generate()};
+    e.post_topic(&alice, "t", "b", "", 0);
+    for (uint64_t t = 0; t < 24 * 3600000ull; t += 60000) e.pump(t);
+    CHECK(net.sends < 40);                                       // not 720
+    CHECK(s.outbox().size() == 1);                               // and still kept
+}
+
+TEST(snapshot_chunks_never_cut_a_character) {
+    const std::string doc = "aaaaaaaaaa\xC3\xA9" "bbbbbbbbbb";   // an é across byte 11
+    std::string rebuilt;
+    for (size_t off = 0; off < doc.size();) {
+        const size_t n = utf8_cut(doc, off, 11);
+        CHECK(n > 0);
+        rebuilt += doc.substr(off, n);
+        off += n;
+    }
+    CHECK(rebuilt == doc);
+    CHECK(utf8_cut(doc, 0, 11) == 10);                           // stops before the é, not inside it
+    CHECK(utf8_cut("\xE2\x82\xAC", 0, 2) == 2);                  // one character longer than a chunk: best effort
+}
+
+TEST(announced_addresses_must_be_public) {
+    CHECK(!is_public_multiaddr("/ip4/127.0.0.1/tcp/20001"));
+    CHECK(!is_public_multiaddr("/ip4/192.168.1.175/tcp/20001"));
+    CHECK(!is_public_multiaddr("/ip4/10.0.0.5/tcp/1"));
+    CHECK(!is_public_multiaddr("/ip4/172.20.0.2/tcp/1"));
+    CHECK(!is_public_multiaddr("/ip4/169.254.133.245/tcp/1"));
+    CHECK(!is_public_multiaddr("/ip4/100.64.0.1/tcp/1"));
+    CHECK(!is_public_multiaddr("/ip6/::1/tcp/1"));
+    CHECK(!is_public_multiaddr("/ip6/fe80::1/tcp/1"));
+    CHECK(!is_public_multiaddr("/dns4/localhost/tcp/1"));
+    CHECK(!is_public_multiaddr("/ip4/999.1.1.1/tcp/1"));
+    CHECK(is_public_multiaddr("/ip4/8.8.8.8/tcp/30303"));
+    CHECK(is_public_multiaddr("/ip6/2a01:4f8::1/tcp/1"));
+    CHECK(is_public_multiaddr("/dns4/node-01.do-ams3.logos.test.status.im/tcp/30303"));
+}
+
+TEST(a_large_import_is_one_commit) {
+    Store s(":memory:");
+    Bus bus; FakeNet a(bus); Engine e(s, a, "Logos Forum");
+    Account alice{"alice", Keypair::generate()};
+    nlohmann::json doc{{"logos-forum-snapshot", 1}, {"forum", "Logos Forum"}, {"posts", nlohmann::json::array()}};
+    for (int i = 0; i < 500; ++i) doc["posts"].push_back(encode(author_as(alice, topic("t" + std::to_string(i)))));
+    int arrived = 0;
+    e.on_post = [&](const Post&, const std::string&) { ++arrived; };
+    CHECK(e.import_snapshot(doc.dump(), 5) == 500 && arrived == 500 && s.count() == 500);
 }
 
 TEST(the_pubsub_topic_follows_autosharding) {

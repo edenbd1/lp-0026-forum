@@ -14,7 +14,7 @@ yourself, under an alias, or as no one at all.
 > **Status:** the forum runs in **Logos Basecamp 0.3.0** (macOS and Linux) and is
 > installable from its [catalog](#install-in-basecamp). It has been tested end to
 > end on five real nodes on the logos.test network, 24 checks
-> ([`docs/e2e.md`](docs/e2e.md)); the core has 30 tests of its own; CI is green
+> ([`docs/e2e.md`](docs/e2e.md)); the core has 38 tests of its own; CI is green
 > on Linux and macOS.
 
 ![A thread with replies from an account, an anonymous key and an alias, each marked as verified](docs/screens/04-thread.png)
@@ -43,7 +43,13 @@ yourself, under an alias, or as no one at all.
   keep no archive at all (measured, see [`docs/e2e.md`](docs/e2e.md)), so this
   is the path that actually works. Duplicates are impossible because ids are
   content.
-- **It does not flood the network.** Sends are paced by a token bucket.
+- **It does not flood the network.** Sends are paced by a token bucket, and
+  history answers are capped and paced too.
+- **Unsigned traffic cannot steer it.** Titles and names from other people are
+  shown as plain text, a snapshot announcement is followed only when it answers
+  your own request and never into a private address, and posts dated in the
+  future are refused. See [`docs/security.md`](docs/security.md), written after
+  an [external review](https://github.com/edenbd1/lp-0026-forum/issues/1).
 
 ## LP-0026 criteria
 

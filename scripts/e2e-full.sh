@@ -14,6 +14,8 @@
 # macOS; Basecamp 0.3.0, cliclick, sqlite3, Accessibility permission.
 #   scripts/e2e-full.sh <logos_forum.lgx> <delivery_module.lgx> <storage_module.lgx>
 set -euo pipefail
+# Every node runs on this machine, so they may name and dial local addresses
+# (LOGOS_FORUM_LOCAL_PEERS); on the real network only public ones are used.
 BASECAMP=${BASECAMP:-$HOME/Applications/LogosBasecamp-0.3.0.app/Contents/MacOS/LogosBasecamp}
 here=$(cd "$(dirname "$0")" && pwd)
 FORUM="e2e-full-$(date +%s)"
@@ -41,9 +43,9 @@ key() { osascript -e "tell application \"System Events\" to key code $1"; }
 db() { sqlite3 "$1/module_data/logos_forum/forum.db" "$2" 2> /dev/null || true; }
 start() {  # start <dir> [offline]
   if [ "${2:-}" = offline ]; then
-    (LOGOS_FORUM_NAME="$FORUM" sandbox-exec -f "$R-offline.sb" "$BASECAMP" --user-dir "$1" > "$1.log" 2>&1 &)
+    (LOGOS_FORUM_LOCAL_PEERS=1 LOGOS_FORUM_NAME="$FORUM" sandbox-exec -f "$R-offline.sb" "$BASECAMP" --user-dir "$1" > "$1.log" 2>&1 &)
   else
-    (LOGOS_FORUM_NAME="$FORUM" "$BASECAMP" --user-dir "$1" > "$1.log" 2>&1 &)
+    (LOGOS_FORUM_LOCAL_PEERS=1 LOGOS_FORUM_NAME="$FORUM" "$BASECAMP" --user-dir "$1" > "$1.log" 2>&1 &)
   fi
   local pid=""; for _ in $(seq 40); do pid=$(pgrep -n -f "LogosBasecamp.bin --user-dir $1\$" || true); [ -n "$pid" ] && break; sleep 1; done
   [ -n "$pid" ] || fail "Basecamp did not start for $1"; sleep 10

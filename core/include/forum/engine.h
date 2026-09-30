@@ -16,7 +16,9 @@
 #include "forum/store.h"
 
 #include <cstdint>
+#include <deque>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -65,6 +67,18 @@ std::string content_topic(const std::string& forum);
 // cluster's shard count. Store queries need it as their pubsub topic.
 std::string pubsub_topic(const std::string& content_topic, int cluster = 2, int shards = 8);
 
+// The length of the longest prefix of `s` from `from`, at most `max` bytes,
+// that ends on a UTF-8 character boundary: slicing a document into chunks must
+// never cut a character in two.
+size_t utf8_cut(const std::string& s, size_t from, size_t max);
+
+// Whether a multiaddr names a publicly routable host. Loopback, private, link-
+// local and carrier-grade NAT ranges are not: an announcement is unsigned, and
+// must not be able to make every reader connect into its own machine or LAN.
+// DNS names are accepted (they resolve to whatever the name's owner chose,
+// like any public address).
+bool is_public_multiaddr(const std::string& addr);
+
 // Where a snapshot lives. The storage peer is optional: when present, a
 // fetcher dials it directly instead of relying on the DHT, which finds nothing
 // when both ends are behind NAT.
@@ -104,9 +118,12 @@ public:
     int pump(uint64_t now_ms);
 
     // A message arrived on the forum's topic. Returns true if it was a new,
-    // valid post for this forum. A snapshot announcement is passed to
-    // `on_snapshot` and returns false.
+    // valid post for this forum. A post dated more than kMaxClockSkewMs in the
+    // future is refused: its author chose the date, and a far-future one would
+    // pin it at the top and poison history requests. A snapshot announcement
+    // is passed to `on_snapshot` only if it answers a request this node made.
     bool receive(const std::string& payload, uint64_t now_ms);
+    static constexpr uint64_t kMaxClockSkewMs = 10 * 60 * 1000;
 
     // Pull history from the network and merge it. Returns how many new posts.
     int catch_up(uint64_t now_ms);
@@ -166,8 +183,15 @@ public:
     // the network's size limit (logos.test: 150 KiB).
     static constexpr size_t kMaxFallbackPosts = 1000;
     static constexpr size_t kBundleBytes = 100 * 1024;
+    // What one Delivery answer may put on the network, whatever was asked:
+    // the most recent posts up to this size. The asker can ask again later.
+    static constexpr size_t kMaxAnswerBytes = 256 * 1024;
+    // How long our own history request stays open for answers.
+    static constexpr uint64_t kRequestOpenMs = 2 * 60 * 1000;
     std::vector<std::string> bundles(uint64_t since_ms, const std::string& re) const;
     static constexpr uint64_t kAnswerEveryMs = 30000;
+    // Delivery answers carry the posts themselves, so they are rarer.
+    static constexpr uint64_t kDeliveryAnswerEveryMs = 60000;
 
     // Called for every new post, local or remote, after it is stored.
     std::function<void(const Post&, const std::string& id)> on_post;
@@ -175,12 +199,20 @@ public:
     // Called when a post leaves the outbox, with the network's request id.
     std::function<void(const std::string& id, const std::string& request_id)> on_sent;
 
-    // Called when a peer announces a snapshot. The embedder fetches it from
-    // Logos Storage and hands the bytes to import_snapshot().
+    // Called when a peer announces a snapshot in answer to one of our own
+    // open history requests (announcements are unsigned: an unsolicited one
+    // is ignored, so nobody can make every reader fetch from them). The
+    // embedder fetches it from Logos Storage and hands the bytes to
+    // import_snapshot(). Called at most once per request.
     std::function<void(const Announcement&)> on_snapshot;
 
 private:
     std::string compose(Post p, Account* as, const std::string& alias, uint64_t now_ms);
+    bool accept(const Post& p, uint64_t now_ms);
+    // Our own open history requests, by id, with when they close.
+    std::map<std::string, uint64_t> asked_;
+    // Delivery answers waiting for the rate limit, like the outbox.
+    std::deque<std::string> answers_;
     Store& store_;
     Transport& net_;
     std::string forum_, topic_;

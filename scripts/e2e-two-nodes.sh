@@ -12,6 +12,8 @@
 #
 #   scripts/e2e-two-nodes.sh <logos_forum.lgx> <delivery_module.lgx> <storage_module.lgx>
 set -euo pipefail
+# Every node runs on this machine, so they may name and dial local addresses
+# (LOGOS_FORUM_LOCAL_PEERS); on the real network only public ones are used.
 BASECAMP=${BASECAMP:-$HOME/Applications/LogosBasecamp-0.3.0.app/Contents/MacOS/LogosBasecamp}
 here=$(cd "$(dirname "$0")" && pwd)
 A=/tmp/forum-e2e-a B=/tmp/forum-e2e-b
@@ -39,7 +41,7 @@ click_in_window() {  # click_in_window <pid> <dx> <dy>: a point relative to the 
 }
 db() { sqlite3 "$1/module_data/logos_forum/forum.db" "$2"; }
 start() {
-  (LOGOS_FORUM_NAME="e2e $$" "$BASECAMP" --user-dir "$1" > "$1.log" 2>&1 &)
+  (LOGOS_FORUM_LOCAL_PEERS=1 LOGOS_FORUM_NAME="e2e $$" "$BASECAMP" --user-dir "$1" > "$1.log" 2>&1 &)
   local pid=""; for _ in $(seq 30); do pid=$(pgrep -n -f "LogosBasecamp.bin --user-dir $1\$" || true); [ -n "$pid" ] && break; sleep 1; done
   [ -n "$pid" ] || fail "Basecamp did not start for $1"; sleep 10
   ui "$pid" 'click button "Logos Forum" of window 1' > /dev/null

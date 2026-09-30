@@ -23,8 +23,14 @@ class DeliveryTransport : public forum::Transport {
 public:
     explicit DeliveryTransport(LogosModules& modules);
 
+    // Asynchronous: delivery_module's send can wait up to 30 s on a stalled
+    // node, and a blocking call would freeze the backend with it. send()
+    // returns "accepted, not confirmed" at once; the module's answer comes to
+    // `on_send_result` with the payload it was for.
     forum::SendResult send(const std::string& content_topic, const std::string& payload) override;
     bool subscribe(const std::string& content_topic) override;
+    std::function<void(const std::string& payload, bool ok, const std::string& request_id, const std::string& error)>
+        on_send_result;
     // Always empty: a Store query can take many seconds, and a blocking call
     // from the backend freezes the view with it. Use history_async().
     std::vector<std::string> history(const std::string& content_topic) override;

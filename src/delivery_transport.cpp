@@ -53,13 +53,16 @@ std::vector<std::string> DeliveryTransport::default_store_peers() {
 }
 
 forum::SendResult DeliveryTransport::send(const std::string& content_topic, const std::string& payload) {
-    const LogosResult r = modules_.delivery_module.send(qs(content_topic), QByteArray::fromStdString(payload));
-    if (!r.success) return {false, error_of(r), {}};
-    return {true, {}, string_of(r)};
+    modules_.delivery_module.sendAsync(qs(content_topic), QByteArray::fromStdString(payload), [this, payload](LogosResult r) {
+        if (on_send_result) on_send_result(payload, r.success, string_of(r), error_of(r));
+    });
+    return {true, {}, {}, false};
 }
 
 bool DeliveryTransport::subscribe(const std::string& content_topic) {
-    return modules_.delivery_module.subscribe(qs(content_topic)).success;
+    // Best effort from the engine; the backend subscribes with retries itself.
+    modules_.delivery_module.subscribeAsync(qs(content_topic), [](LogosResult) {});
+    return true;
 }
 
 std::vector<std::string> DeliveryTransport::history(const std::string&) { return {}; }

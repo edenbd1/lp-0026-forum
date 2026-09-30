@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
+#include <cstdio>
 
 namespace forum {
 namespace {
@@ -26,7 +28,55 @@ int64_t int_at(const json& j, const char* k) {
     const auto it = j.find(k);
     return it != j.end() && it->is_number_integer() ? it->get<int64_t>() : 0;
 }
+// A clock before 2020 is a test's clock, not a real one: no date check then.
+constexpr uint64_t kRealClockMs = 1577836800000ull;
 } // namespace
+
+size_t utf8_cut(const std::string& s, size_t from, size_t max) {
+    if (from >= s.size()) return 0;
+    size_t n = std::min(max, s.size() - from);
+    if (from + n == s.size()) return n;
+    // Step back over continuation bytes (10xxxxxx) to the start of a character.
+    size_t k = n;
+    while (k > 0 && (static_cast<unsigned char>(s[from + k]) & 0xC0) == 0x80) --k;
+    return k > 0 ? k : n;  // a single character longer than `max`: cannot help it
+}
+
+bool is_public_multiaddr(const std::string& addr) {
+    auto part = [&](size_t i) {
+        size_t start = 0;
+        for (size_t k = 0; k < i; ++k) {
+            start = addr.find('/', start + 1);
+            if (start == std::string::npos) return std::string();
+        }
+        const size_t end = addr.find('/', start + 1);
+        return addr.substr(start + 1, end == std::string::npos ? std::string::npos : end - start - 1);
+    };
+    const std::string proto = part(0), host = part(1);
+    if (proto == "dns4" || proto == "dns6" || proto == "dns") return !host.empty() && host != "localhost";
+    if (proto == "ip4") {
+        unsigned a = 0, b = 0, c = 0, d = 0;
+        char tail = 0;
+        if (std::sscanf(host.c_str(), "%u.%u.%u.%u%c", &a, &b, &c, &d, &tail) != 4 || a > 255 || b > 255 || c > 255 || d > 255)
+            return false;
+        if (a == 0 || a == 10 || a == 127 || a >= 224) return false;           // this net, private, loopback, multicast
+        if (a == 169 && b == 254) return false;                                // link-local
+        if (a == 172 && b >= 16 && b <= 31) return false;                      // private
+        if (a == 192 && b == 168) return false;                                // private
+        if (a == 100 && b >= 64 && b <= 127) return false;                     // carrier-grade NAT
+        return true;
+    }
+    if (proto == "ip6") {
+        std::string h;
+        for (char ch : host) h.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+        if (h.empty() || h == "::" || h == "::1") return false;
+        if (h.rfind("fe8", 0) == 0 || h.rfind("fe9", 0) == 0 || h.rfind("fea", 0) == 0 || h.rfind("feb", 0) == 0) return false;
+        if (h.rfind("fc", 0) == 0 || h.rfind("fd", 0) == 0 || h.rfind("ff", 0) == 0) return false;
+        if (h.rfind("::ffff:", 0) == 0) return false;                          // mapped IPv4: check it as IPv4 instead
+        return true;
+    }
+    return false;
+}
 
 bool RateLimiter::take(uint64_t now_ms) {
     if (!started_) {
@@ -112,12 +162,18 @@ std::string Engine::post_reply(Account* as, const std::string& topic_id, const s
 
 int Engine::pump(uint64_t now_ms) {
     int sent = 0;
+    // History answers share the rate limit with what the user writes.
+    while (!answers_.empty() && limiter_.take(now_ms)) {
+        net_.send(topic_, answers_.front());
+        answers_.pop_front();
+        ++sent;
+    }
     for (const auto& item : store_.due(now_ms)) {
         if (!limiter_.take(now_ms)) break;  // paced, not dropped: it stays due
         const SendResult r = net_.send(topic_, item.payload);
         if (r.ok) {
             if (r.confirmed) store_.sent(item.id);
-            else store_.awaiting(item.id, now_ms + kConfirmWindowMs);
+            else store_.awaiting(item.id, now_ms, kConfirmWindowMs);
             if (on_sent) on_sent(item.id, r.request_id);
             ++sent;
         } else {
@@ -136,9 +192,10 @@ bool Engine::receive(const std::string& payload, uint64_t now_ms) {
         const json a = json::parse(payload, nullptr, false);
         if (a.is_object() && int_at(a, kWantTag) == 1 && str_at(a, "forum") == forum_) {
             const int64_t theirs = int_at(a, "have");
-            const size_t ours = store_.all(forum_).size();
+            const size_t ours = store_.count(forum_);
             const int path = str_at(a, "via") == "delivery" ? 1 : 0;
-            const bool quiet = !answered_[path] || now_ms >= last_answer_ms_[path] + kAnswerEveryMs;
+            const uint64_t every = path == 1 ? kDeliveryAnswerEveryMs : kAnswerEveryMs;
+            const bool quiet = !answered_[path] || now_ms >= last_answer_ms_[path] + every;
             const bool can = path == 1 || static_cast<bool>(on_history_wanted);
             if (can && quiet && !pending_ && theirs >= 0 && static_cast<size_t>(theirs) < ours) {
                 HistoryRequest r;
@@ -161,6 +218,9 @@ bool Engine::receive(const std::string& payload, uint64_t now_ms) {
         if (a.is_object() && int_at(a, kAnnounceTag) == 1 && str_at(a, "forum") == forum_)
             stand_down(str_at(a, "re"));
         if (on_snapshot && a.is_object() && int_at(a, kAnnounceTag) == 1 && str_at(a, "forum") == forum_) {
+            // Only an answer to a request of ours, while it is open, and once.
+            const auto open = asked_.find(str_at(a, "re"));
+            if (open == asked_.end() || now_ms > open->second) return false;
             const std::string cid = str_at(a, "cid");
             const int64_t n = int_at(a, "posts");
             if (!cid.empty() && cid.size() <= 128) {
@@ -171,16 +231,22 @@ bool Engine::receive(const std::string& payload, uint64_t now_ms) {
                     for (const auto& x : *it)
                         if (x.is_string() && x.get<std::string>().size() <= 256 && an.addrs.size() < 8)
                             an.addrs.push_back(x.get<std::string>());
+                asked_.erase(open);
                 on_snapshot(an);
             }
         }
         return false;
     }
-    if (p->forum != forum_) return false;
+    return accept(*p, now_ms);
+}
+
+bool Engine::accept(const Post& p, uint64_t now_ms) {
+    if (p.forum != forum_) return false;
+    if (now_ms >= kRealClockMs && p.ts_ms > now_ms + kMaxClockSkewMs) return false;  // dated in the future
     // A reply to a topic we do not have yet is still kept: the topic may arrive
     // later, from another peer or from history, and the reply attaches then.
-    if (!store_.put(*p, now_ms)) return false;
-    if (on_post) on_post(*p, p->id());
+    if (!store_.put(p, now_ms)) return false;
+    if (on_post) on_post(p, p.id());
     return true;
 }
 
@@ -217,22 +283,31 @@ int Engine::import_snapshot(const std::string& doc, uint64_t now_ms) {
     if (!s.is_object() || int_at(s, kSnapshotTag) != 1 || str_at(s, "forum") != forum_) return 0;
     const auto it = s.find("posts");
     if (it == s.end() || !it->is_array() || it->size() > kMaxSnapshotPosts) return 0;
+    // Posts only: a snapshot is a bundle of signed posts, and nothing else in
+    // it (an announcement, a request) is acted on. One commit for the lot.
+    Store::Batch batch(store_);
     int added = 0;
-    for (const auto& m : *it)
-        if (m.is_string() && receive(m.get<std::string>(), now_ms)) ++added;
+    for (const auto& m : *it) {
+        if (!m.is_string()) continue;
+        const auto p = decode(m.get<std::string>());
+        if (p && accept(*p, now_ms)) ++added;
+    }
     return added;
 }
 
-std::string Engine::request_history(uint64_t, bool via_delivery) {
+std::string Engine::request_history(uint64_t now_ms, bool via_delivery) {
     uint8_t raw[8];
     randombytes_buf(raw, sizeof raw);
     const std::string id = to_hex(raw, sizeof raw);
-    json w{{kWantTag, 1}, {"forum", forum_}, {"have", store_.all(forum_).size()}, {"id", id}};
+    for (auto it = asked_.begin(); it != asked_.end();) it = now_ms > it->second ? asked_.erase(it) : std::next(it);
+    asked_[id] = now_ms + kRequestOpenMs;
+    json w{{kWantTag, 1}, {"forum", forum_}, {"have", store_.count(forum_)}, {"id", id}};
     if (via_delivery) {
         // Ask only for what is newer than what we hold, with an hour's margin
-        // for clocks and for posts that arrived out of order.
-        uint64_t newest = 0;
-        for (const auto& p : store_.all(forum_)) newest = std::max(newest, p.ts_ms);
+        // for clocks and for posts that arrived out of order. A post dated
+        // after now (kept from before dates were checked) does not count.
+        const uint64_t limit = now_ms >= kRealClockMs ? now_ms + kMaxClockSkewMs : UINT64_MAX;
+        const uint64_t newest = store_.newest_ts(forum_, limit);
         w["via"] = "delivery";
         w["since"] = newest > 3600000 ? newest - 3600000 : 0;
     }
@@ -251,7 +326,13 @@ void Engine::tick(uint64_t now_ms) {
     answered_[r.via_delivery] = true;
     last_answer_ms_[r.via_delivery] = now_ms;
     if (r.via_delivery) {
-        for (const auto& b : bundles(r.since_ms, r.id)) net_.send(topic_, b);
+        // Capped whatever was asked, and paced by pump() like any other send.
+        size_t bytes = 0;
+        for (auto& b : bundles(r.since_ms, r.id)) {
+            if (bytes + b.size() > kMaxAnswerBytes && bytes > 0) break;
+            bytes += b.size();
+            answers_.push_back(std::move(b));
+        }
     } else if (on_history_wanted) {
         on_history_wanted(r);
     }

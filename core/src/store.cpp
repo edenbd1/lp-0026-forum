@@ -90,8 +90,20 @@ Store::Store(const std::string& path) {
     if (sqlite3_open(path.c_str(), &db_) != SQLITE_OK)
         throw std::runtime_error(std::string("cannot open store: ") + path);
     exec("PRAGMA journal_mode=WAL;");
+    // Deleted content (a rotated or deleted account's key) is overwritten.
+    exec("PRAGMA secure_delete=ON;");
     exec(kSchema);
+    // Stores from before resends were counted.
+    sqlite3_exec(db_, "ALTER TABLE outbox ADD COLUMN resends INTEGER NOT NULL DEFAULT 0", nullptr, nullptr, nullptr);
 }
+
+Store::Batch::Batch(Store& s) : s_(s) { s_.exec("BEGIN"); }
+Store::Batch::~Batch() {
+    if (sqlite3_exec(s_.db_, "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK)
+        sqlite3_exec(s_.db_, "ROLLBACK", nullptr, nullptr, nullptr);
+}
+
+void Store::scrub() { sqlite3_exec(db_, "PRAGMA wal_checkpoint(TRUNCATE)", nullptr, nullptr, nullptr); }
 
 Store::~Store() { sqlite3_close(db_); }
 
@@ -158,6 +170,20 @@ size_t Store::count() const {
     return static_cast<size_t>(q.num(0));
 }
 
+size_t Store::count(const std::string& forum) const {
+    Stmt q(db_, "SELECT COUNT(*) FROM posts WHERE forum=?");
+    q.text(1, forum);
+    q.step();
+    return static_cast<size_t>(q.num(0));
+}
+
+uint64_t Store::newest_ts(const std::string& forum, uint64_t limit_ms) const {
+    Stmt q(db_, "SELECT COALESCE(MAX(ts),0) FROM posts WHERE forum=? AND ts<=?");
+    q.text(1, forum).i64(2, static_cast<int64_t>(limit_ms));
+    q.step();
+    return static_cast<uint64_t>(q.num(0));
+}
+
 std::vector<Post> Store::all(const std::string& forum) const {
     Stmt q(db_, (std::string("SELECT ") + kCols + " FROM posts WHERE forum=? ORDER BY kind, ts, id").c_str());
     q.text(1, forum);
@@ -196,10 +222,19 @@ void Store::sent(const std::string& id) {
     q.step();
 }
 
-void Store::awaiting(const std::string& id, uint64_t until_ms) {
-    Stmt q(db_, "UPDATE outbox SET next_try=? WHERE id=?");
-    q.i64(1, static_cast<int64_t>(until_ms)).text(2, id);
-    q.step();
+int Store::awaiting(const std::string& id, uint64_t now_ms, uint64_t window_ms) {
+    int resends = 0;
+    {
+        Stmt q(db_, "SELECT resends FROM outbox WHERE id=?");
+        q.text(1, id);
+        if (!q.step()) return 0;
+        resends = static_cast<int>(q.num(0));
+    }
+    const uint64_t wait = std::min<uint64_t>(window_ms << std::min(resends, 10), 3600000);
+    Stmt u(db_, "UPDATE outbox SET next_try=?, resends=resends+1 WHERE id=?");
+    u.i64(1, static_cast<int64_t>(now_ms + wait)).text(2, id);
+    u.step();
+    return resends + 1;
 }
 
 void Store::due_now(uint64_t now_ms) {

@@ -152,9 +152,10 @@ Item {
     Connections {
         target: root.backend
         ignoreUnknownSignals: true
+        // topicId "" means many posts at once (a history import): refresh once.
         function onPostArrived(id, topicId) {
             root.refreshTopics()
-            if (topicId === root.openId) {
+            if (root.openId !== "" && (topicId === root.openId || topicId === "")) {
                 root.refreshThread()
                 root.call(root.backend.markRead(topicId))  // the user is looking at it
             }
@@ -175,8 +176,11 @@ Item {
 
     // ── Reusable pieces ───────────────────────────────────────────────────────
 
-    component Label2: Text { color: root.text; font.pixelSize: 14; wrapMode: Text.WrapAtWordBoundaryOrAnywhere }
-    component Dim: Text { color: root.dim; font.pixelSize: 12; wrapMode: Text.WrapAtWordBoundaryOrAnywhere }
+    // Plain text by default: titles, aliases and author names come from other
+    // people, and rich text would render an <img> that fetches a URL, telling
+    // its author the reader's IP address.
+    component Label2: Text { color: root.text; font.pixelSize: 14; wrapMode: Text.WrapAtWordBoundaryOrAnywhere; textFormat: Text.PlainText }
+    component Dim: Text { color: root.dim; font.pixelSize: 12; wrapMode: Text.WrapAtWordBoundaryOrAnywhere; textFormat: Text.PlainText }
     // A label between controls in a Flow: centred on the 40 px control height.
     component FlowDim: Dim { height: 40; verticalAlignment: Text.AlignVCenter; wrapMode: Text.NoWrap }
 
@@ -190,6 +194,7 @@ Item {
             // Someone else's account is only known by its key, shown wallet-style.
             readonly property bool keyIsName: post && post.mode === "identity" && !post.mine
             text: post ? (keyIsName ? root.shortKey(post.authorKey) : post.author) : ""
+            textFormat: Text.PlainText
             color: post && post.mode === "anonymous" ? root.dim : root.accent
             font.pixelSize: 13; font.bold: true
         }
@@ -353,7 +358,7 @@ Item {
                     // too short for it; the version takes whatever is left.
                     Text { id: titleText
                            Layout.maximumWidth: Math.ceil(titleMetrics.advanceWidth) + 1; Layout.minimumWidth: 0; Layout.fillWidth: true; elide: Text.ElideRight
-                           text: root.forumName; color: root.text; font.pixelSize: root.compact ? 18 : 20; font.bold: true
+                           text: root.forumName; textFormat: Text.PlainText; color: root.text; font.pixelSize: root.compact ? 18 : 20; font.bold: true
                            TextMetrics { id: titleMetrics; font: titleText.font; text: titleText.text } }
                     Dim { Layout.fillWidth: true; Layout.minimumWidth: implicitWidth; text: "v" + root.appVersion; wrapMode: Text.NoWrap }
                 }
@@ -502,7 +507,7 @@ Item {
                         x: (welcomeScroll.width - width) / 2
                         y: Math.max(30, (welcomeScroll.height - implicitHeight) / 2)
                         spacing: 14
-                        Text { Layout.fillWidth: true; wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                        Text { Layout.fillWidth: true; wrapMode: Text.WrapAtWordBoundaryOrAnywhere; textFormat: Text.PlainText
                                text: "Welcome to " + root.forumName; color: root.text; font.pixelSize: 18; font.bold: true }
                         Label2 { Layout.fillWidth: true; color: root.dim
                                  text: "There is no server here. Posts travel peer to peer over Logos Delivery, history is shared through Logos Storage, and every post is signed. The ✓ next to an author means this app checked the signature itself." }
@@ -549,6 +554,7 @@ Item {
                             Text {
                                 Layout.fillWidth: true
                                 text: root.openTopic ? root.openTopic.title : "Topic not received yet. Its replies are shown below."
+                                textFormat: Text.PlainText
                                 color: root.text; font.pixelSize: 18; font.bold: true; wrapMode: Text.WrapAtWordBoundaryOrAnywhere
                             }
                             Byline { post: root.openTopic; visible: root.openTopic !== null; Layout.fillWidth: true }

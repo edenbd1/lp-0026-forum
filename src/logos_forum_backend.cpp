@@ -7,6 +7,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QHostAddress>
@@ -36,6 +37,11 @@ void log(const std::string& m) {
     const std::string line = QDateTime::currentDateTime().toString(Qt::ISODateWithMs).toStdString() + " " + m;
     std::cerr << "[logos_forum] " << line << std::endl;
     if (g_logPath.isEmpty()) return;
+    // Kept bounded: one previous file, 5 MB each.
+    if (QFileInfo(g_logPath).size() > 5 * 1024 * 1024) {
+        QFile::remove(g_logPath + QStringLiteral(".1"));
+        QFile::rename(g_logPath, g_logPath + QStringLiteral(".1"));
+    }
     QFile f(g_logPath);
     if (f.open(QIODevice::Append | QIODevice::Text)) f.write((line + "\n").c_str());
 }
@@ -87,6 +93,12 @@ constexpr size_t kUploadChunk = 48 * 1024;
 constexpr int kDownloadChunk = 64 * 1024;
 constexpr size_t kMaxSnapshotBytes = 32u * 1024 * 1024;
 constexpr int kDownloadWatchdogMs = 45000;
+constexpr int kUploadWatchdogMs = 45000;
+constexpr int kArrivalBatchMs = 150;
+
+// Same-machine test rigs run every node on 127.0.0.1 or one LAN: only there
+// may announcements name, and fetches dial, private addresses.
+bool localPeersAllowed() { return qEnvironmentVariableIsSet("LOGOS_FORUM_LOCAL_PEERS"); }
 
 } // namespace
 
@@ -137,14 +149,24 @@ void LogosForumBackend::bootstrap() {
     // while the node is not up yet, and subscribe() below retries.
     engine_ = std::make_unique<forum::Engine>(*store_, *net_, s(forumName()));
     engine_->on_post = [this](const Post& p, const std::string& id) {
-        emit postArrived(q(id), q(p.kind == Kind::Topic ? id : p.topic_id));
+        postArrivedSoon(q(id), q(p.kind == Kind::Topic ? id : p.topic_id));
     };
-    engine_->on_sent = [this](const std::string& id, const std::string& request) {
-        // Accepted by the node, not yet out: it stays in the outbox until the
-        // network confirms it (messagePropagated / messageSent below).
-        log("handed " + id.substr(0, 12) + " to delivery as request " + request);
-        if (!request.empty()) inFlight_.insert(q(request), q(id));
+    net_->on_send_result = [this](const std::string& payload, bool sent, const std::string& request,
+                                  const std::string& error) {
+        const auto p = forum::decode(payload);
+        if (!p || !engine_) return;  // a history answer or a request: nothing to track
+        const std::string id = p->id();
+        if (sent) {
+            log("handed " + id.substr(0, 12) + " to delivery as request " + request);
+            if (!request.empty()) inFlight_.insert(q(request), q(id));
+        } else {
+            log("delivery refused " + id.substr(0, 12) + ": " + error);
+            if (engine_->requeue(id, error.empty() ? "send failed" : error, now_ms())) publishOutbox();
+        }
     };
+    // Accepted by the node, not yet out: a post stays in the outbox until the
+    // network confirms it (messagePropagated / messageSent below). The request
+    // id arrives with the asynchronous send result (on_send_result above).
     engine_->on_snapshot = [this](const forum::Announcement& an) { fetchSnapshot(an); };
     engine_->on_history_wanted = [this](const forum::HistoryRequest& r) {
         log("answering a history request from a peer with " + std::to_string(r.have) + " posts");
@@ -261,35 +283,41 @@ void LogosForumBackend::startNode() {
     // The layered config shape; bare node keys at top level would switch the
     // parser to the legacy shape and fixed ports (see forum-sample-app).
     const QString cfg = QStringLiteral(R"({"mode":"Core","preset":"logos.test"})");
-    const LogosResult created = modules().delivery_module.createNode(cfg);
-    if (!created.success) {
-        // delivery_module is shared across Basecamp apps: another may already
-        // run the node, in which case no nodeStarted will come for us.
-        log("createNode refused (node already running?): " + s(created.getError()));
-        subscribe();
-        runCatchUp("joined running node");
-        return;
-    }
     setStatus(QStringLiteral("Starting node…"));
-    subscribe();  // before start(), so nothing that arrives early is missed
-    const LogosResult started = modules().delivery_module.start();
-    if (!started.success) setStatus(QStringLiteral("Node failed to start: %1").arg(started.getError()));
+    // Asynchronous, like every delivery call: a stalled node must not freeze the backend.
+    modules().delivery_module.createNodeAsync(cfg, [this](LogosResult created) {
+        if (!created.success) {
+            // delivery_module is shared across Basecamp apps: another may already
+            // run the node, in which case no nodeStarted will come for us.
+            log("createNode refused (node already running?): " + s(created.getError()));
+            subscribe();
+            runCatchUp("joined running node");
+            return;
+        }
+        subscribe();  // before start(), so nothing that arrives early is missed
+        modules().delivery_module.startAsync([this](LogosResult started) {
+            if (!started.success) setStatus(QStringLiteral("Node failed to start: %1").arg(started.getError()));
+        });
+    });
 }
 
 void LogosForumBackend::subscribe() {
     if (subscribed_ || !net_) return;
     ++subscribeAttempts_;
-    if (net_->subscribe(s(contentTopic()))) {
-        log("subscribed on attempt " + std::to_string(subscribeAttempts_));
-        subscribed_ = true;
-        refreshStatus();
-        return;
-    }
-    // Usually the node is still bootstrapping; that passes. Posting is not
-    // affected either way — it runs off the local store.
-    setStatus(QStringLiteral("Joining the forum topic… (attempt %1)").arg(subscribeAttempts_));
-    if (subscribeAttempts_ < kMaxSubscribeAttempts)
-        QTimer::singleShot(kSubscribeRetryMs, [this]() { subscribe(); });
+    modules().delivery_module.subscribeAsync(contentTopic(), [this](LogosResult r) {
+        if (subscribed_) return;
+        if (r.success) {
+            log("subscribed on attempt " + std::to_string(subscribeAttempts_));
+            subscribed_ = true;
+            refreshStatus();
+            return;
+        }
+        // Usually the node is still bootstrapping; that passes. Posting is not
+        // affected either way: it runs off the local store.
+        setStatus(QStringLiteral("Joining the forum topic… (attempt %1)").arg(subscribeAttempts_));
+        if (subscribeAttempts_ < kMaxSubscribeAttempts)
+            QTimer::singleShot(kSubscribeRetryMs, [this]() { subscribe(); });
+    });
 }
 
 void LogosForumBackend::refreshStatus() {
@@ -434,8 +462,33 @@ QString LogosForumBackend::markRead(QString topicId) {
     for (const auto& t : store_->topics(s(forumName())))
         if (q(t.id) == topicId) last = static_cast<double>(t.last_activity_ms);
     readUpTo_.insert(topicId, last);
-    saveSettings();
+    saveSettingsSoon();
     return QString();
+}
+
+void LogosForumBackend::saveSettingsSoon() {
+    if (settingsScheduled_) return;
+    settingsScheduled_ = true;
+    QTimer::singleShot(2000, [this]() {
+        settingsScheduled_ = false;
+        saveSettings();
+    });
+}
+
+void LogosForumBackend::postArrivedSoon(const QString& id, const QString& topicId) {
+    arrivals_.insert(topicId, id);
+    if (arrivalsScheduled_) return;
+    arrivalsScheduled_ = true;
+    QTimer::singleShot(kArrivalBatchMs, [this]() {
+        arrivalsScheduled_ = false;
+        // A few: one signal each, so an open topic refreshes and is marked read.
+        // Many (an import): one signal with no topic, and the view refreshes once.
+        if (arrivals_.size() <= 3)
+            for (auto it = arrivals_.begin(); it != arrivals_.end(); ++it) emit postArrived(it.value(), it.key());
+        else
+            emit postArrived(QString(), QString());
+        arrivals_.clear();
+    });
 }
 
 // ─── Accounts ───────────────────────────────────────────────────────────────
@@ -495,6 +548,7 @@ QString LogosForumBackend::deleteAccount(QString label) {
     if (it == accounts_.end()) return QStringLiteral("no such account");
     sodium_memzero(it->key.sk.data(), it->key.sk.size());
     store_->remove_account(it->label);
+    store_->scrub();
     accounts_.erase(it);
     if (!selected()) {
         selectedLabel_ = q(accounts_.front().label);
@@ -509,6 +563,7 @@ QString LogosForumBackend::rotateAccount() {
     if (!a) return QStringLiteral("no account selected");
     forum::rotate(*a, now_ms());
     store_->save_account(*a, true);
+    store_->scrub();
     publishAccounts();
     return QString();
 }
@@ -667,6 +722,7 @@ void LogosForumBackend::wireStorage() {
     st.onStorageUploadProgress([this](const QString& payload) {
         const auto j = nlohmann::json::parse(s(payload), nullptr, false);
         if (!j.is_object() || q(str_at(j, "sessionId")) != uploadSession_) return;
+        ++uploadProgress_;
         log("upload progress: " + s(payload).substr(0, 200));
         if (!bool_at(j, "success")) {
             failUpload(QStringLiteral("Snapshot upload failed: %1").arg(q(str_at(j, "error"))));
@@ -706,30 +762,42 @@ void LogosForumBackend::wireStorage() {
         downloadBuf_.clear();
     });
 
-    // Storage is shared across Basecamp apps: if another app has started it,
-    // init is refused and the node is already usable.
-    const QString cfg = QString::fromUtf8(QJsonDocument(QJsonObject{
+    initStorage(true);
+    publishHistory();
+}
+
+void LogosForumBackend::initStorage(bool withDiscPort) {
+    auto& st = modules().storage_module;
+    QJsonObject o{
         {"network", "logos.test"},
         {"data-dir", dataDir() + QStringLiteral("/storage")},
-        // Ephemeral ports: the default discovery port is fixed (8090), so two
-        // Basecamp instances on one machine would otherwise collide.
-        {"listen-port", storagePort_},
-        {"disc-port", 0}}).toJson(QJsonDocument::Compact));
+        {"listen-port", storagePort_}};
+    // The 2.1 series has a fixed default discovery port (8090), so two
+    // Basecamp instances on one machine would collide without an ephemeral
+    // one; later libstorage (Kademlia) no longer has the option and refuses a
+    // config that names it. Try with it, then without.
+    if (withDiscPort) o.insert("disc-port", 0);
+    const QString cfg = QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact));
     if (ok(st.init(cfg))) {
+        log(std::string("storage init ok") + (withDiscPort ? "" : " (without disc-port)"));
         ok(st.start());
-    } else {
-        // Refused: either another app already started the shared node, or the
-        // installed storage_module does not accept this configuration. Ask the
-        // node itself rather than guess.
-        log("storage init refused; checking whether a node is already running");
-        modules().storage_module.debugAsync([this](LogosResult r) {
-            storageReady_ = r.success;
-            log(std::string("storage ") + (r.success ? "already running" : "unavailable: " + s(r.getError())));
-            publishHistory();
-            if (r.success) learnStorageIdentity();
-        });
+        return;
     }
-    publishHistory();
+    if (withDiscPort) {
+        initStorage(false);
+        return;
+    }
+    // Refused twice: either another app already started the shared node (then
+    // it answers), or this storage_module cannot run with our settings. Say
+    // which, rather than stay "not ready" with no reason.
+    log("storage init refused; checking whether a node is already running");
+    modules().storage_module.debugAsync([this](LogosResult r) {
+        storageReady_ = r.success;
+        log(std::string("storage ") + (r.success ? "already running (started by another app)" : "failed to start: " + s(r.getError())));
+        if (!r.success) lastSnapshot_ = QStringLiteral("Storage failed to start: %1").arg(r.getError());
+        publishHistory();
+        if (r.success) learnStorageIdentity();
+    });
 }
 
 QString LogosForumBackend::saveSnapshot() {
@@ -766,8 +834,18 @@ void LogosForumBackend::failUpload(const QString& why) {
 }
 
 void LogosForumBackend::uploadNextChunk() {
-    const std::string chunk = uploadDoc_.substr(uploadOffset_, kUploadChunk);
+    // Cut on a character boundary: each chunk crosses as a QString, and half
+    // a UTF-8 character would come back as U+FFFD and break its post's signature.
+    const std::string chunk = uploadDoc_.substr(uploadOffset_, forum::utf8_cut(uploadDoc_, uploadOffset_, kUploadChunk));
     uploadOffset_ += chunk.size();
+    // An upload whose progress event never comes is as good as a failed one.
+    const int seen = uploadProgress_;
+    const QString session = uploadSession_;
+    QTimer::singleShot(kUploadWatchdogMs, [this, seen, session]() {
+        if (!uploading_ || uploadSession_ != session || uploadProgress_ != seen) return;
+        modules().storage_module.uploadCancelAsync(session, [](LogosResult) {});
+        failUpload(QStringLiteral("Snapshot upload stalled"));
+    });
     // Completion arrives as a storageUploadProgress event for this session.
     modules().storage_module.uploadChunkAsync(uploadSession_, q(chunk), [this](LogosResult r) {
         if (!r.success) {
@@ -789,7 +867,12 @@ void LogosForumBackend::finishUpload() {
         seenSnapshots_.insert(cid);  // our own; nothing to fetch
         postsAtLastSnapshot_ = uploadPosts_;
         lastSnapshotCid_ = cid;
-        QTimer::singleShot(0, [this, cid]() { engine_->announce_snapshot(cid, uploadPosts_, now_ms(), answerRe_); });
+        // Peers act only on an announcement that answers their own request.
+        if (!answerRe_.empty())
+            QTimer::singleShot(0, [this, cid]() {
+                engine_->announce_snapshot(cid, uploadPosts_, now_ms(), answerRe_);
+                answerRe_.clear();
+            });
         lastSnapshot_ = QStringLiteral("Snapshot %1 saved %2").arg(q(cid.substr(0, 10)) + QStringLiteral("…"), hhmm(now_ms()));
         log("snapshot saved as " + cid + " (" + std::to_string(uploadPosts_) + " posts)");
         publishHistory();
@@ -810,12 +893,17 @@ void LogosForumBackend::learnStorageIdentity() {
         if (j.is_object() && j.contains("addrs") && j["addrs"].is_array())
             for (const auto& a : j["addrs"])
                 if (a.is_string()) addrs.push_back(a.get<std::string>());
-        if (addrs.empty() && storagePort_ > 0) {
+        if (addrs.empty() && storagePort_ > 0 && localPeersAllowed()) {
             // Nothing announced (no public address yet): offer what we listen on.
             for (const QHostAddress& h : QNetworkInterface::allAddresses())
                 if (h.protocol() == QAbstractSocket::IPv4Protocol)
                     addrs.push_back("/ip4/" + s(h.toString()) + "/tcp/" + std::to_string(storagePort_));
         }
+        // Only public addresses are announced: a LAN or loopback address says
+        // something about this machine and helps nobody outside it.
+        if (!localPeersAllowed())
+            addrs.erase(std::remove_if(addrs.begin(), addrs.end(), [](const std::string& a) { return !forum::is_public_multiaddr(a); }),
+                        addrs.end());
         engine_->set_storage_provider(id, addrs);
         std::string list;
         for (const auto& a : addrs) list += " " + a;
@@ -867,12 +955,15 @@ void LogosForumBackend::fetchSnapshot(const forum::Announcement& an) {
             historyOverDelivery("snapshot download timed out");
         });
     };
-    if (an.peer.empty()) {
+    // Dial only public addresses: never into this machine or its LAN on the
+    // word of an unsigned message.
+    QStringList addrs;
+    for (const auto& a : an.addrs)
+        if (localPeersAllowed() || forum::is_public_multiaddr(a)) addrs << q(a);
+    if (an.peer.empty() || addrs.isEmpty()) {
         download();
         return;
     }
-    QStringList addrs;
-    for (const auto& a : an.addrs) addrs << q(a);
     log("dialing snapshot provider " + an.peer);
     modules().storage_module.connectAsync(q(an.peer), addrs, [this, download](LogosResult r) {
         if (!r.success) log("dial failed: " + s(r.getError()) + " — trying the DHT");

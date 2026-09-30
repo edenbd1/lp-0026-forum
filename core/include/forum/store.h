@@ -55,15 +55,34 @@ public:
     // Replies to a topic, oldest first.
     std::vector<Post> replies(const std::string& topic_id) const;
     size_t count() const;
+    // How many posts a forum holds, without reading them.
+    size_t count(const std::string& forum) const;
+    // The newest post date in a forum no later than `limit_ms` (0 if none), so
+    // a post dated in the future cannot stand in for "the newest".
+    uint64_t newest_ts(const std::string& forum, uint64_t limit_ms) const;
     // Every post of a forum, oldest first.
     std::vector<Post> all(const std::string& forum) const;
+
+    // Many writes as one commit (a history import), instead of one each.
+    class Batch {
+    public:
+        explicit Batch(Store& s);
+        ~Batch();
+        Batch(const Batch&) = delete;
+        Batch& operator=(const Batch&) = delete;
+    private:
+        Store& s_;
+    };
 
     void enqueue(const std::string& id, const std::string& payload, uint64_t now_ms);
     std::vector<OutboxItem> due(uint64_t now_ms) const;
     std::vector<OutboxItem> outbox() const;
     void sent(const std::string& id);
-    // Accepted but not confirmed: not due again before `until_ms`.
-    void awaiting(const std::string& id, uint64_t until_ms);
+    // Accepted but not confirmed: not due again for `window_ms`, a window that
+    // doubles with every resend (capped at an hour), so a post whose
+    // confirmation never comes is resent less and less often, not every two
+    // minutes forever. Returns how many times it has been resent.
+    int awaiting(const std::string& id, uint64_t now_ms, uint64_t window_ms);
     // Make everything in the outbox due now (the network just came back).
     void due_now(uint64_t now_ms);
     // Record a failure and schedule the next try with exponential back-off.
@@ -73,6 +92,9 @@ public:
     std::vector<Account> accounts() const;
     std::optional<std::string> selected_label() const;
     void remove_account(const std::string& label);
+    // Flush the write-ahead log into the database so a replaced or deleted key
+    // does not linger in it (deleted content is zeroed: secure_delete is on).
+    void scrub();
 
 private:
     sqlite3* db_ = nullptr;
