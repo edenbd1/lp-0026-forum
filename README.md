@@ -15,7 +15,8 @@ and every post is checked by the app itself on arrival.
 <p align="center">
   <img alt="Logos Basecamp 0.3.0" src="https://img.shields.io/badge/Logos%20Basecamp-0.3.0-2f6b4f">
   <img alt="Logos Messaging (delivery_module) 0.2.1" src="https://img.shields.io/badge/Logos%20Messaging-0.2.1-2f6b4f">
-  <a href="https://github.com/edenbd1/logos-forum-catalog"><img alt="catalog 0.2.0" src="https://img.shields.io/badge/catalog-0.2.0-e2552b"></a>
+  <img alt="network logos.dev" src="https://img.shields.io/badge/network-logos.dev-2f6b4f">
+  <a href="https://github.com/edenbd1/logos-forum-catalog"><img alt="catalog 0.2.1" src="https://img.shields.io/badge/catalog-0.2.1-e2552b"></a>
   <img alt="licence MIT / Apache-2.0" src="https://img.shields.io/badge/licence-MIT%20%2F%20Apache--2.0-7a9a3a">
 </p>
 
@@ -25,7 +26,8 @@ and every post is checked by the app itself on arrival.
 
 > **Status:** the forum runs in **Logos Basecamp 0.3.0** (macOS and Linux) and is
 > installable from its [catalog](#install-in-basecamp). It has been tested end to
-> end on five real nodes on the logos.test network, 24 checks
+> end on five real nodes, 24 checks, on logos.test and again on logos.dev, the
+> network it uses since testnet v0.3
 > ([`docs/e2e.md`](docs/e2e.md)); the core has 47 tests of its own; CI is green
 > on Linux and macOS.
 
@@ -129,10 +131,10 @@ blockchain out of scope, and the forum runs no server. What plays that role:
 | | |
 |---|---|
 | Module catalog | `https://raw.githubusercontent.com/edenbd1/logos-forum-catalog/main/logos-repo.json` |
-| Network | Logos Delivery, `logos.test` preset (cluster 2) |
+| Network | Logos Delivery, `logos.dev` preset (cluster 3), since testnet v0.3 switched off the `logos.test` fleet; `LOGOS_FORUM_PRESET=logos.test` picks the other one |
 | Forum topic | `/logos-forum/1/logos-forum-934410ad/json`, on shard `/waku/2/rs/2/6` |
-| History | peers' bundles over Delivery; peers' snapshots on Logos Storage (`logos.test`) when opted in |
-| Store nodes queried | the six `logos.test` fleet nodes (`node-01`, `node-02` in `do-ams3`, `gc-us-central1-a` and `ac-cn-hongkong-c`) |
+| History | peers' bundles over Delivery; peers' snapshots on Logos Storage (same network) when opted in |
+| Store nodes queried | the six fleet nodes of the preset (`delivery-01`, `delivery-02` in `do-ams3`, `gc-us-central1-a` and `ac-cn-hongkong-c` for `logos.dev`) |
 | Data on your machine | `<Basecamp user dir>/module_data/logos_forum/` (`forum.db`, `forum.log`) |
 
 A separate forum can be run by starting Basecamp with `LOGOS_FORUM_NAME=<name>`;

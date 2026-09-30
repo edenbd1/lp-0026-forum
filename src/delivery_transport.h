@@ -48,8 +48,11 @@ public:
     // The store node's own verdict on the last page ("200 OK", …), for the log.
     const std::string& last_history_status() const { return last_status_; }
 
-    // The logos.test fleet, which serves Store queries.
-    static std::vector<std::string> default_store_peers();
+    // The fleet of a Logos Delivery preset ("logos.test", "logos.dev"), which
+    // serves Store queries, and the cluster it runs (autosharding needs it).
+    static std::vector<std::string> default_store_peers(const std::string& preset = "logos.test");
+    static int cluster_of(const std::string& preset) { return preset == "logos.dev" ? 3 : 2; }
+    void set_cluster(int cluster) { cluster_ = cluster; }
 
 private:
     // Async callbacks may arrive after this object is gone: they check this.
@@ -61,5 +64,6 @@ private:
     void query_page(std::shared_ptr<Query> q);
     LogosModules& modules_;
     std::vector<std::string> peers_;
+    int cluster_ = 3;
     std::string last_peer_, last_error_, last_status_;
 };

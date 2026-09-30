@@ -161,6 +161,14 @@ void LogosForumBackend::bootstrap() {
         return;
     }
     net_ = std::make_unique<DeliveryTransport>(modules());
+    // Which Logos Delivery network. logos.dev since testnet v0.3: the
+    // logos.test fleet was switched off with the v0.3 launch (2026-09-30) and
+    // logos.dev is the one running. LOGOS_FORUM_PRESET picks another fleet,
+    // its cluster and its store nodes.
+    preset_ = qEnvironmentVariable("LOGOS_FORUM_PRESET", QStringLiteral("logos.dev"));
+    net_->set_cluster(DeliveryTransport::cluster_of(s(preset_)));
+    net_->set_store_peers(DeliveryTransport::default_store_peers(s(preset_)));
+    log("network preset " + s(preset_) + ", cluster " + std::to_string(DeliveryTransport::cluster_of(s(preset_))));
     loadSettings();
 
     // The engine subscribes in its constructor; that first attempt may fail
@@ -334,7 +342,7 @@ void LogosForumBackend::wireDelivery() {
 void LogosForumBackend::startNode() {
     // The layered config shape; bare node keys at top level would switch the
     // parser to the legacy shape and fixed ports (see forum-sample-app).
-    const QString cfg = QStringLiteral(R"({"mode":"Core","preset":"logos.test"})");
+    const QString cfg = QString::fromUtf8(QJsonDocument(QJsonObject{{"mode", "Core"}, {"preset", preset_}}).toJson(QJsonDocument::Compact));
     setStatus(QStringLiteral("Starting node…"));
     // Asynchronous, like every delivery call: a stalled node must not freeze the backend.
     modules().delivery_module.createNodeAsync(cfg, [this](LogosResult created) {
@@ -703,7 +711,7 @@ QJsonObject LogosForumBackend::readJson() const {
 
 void LogosForumBackend::saveSettings() {
     QJsonArray peers;
-    const auto defaults = DeliveryTransport::default_store_peers();
+    const auto defaults = DeliveryTransport::default_store_peers(s(preset_));
     if (net_ && net_->store_peers() != defaults)
         for (const auto& p : net_->store_peers()) peers.append(q(p));
     const QJsonObject o{{"rotateAfterPosts", static_cast<int>(rotation_.max_posts)},
@@ -737,7 +745,7 @@ QString LogosForumBackend::useStorePeers(QString peers) {
         if (!p.startsWith('/')) return QStringLiteral("not a multiaddr: %1").arg(p);
         list.push_back(s(p));
     }
-    net_->set_store_peers(list.empty() ? DeliveryTransport::default_store_peers() : list);
+    net_->set_store_peers(list.empty() ? DeliveryTransport::default_store_peers(s(preset_)) : list);
     QStringList shown;
     for (const auto& p : net_->store_peers()) shown << q(p);
     setStorePeers(shown.join('\n'));
@@ -813,7 +821,14 @@ void LogosForumBackend::wireStorage() {
         storageReady_ = bool_at(j, "success");
         log(std::string("storage start: ") + (storageReady_ ? "ok" : s(payload)));
         publishHistory();
-        if (storageReady_) QTimer::singleShot(0, this, [this]() { learnStorageIdentity(); });
+        if (storageReady_) QTimer::singleShot(0, this, [this]() {
+            learnStorageIdentity();
+            if (pendingAnnouncement_) {
+                const forum::Announcement an = *pendingAnnouncement_;
+                pendingAnnouncement_.reset();
+                fetchSnapshot(an);
+            }
+        });
     });
     st.onStorageUploadProgress([this](const QString& payload) {
         const auto j = nlohmann::json::parse(s(payload), nullptr, false);
@@ -866,7 +881,7 @@ void LogosForumBackend::wireStorage() {
 void LogosForumBackend::initStorage(bool withDiscPort) {
     auto& st = modules().storage_module;
     QJsonObject o{
-        {"network", "logos.test"},
+        {"network", preset_},
         {"data-dir", dataDir() + QStringLiteral("/storage")},
         {"listen-port", storagePort_}};
     // The 2.1 series has a fixed default discovery port (8090), so two
@@ -1035,6 +1050,13 @@ void LogosForumBackend::historyOverDelivery(const char* why) {
 }
 
 void LogosForumBackend::fetchSnapshot(const forum::Announcement& an) {
+    // Storage 3.0 can take half a minute to start: an answer that arrives
+    // before it is ready is kept and fetched once it is.
+    if (!storageReady_) {
+        pendingAnnouncement_ = an;
+        log("snapshot " + an.cid + " announced; fetching it once storage is ready");
+        return;
+    }
     // One download at a time, each announced snapshot once.
     if (!downloadSession_.isEmpty() || seenSnapshots_.count(an.cid)) return;
     seenSnapshots_.insert(an.cid);

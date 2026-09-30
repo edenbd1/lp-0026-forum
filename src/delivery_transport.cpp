@@ -41,9 +41,18 @@ constexpr int kHistoryMaxPages = 20;
 
 } // namespace
 
-DeliveryTransport::DeliveryTransport(LogosModules& modules) : modules_(modules), peers_(default_store_peers()) {}
+DeliveryTransport::DeliveryTransport(LogosModules& modules) : modules_(modules), peers_(default_store_peers("logos.dev")), cluster_(3) {}
 
-std::vector<std::string> DeliveryTransport::default_store_peers() {
+std::vector<std::string> DeliveryTransport::default_store_peers(const std::string& preset) {
+    if (preset == "logos.dev")  // the development fleet, cluster 3 (logos-delivery networks_config)
+        return {
+            "/dns4/delivery-01.do-ams3.logos.dev.status.im/tcp/30303/p2p/16Uiu2HAmTUbnxLGT9JvV6mu9oPyDjqHK4Phs1VDJNUgESgNSkuby",
+            "/dns4/delivery-02.do-ams3.logos.dev.status.im/tcp/30303/p2p/16Uiu2HAmMK7PYygBtKUQ8EHp7EfaD3bCEsJrkFooK8RQ2PVpJprH",
+            "/dns4/delivery-01.gc-us-central1-a.logos.dev.status.im/tcp/30303/p2p/16Uiu2HAm4S1JYkuzDKLKQvwgAhZKs9otxXqt8SCGtB4hoJP1S397",
+            "/dns4/delivery-02.gc-us-central1-a.logos.dev.status.im/tcp/30303/p2p/16Uiu2HAm8Y9kgBNtjxvCnf1X6gnZJW5EGE4UwwCL3CCm55TwqBiH",
+            "/dns4/delivery-01.ac-cn-hongkong-c.logos.dev.status.im/tcp/30303/p2p/16Uiu2HAm8YokiNun9BkeA1ZRmhLbtNUvcwRr64F69tYj9fkGyuEP",
+            "/dns4/delivery-02.ac-cn-hongkong-c.logos.dev.status.im/tcp/30303/p2p/16Uiu2HAkvwhGHKNry6LACrB8TmEFoCJKEX29XR5dDUzk3UT3UNSE",
+        };
     return {
         "/dns4/node-01.do-ams3.logos.test.status.im/tcp/30303/p2p/16Uiu2HAmQ9X2xDfPG3uL77V9piYDhjq14JhKCtcmNYsTMKNqrKCj",
         "/dns4/node-01.gc-us-central1-a.logos.test.status.im/tcp/30303/p2p/16Uiu2HAmF8WtwGPmeGHgYAX2277jHgy5cW9F7zsB8EqUjBZQAZQ3",
@@ -104,7 +113,7 @@ void DeliveryTransport::query_page(std::shared_ptr<Query> q) {
              {"includeData", true},
              {"paginationForward", true},
              {"paginationLimit", kHistoryPageLimit},
-             {"pubsubTopic", forum::pubsub_topic(q->topic)},
+             {"pubsubTopic", forum::pubsub_topic(q->topic, cluster_)},
              {"contentTopics", json::array({q->topic})}};
     // Diagnostics: ask for the whole shard, to tell "the node keeps nothing"
     // from "the node keeps nothing of ours".

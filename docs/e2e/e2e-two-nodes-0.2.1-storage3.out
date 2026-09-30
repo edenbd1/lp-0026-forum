@@ -1,0 +1,8 @@
+ok   both nodes joined the forum
+ok   B received A's topic
+ok   same author key on both nodes
+ok   A received B's anonymous reply
+ok   the anonymous key is none of B's accounts
+ok   fresh B loaded history from a peer's snapshot
+FAIL: the posts did not come from a snapshot
+exit=1

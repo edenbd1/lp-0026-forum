@@ -104,6 +104,14 @@ request this node has open, and only public IP addresses are dialled.
   can be forged, altered or hidden that way: every post is checked, and nothing
   a stranger sends moves the paging past posts not yet received.
 
+## Known issue (0.2.1)
+
+With `storage_module` 3.0.0 (libstorage v0.5), fetching an opted-in snapshot
+currently fails to start (`Failed to start chunk download`) even after the
+provider is dialled; the forum then falls back to history over Delivery, so the
+history still arrives ([run](e2e/e2e-two-nodes-0.2.1-storage3.out)). Snapshots
+are off by default, so the default path is not affected.
+
 ## Running nodes on one machine
 
 Tests run several Basecamps on one machine, which can reach each other only

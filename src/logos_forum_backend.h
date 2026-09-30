@@ -12,6 +12,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <set>
 
 #include <QSet>
@@ -122,9 +123,11 @@ private:
     std::set<std::string> seenSnapshots_;
     QString lastCatchUp_, lastSnapshot_;
     int uploadProgress_ = 0;        // upload watchdog generation, bumped at every upload step
-    bool fetchSnapshots_ = false;   // settings.json "fetchSnapshots": opt in to Storage fetches
+    bool fetchSnapshots_ = false;
+    QString preset_ = QStringLiteral("logos.dev");  // the Logos Delivery network   // settings.json "fetchSnapshots": opt in to Storage fetches
     QSet<QString> earlyConfirms_;   // confirmations that arrived before our send reply
     QList<QString> earlyOrder_;     // their arrival order, to drop the oldest
+    std::optional<forum::Announcement> pendingAnnouncement_;  // answered before storage was ready
 
     // Arrivals are told to the view at most once per short window: a large
     // import would otherwise mean one full refresh per post.
