@@ -120,7 +120,7 @@ blockchain out of scope, and the forum runs no server. What plays that role:
 | Network | Logos Delivery, `logos.test` preset (cluster 2) |
 | Forum topic | `/logos-forum/1/logos-forum-934410ad/json`, on shard `/waku/2/rs/2/6` |
 | History | peers' bundles over Delivery; peers' snapshots on Logos Storage (`logos.test`) when opted in |
-| Store nodes queried | the four `logos.test` fleet nodes (`node-01.do-ams3`, `node-01.gc-us-central1-a`, `node-01.ac-cn-hongkong-c`, `node-02.do-ams3`) |
+| Store nodes queried | the six `logos.test` fleet nodes (`node-01`, `node-02` in `do-ams3`, `gc-us-central1-a` and `ac-cn-hongkong-c`) |
 | Data on your machine | `<Basecamp user dir>/module_data/logos_forum/` (`forum.db`, `forum.log`) |
 
 A separate forum can be run by starting Basecamp with `LOGOS_FORUM_NAME=<name>`;
