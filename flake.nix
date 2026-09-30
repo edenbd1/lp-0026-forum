@@ -10,7 +10,7 @@
     delivery_module.url = "github:logos-co/logos-delivery-module/v0.2.1";
     delivery_module.inputs.logos-module-builder.follows = "logos-module-builder";
     # History snapshots.
-    storage_module.url = "github:logos-co/logos-storage-module/v2.1.2";
+    storage_module.url = "github:logos-co/logos-storage-module/v3.0.0";
     storage_module.inputs.logos-module-builder.follows = "logos-module-builder";
   };
 

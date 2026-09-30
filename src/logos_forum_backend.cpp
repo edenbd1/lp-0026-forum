@@ -914,8 +914,9 @@ QString LogosForumBackend::saveSnapshot() {
     // Every storage call from here on is asynchronous: a synchronous call made
     // while storage_module is dispatching one of its own events never returns
     // before the RPC timeout.
+    // advertise: a snapshot is offered to the peers who asked for it.
     modules().storage_module.uploadInitAsync(
-        QStringLiteral("logos-forum-snapshot.json"), static_cast<int>(kUploadChunk), [this](LogosResult r) {
+        QStringLiteral("logos-forum-snapshot.json"), static_cast<int>(kUploadChunk), true, [this](LogosResult r) {
             if (!r.success) {
                 failUpload(QStringLiteral("Storage unavailable: %1").arg(r.getError()));
                 return;
@@ -1044,7 +1045,9 @@ void LogosForumBackend::fetchSnapshot(const forum::Announcement& an) {
     const std::string cid = an.cid;
     auto download = [this, cid]() {
         log("fetching snapshot " + cid);
-        modules().storage_module.downloadChunksAsync(q(cid), false, kDownloadChunk, [this, cid](LogosResult r) {
+        // Not over Mix yet (isPrivate=false), and not re-served (advertise=false):
+        // what we fetch is for us, not an offer we make to the network.
+        modules().storage_module.downloadChunksAsync(q(cid), false, kDownloadChunk, false, false, [this, cid](LogosResult r) {
             if (!r.success) {
                 log("snapshot " + cid + " unavailable: " + s(r.getError()));
                 downloadSession_.clear();
