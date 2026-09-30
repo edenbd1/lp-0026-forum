@@ -12,6 +12,7 @@
 #pragma once
 
 #include <memory>
+#include <functional>
 #include <optional>
 #include <set>
 
@@ -129,6 +130,8 @@ private:
     QSet<QString> earlyConfirms_;   // confirmations that arrived before our send reply
     QList<QString> earlyOrder_;     // their arrival order, to drop the oldest
     std::optional<forum::Announcement> pendingAnnouncement_;  // answered before storage was ready
+    std::function<void()> manifestNext_;  // the chunk download to start once the manifest is found
+    QString manifestCid_;
 
     // Arrivals are told to the view at most once per short window: a large
     // import would otherwise mean one full refresh per post.

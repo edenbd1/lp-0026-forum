@@ -92,7 +92,7 @@ constexpr int kSubscribeRetryMs = 3000;
 constexpr size_t kUploadChunk = 48 * 1024;
 constexpr int kDownloadChunk = 64 * 1024;
 constexpr size_t kMaxSnapshotBytes = 32u * 1024 * 1024;
-constexpr int kDownloadWatchdogMs = 45000;
+constexpr int kDownloadWatchdogMs = 120000;  // a DHT lookup over Mix can be slow
 constexpr int kUploadWatchdogMs = 45000;
 constexpr int kArrivalBatchMs = 150;
 
@@ -105,6 +105,10 @@ bool localPeersAllowed() { return qEnvironmentVariableIsSet("LOGOS_FORUM_LOCAL_P
 // instead, unless the user opts in (LOGOS_FORUM_FETCH_SNAPSHOTS, or
 // "fetchSnapshots": true in settings.json).
 bool g_fetchSnapshots = false;
+// Snapshots travel over Mix unless LOGOS_FORUM_SNAPSHOTS_DIRECT is set: the
+// storage node joins the network's Mix (mix-enabled) and downloads tunnel
+// through it, so fetching one no longer tells the provider our address.
+bool g_snapshotsOverMix = true;
 
 // Anything thrown inside a module event or timer callback would abort the
 // ui-host: log it and drop the message instead.
@@ -206,6 +210,7 @@ void LogosForumBackend::bootstrap() {
     // network confirms it (messagePropagated / messageSent below). The request
     // id arrives with the asynchronous send result (on_send_result above).
     g_fetchSnapshots = qEnvironmentVariableIsSet("LOGOS_FORUM_FETCH_SNAPSHOTS") || fetchSnapshots_;
+    g_snapshotsOverMix = !qEnvironmentVariableIsSet("LOGOS_FORUM_SNAPSHOTS_DIRECT");
     if (g_fetchSnapshots) engine_->on_snapshot = [this](const forum::Announcement& an) { fetchSnapshot(an); };
     log(std::string("history from peers: ") + (g_fetchSnapshots ? "Logos Storage snapshots, then Delivery" : "Delivery only"));
     // Storage-path answers announce this node's storage address: only when the
@@ -886,6 +891,21 @@ void LogosForumBackend::wireStorage() {
             downloadBuf_.clear();
         }
     });
+    st.onStorageDownloadManifestDone([this](const QString& payload) {
+        const auto j = nlohmann::json::parse(s(payload), nullptr, false);
+        if (!j.is_object() || q(str_at(j, "cid")) != manifestCid_ || !manifestNext_) return;
+        auto next = manifestNext_;
+        manifestNext_ = nullptr;
+        if (!bool_at(j, "success")) {
+            log("snapshot manifest not found: " + str_at(j, "error"));
+            downloadSession_.clear();
+            seenSnapshots_.erase(s(manifestCid_));
+            historyOverDelivery("snapshot manifest not found");
+            return;
+        }
+        log("snapshot manifest found; downloading");
+        QTimer::singleShot(0, this, next);
+    });
     st.onStorageDownloadDone([this](const QString& payload) {
         const auto j = nlohmann::json::parse(s(payload), nullptr, false);
         if (!j.is_object() || q(str_at(j, "sessionId")) != downloadSession_) return;
@@ -910,7 +930,13 @@ void LogosForumBackend::wireStorage() {
 void LogosForumBackend::initStorage(bool withDiscPort) {
     auto& st = modules().storage_module;
     QJsonObject o{
-        {"network", preset_},
+        // Storage runs its own network. With snapshots over Mix it is
+        // logos.test: storage_module 3.0.0's Mix relay list for logos.dev has
+        // an entry with an empty key, and Storage then refuses to start. Every
+        // node that opts in picks the same, so they find each other.
+        // LOGOS_FORUM_STORAGE_NETWORK overrides.
+        {"network", qEnvironmentVariable("LOGOS_FORUM_STORAGE_NETWORK",
+                                         g_fetchSnapshots && g_snapshotsOverMix ? QStringLiteral("logos.test") : preset_)},
         {"data-dir", dataDir() + QStringLiteral("/storage")},
         {"listen-port", storagePort_}};
     // The 2.1 series has a fixed default discovery port (8090), so two
@@ -918,6 +944,9 @@ void LogosForumBackend::initStorage(bool withDiscPort) {
     // one; later libstorage (Kademlia) no longer has the option and refuses a
     // config that names it. Try with it, then without.
     if (withDiscPort) o.insert("disc-port", 0);
+    // Snapshots over Mix: join the network's Mix (its configuration is filled
+    // in by the module from the network name).
+    if (g_fetchSnapshots && g_snapshotsOverMix) o.insert("mix-enabled", true);
     const QString cfg = QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact));
     if (ok(st.init(cfg))) {
         log(std::string("storage init ok") + (withDiscPort ? "" : " (without disc-port)"));
@@ -1094,11 +1123,14 @@ void LogosForumBackend::fetchSnapshot(const forum::Announcement& an) {
     lastSnapshot_ = QStringLiteral("Loading a peer's snapshot…");
     publishHistory();
     const std::string cid = an.cid;
-    auto download = [this, cid]() {
-        log("fetching snapshot " + cid);
-        // Not over Mix yet (isPrivate=false), and not re-served (advertise=false):
-        // what we fetch is for us, not an offer we make to the network.
-        modules().storage_module.downloadChunksAsync(q(cid), false, kDownloadChunk, false, false, [this, cid](LogosResult r) {
+    // Over Mix by default: the download is tunnelled through relays, so the
+    // provider never learns our address, and nothing is re-served
+    // (advertise=false). The provider is then found through the DHT, not
+    // dialled: dialling it directly is exactly what would reveal us.
+    const bool viaMix = g_snapshotsOverMix;
+    auto chunks = [this, cid, viaMix]() {
+        log("fetching snapshot " + cid + (viaMix ? " over Mix" : ""));
+        modules().storage_module.downloadChunksAsync(q(cid), false, kDownloadChunk, viaMix, false, [this, cid](LogosResult r) {
             if (!r.success) {
                 log("snapshot " + cid + " unavailable: " + s(r.getError()));
                 downloadSession_.clear();
@@ -1108,29 +1140,42 @@ void LogosForumBackend::fetchSnapshot(const forum::Announcement& an) {
             }
             downloadSession_ = r.getString();
         }, Timeout(120000));
-        // A download that never finishes is as good as a failed one.
-        QTimer::singleShot(kDownloadWatchdogMs, this, [this, cid]() {
-            if (downloadSession_ != q(cid)) return;
-            modules().storage_module.downloadCancelAsync(downloadSession_, [](LogosResult) {});
-            downloadSession_.clear();
-            downloadBuf_.clear();
-            seenSnapshots_.erase(cid);
-            historyOverDelivery("snapshot download timed out");
-        });
     };
-    // Dial only public addresses: never into this machine or its LAN on the
-    // word of an unsigned message.
+    // The manifest first, without blocking: finding it may take a DHT lookup
+    // longer than a synchronous call waits (a direct downloadChunks gave up
+    // after 30 s with "Failed to start chunk download"). Its event starts the
+    // chunks (see storageDownloadManifestDone in wireStorage).
+    manifestNext_ = chunks;
+    manifestCid_ = q(cid);
+    log("looking up the manifest of snapshot " + cid + (viaMix ? " over Mix" : ""));
+    modules().storage_module.downloadManifestAsync(q(cid), viaMix, false, [this, cid](LogosResult r) {
+        if (r.success) return;  // dispatched; the result comes as an event
+        log("snapshot " + cid + " manifest lookup refused: " + s(r.getError()));
+        manifestNext_ = nullptr;
+        downloadSession_.clear();
+        seenSnapshots_.erase(cid);
+        historyOverDelivery("snapshot manifest unavailable");
+    });
+    // A download that never finishes is as good as a failed one.
+    QTimer::singleShot(kDownloadWatchdogMs, this, [this, cid]() {
+        if (downloadSession_ != q(cid)) return;
+        modules().storage_module.downloadCancelAsync(downloadSession_, [](LogosResult) {});
+        manifestNext_ = nullptr;
+        downloadSession_.clear();
+        downloadBuf_.clear();
+        seenSnapshots_.erase(cid);
+        historyOverDelivery("snapshot download timed out");
+    });
+    if (viaMix || an.peer.empty()) return;
+    // Not over Mix (the user turned it off): dial the provider directly, public
+    // addresses only, never into this machine or its LAN on the word of an
+    // unsigned message.
     QStringList addrs;
     for (const auto& a : an.addrs)
         if (localPeersAllowed() || forum::is_public_multiaddr(a)) addrs << q(a);
-    if (an.peer.empty() || addrs.isEmpty()) {
-        download();
-        return;
-    }
+    if (addrs.isEmpty()) return;
     log("dialing snapshot provider " + an.peer);
-    modules().storage_module.connectAsync(q(an.peer), addrs, [this, download](LogosResult r) {
-        if (!r.success) log("dial failed: " + s(r.getError()) + " — trying the DHT");
-        // The connect result arrives as a storageConnect event; give it a moment.
-        QTimer::singleShot(r.success ? 1500 : 0, this, download);
+    modules().storage_module.connectAsync(q(an.peer), addrs, [this](LogosResult r) {
+        if (!r.success) log("dial failed: " + s(r.getError()) + " — the DHT may still find it");
     });
 }

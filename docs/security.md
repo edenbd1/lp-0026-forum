@@ -104,13 +104,22 @@ request this node has open, and only public IP addresses are dialled.
   can be forged, altered or hidden that way: every post is checked, and nothing
   a stranger sends moves the paging past posts not yet received.
 
-## Known issue (since 0.2.1)
+## Snapshots over Mix (opt-in)
 
-With `storage_module` 3.0.0 (libstorage v0.5), fetching an opted-in snapshot
-currently fails to start (`Failed to start chunk download`) even after the
-provider is dialled; the forum then falls back to history over Delivery, so the
-history still arrives ([run](e2e/e2e-two-nodes-0.2.1-storage3.out)). Snapshots
-are off by default, so the default path is not affected.
+Since testnet v0.3 the store nodes keep history and Delivery re-delivers missed
+messages on reconnect, so a newcomer gets history without any snapshot.
+Snapshots remain for a complete archive of a large forum, and they are now
+**private**: with `fetchSnapshots` on, the storage node joins the network's Mix
+and a snapshot is fetched in two steps, its manifest then its content, both
+tunnelled over Mix (`isPrivate`) and not re-served (`advertise=false`). The
+provider is found through the DHT and never dialled, so it does not learn the
+fetcher's address. `LOGOS_FORUM_SNAPSHOTS_DIRECT=1` goes back to a direct
+download.
+
+Storage then runs on the `logos.test` storage network: in `storage_module`
+3.0.0 the Mix relay list for `logos.dev` has an entry with an empty `mixPubKey`
+and Storage refuses to start with Mix there ("Failed to load Mix relay pool:
+Invalid mixPubKey in pool entry"). `LOGOS_FORUM_STORAGE_NETWORK` overrides.
 
 ## RLN
 

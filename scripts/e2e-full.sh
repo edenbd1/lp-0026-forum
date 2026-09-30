@@ -108,11 +108,16 @@ reply_top() {  # reply_top <pid> <body> <mode> [alias]: reply to the most recent
   [ "$3" = 1 ] && ui "$1" "set value of text field -1 of group 1 of window 1 to \"$4\"" > /dev/null
   sleep 0.5; click_ax "$1" 'button "Reply" of group 1 of window 1' || fail "no Reply button"; sleep 2
 }
-new_account() {  # new_account <pid> <label>: created and selected
-  open_dialog "$1" "Accounts…" 'button "Create"' 
-  ui "$1" "set value of text field -1 of group 1 of window 1 to \"$2\"" > /dev/null; sleep 0.3
-  click_ax "$1" 'button "Create" of group 1 of window 1' || fail "no Create button"; sleep 1
-  click_ax "$1" 'button "Close" of group 1 of window 1'; sleep 0.6
+new_account() {  # new_account <pid> <label> <user dir>: created and selected, checked in the store
+  local i
+  for i in 1 2 3; do
+    open_dialog "$1" "Accounts…" 'button "Create"'
+    ui "$1" "set value of text field -1 of group 1 of window 1 to \"$2\"" > /dev/null; sleep 0.3
+    click_ax "$1" 'button "Create" of group 1 of window 1' || fail "no Create button"; sleep 1.5
+    click_ax "$1" 'button "Close" of group 1 of window 1'; sleep 0.6
+    [ "$(db "$3" "select count(*) from accounts where label='$2' and selected=1")" = 1 ] && return 0
+  done
+  fail "account $2 was not created"
 }
 rotate() {
   open_dialog "$1" "Accounts…" 'button "Rotate now"' 
@@ -136,7 +141,7 @@ pa=$(start $A); pb=$(start $B); pc=$(start $C); pd=$(start $D)
 ok "four nodes joined the forum"
 
 # ── Alice: a topic under her account
-new_account $pa "Alice"
+new_account $pa "Alice" $A
 new_topic $pa "Welcome to the test forum" "Alice here, posting under my account." 0
 for n in $B $C $D; do wait_for 60 "$(basename $n) received Alice's topic" has_title $n "Welcome to the test forum"; done
 ka=$(key_of $A Alice)
@@ -144,7 +149,7 @@ for n in $B $C $D; do [ "$(author_of $n "Welcome to the test forum")" = "$ka" ] 
 ok "the topic carries Alice's key on every node"
 
 # ── Bob: an alias reply
-new_account $pb "Bob"
+new_account $pb "Bob" $B
 reply_top $pb "Replying under a name I chose." 1 "Ghost"
 for n in $A $C $D; do wait_for 60 "$(basename $n) received Bob's alias reply" has_body $n "Replying under a name I chose."; done
 [ "$(db $A "select mode||'|'||alias from posts where body='Replying under a name I chose.'")" = "1|Ghost" ] || fail "alias reply not stored as alias Ghost"
@@ -162,7 +167,7 @@ for k in $(db $C "select hex(pk) from accounts"); do [ "$k" != "$k1" ] && [ "$k"
 ok "the two anonymous replies have two unrelated keys, none of C's"
 
 # ── Alice2: a second account
-new_account $pa "Alice2"
+new_account $pa "Alice2" $A
 new_topic $pa "A second identity" "Same person, different account." 0
 wait_for 60 "b received Alice2's topic" has_title $B "A second identity"
 k_a2=$(key_of $A Alice2)
