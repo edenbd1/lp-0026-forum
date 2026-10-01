@@ -55,6 +55,9 @@ start() {  # start <dir> [offline]
   echo "$pid"
 }
 stop() { pkill -f "user-dir $1\$" || true; for _ in $(seq 20); do pgrep -f "user-dir $1\$" > /dev/null || break; sleep 1; done; pkill -f "$1/" || true; sleep 1; }
+# Never leave a node behind: one left running fills the disk with its logs.
+cleanup() { for d in $A $B $C $D $E; do stop "$d"; done; }
+trap cleanup EXIT
 wait_for() { local t=$1 what=$2; shift 2; for _ in $(seq "$t"); do "$@" && { ok "$what"; return; }; sleep 1; done; fail "$what"; }
 has_posts() { [ "$(db "$1" "select count(*) from posts")" -ge "$2" ]; }
 has_title() { [ "$(db "$1" "select count(*) from posts where title='$2'")" = 1 ]; }

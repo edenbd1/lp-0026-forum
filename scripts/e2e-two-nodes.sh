@@ -80,6 +80,9 @@ wait_for() {  # wait_for <seconds> <description> <command…>
   fail "$what"
 }
 stop() { pkill -f "user-dir $1\$" || true; for _ in $(seq 20); do pgrep -f "user-dir $1\$" > /dev/null || break; sleep 1; done; pkill -f "$1/" || true; sleep 1; }
+# Never leave a node behind: one left running fills the disk with its logs.
+cleanup() { for d in $A $B; do stop "$d"; done; }
+trap cleanup EXIT
 
 stop $A; stop $B; rm -rf $A $B
 for d in $A $B; do "$here/install-local.sh" "$d" "$@" > /dev/null; done
