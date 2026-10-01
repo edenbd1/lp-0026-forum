@@ -10,12 +10,17 @@
 # macOS; needs Basecamp 0.3.0 ($BASECAMP), cliclick, sqlite3, and Accessibility
 # permission for the terminal (System Settings → Privacy → Accessibility).
 #
-#   scripts/e2e-snapshot.sh <logos_forum.lgx> <delivery_module.lgx> <storage_module.lgx>
+#   scripts/e2e-snapshot.sh <logos_forum.lgx> <delivery_module.lgx> <storage_module.lgx> \
+#       [<liblogos_rln_module.lgx> <liblogos_lez_rln_module.lgx>]
+#
+# On logos.test (the default) posting nodes need RLN memberships: see
+# scripts/e2e-rln.sh (E2E_RLN_HOME, E2E_FUND).
 set -euo pipefail
 # Every node runs on this machine, so they may name and dial local addresses
 # (LOGOS_FORUM_LOCAL_PEERS); on the real network only public ones are used.
 BASECAMP=${BASECAMP:-$HOME/Applications/LogosBasecamp-0.3.0.app/Contents/MacOS/LogosBasecamp}
 here=$(cd "$(dirname "$0")" && pwd)
+. "$here/e2e-rln.sh"
 A=/tmp/forum-e2e-a B=/tmp/forum-e2e-b
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ui() { local pid=$1; shift; osascript -e "tell application \"System Events\" to tell (first process whose unix id is $pid)" -e "$*" -e "end tell"; }
@@ -64,6 +69,7 @@ pick_mode() {  # pick_mode <pid> <0 account | 1 alias | 2 anonymous>: click the 
   fail "could not pick posting mode $2"
 }
 start() {
+  rln_restore "$1"
   (LOGOS_FORUM_LOCAL_PEERS=1 LOGOS_FORUM_FETCH_SNAPSHOTS=1 LOGOS_FORUM_NAME="e2e $$" $SB "$BASECAMP" --user-dir "$1" > "$1.log" 2>&1 &)
   local pid=""; for _ in $(seq 30); do pid=$(pgrep -n -f "LogosBasecamp.bin --user-dir $1\$" || true); [ -n "$pid" ] && break; sleep 1; done
   [ -n "$pid" ] || fail "Basecamp did not start for $1"; sleep 10
@@ -81,7 +87,7 @@ wait_for() {  # wait_for <seconds> <description> <command…>
 }
 stop() { pkill -f "user-dir $1\$" || true; for _ in $(seq 20); do pgrep -f "user-dir $1\$" > /dev/null || break; sleep 1; done; pkill -f "$1/" || true; sleep 1; }
 # Never leave a node behind: one left running fills the disk with its logs.
-cleanup() { for d in $A $B; do stop "$d"; done; }
+cleanup() { for d in $A $B; do stop "$d"; rln_save "$d"; done; }
 trap cleanup EXIT
 
 

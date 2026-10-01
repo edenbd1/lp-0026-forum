@@ -12,12 +12,17 @@
 #   E · newcomer   a blank install joins at the end → recovers every post
 #
 # macOS; Basecamp 0.3.0, cliclick, sqlite3, Accessibility permission.
-#   scripts/e2e-full.sh <logos_forum.lgx> <delivery_module.lgx> <storage_module.lgx>
+#   scripts/e2e-full.sh <logos_forum.lgx> <delivery_module.lgx> <storage_module.lgx> \
+#       [<liblogos_rln_module.lgx> <liblogos_lez_rln_module.lgx>]
+#
+# On logos.test (the default) posting nodes need RLN memberships: see
+# scripts/e2e-rln.sh (E2E_RLN_HOME, E2E_FUND).
 set -euo pipefail
 # Every node runs on this machine, so they may name and dial local addresses
 # (LOGOS_FORUM_LOCAL_PEERS); on the real network only public ones are used.
 BASECAMP=${BASECAMP:-$HOME/Applications/LogosBasecamp-0.3.0.app/Contents/MacOS/LogosBasecamp}
 here=$(cd "$(dirname "$0")" && pwd)
+. "$here/e2e-rln.sh"
 FORUM="e2e-full-$(date +%s)"
 R=/tmp/forum-full
 A=$R-a B=$R-b C=$R-c D=$R-d E=$R-e
@@ -42,6 +47,7 @@ click_in_window() { front "$1"; local pos; pos=$(ui "$1" 'get position of window
 key() { osascript -e "tell application \"System Events\" to key code $1"; }
 db() { sqlite3 "$1/module_data/logos_forum/forum.db" "$2" 2> /dev/null || true; }
 start() {  # start <dir> [offline]
+  rln_restore "$1"
   if [ "${2:-}" = offline ]; then
     (LOGOS_FORUM_LOCAL_PEERS=1 LOGOS_FORUM_NAME="$FORUM" sandbox-exec -f "$R-offline.sb" "$BASECAMP" --user-dir "$1" > "$1.log" 2>&1 &)
   else
@@ -56,7 +62,7 @@ start() {  # start <dir> [offline]
 }
 stop() { pkill -f "user-dir $1\$" || true; for _ in $(seq 20); do pgrep -f "user-dir $1\$" > /dev/null || break; sleep 1; done; pkill -f "$1/" || true; sleep 1; }
 # Never leave a node behind: one left running fills the disk with its logs.
-cleanup() { for d in $A $B $C $D $E; do stop "$d"; done; }
+cleanup() { for d in $A $B $C $D $E; do stop "$d"; rln_save "$d"; done; }
 trap cleanup EXIT
 wait_for() { local t=$1 what=$2; shift 2; for _ in $(seq "$t"); do "$@" && { ok "$what"; return; }; sleep 1; done; fail "$what"; }
 has_posts() { [ "$(db "$1" "select count(*) from posts")" -ge "$2" ]; }
@@ -142,6 +148,7 @@ echo "forum: $FORUM"
 
 pa=$(start $A); pb=$(start $B); pc=$(start $C); pd=$(start $D)
 ok "four nodes joined the forum"
+for d in $A $B $C $D; do rln_ready $d; done
 
 # ── Alice: a topic under her account
 new_account $pa "Alice" $A

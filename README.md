@@ -15,7 +15,7 @@ and every post is checked by the app itself on arrival.
 <p align="center">
   <img alt="Logos Basecamp 0.3.0" src="https://img.shields.io/badge/Logos%20Basecamp-0.3.0-2f6b4f">
   <img alt="Logos Messaging (delivery_module) 0.3.0" src="https://img.shields.io/badge/Logos%20Messaging-0.3.0-2f6b4f">
-  <img alt="network logos.dev" src="https://img.shields.io/badge/network-logos.dev-2f6b4f">
+  <img alt="network logos.test (RLN)" src="https://img.shields.io/badge/network-logos.test%20(RLN)-2f6b4f">
   <a href="https://github.com/edenbd1/logos-forum-catalog"><img alt="catalog 0.3.2" src="https://img.shields.io/badge/catalog-0.3.2-e2552b"></a>
   <img alt="licence MIT / Apache-2.0" src="https://img.shields.io/badge/licence-MIT%20%2F%20Apache--2.0-7a9a3a">
 </p>
@@ -27,9 +27,11 @@ and every post is checked by the app itself on arrival.
 > **Status:** the forum runs in **Logos Basecamp 0.3.0** (macOS and Linux) and is
 > installable from its [catalog](#install-in-basecamp). It has been tested end to
 > end on five real nodes, 24 checks, on logos.test and again on logos.dev, the
-> network it uses since testnet v0.3
+> network it used at the testnet v0.3 launch
 > ([`docs/e2e.md`](docs/e2e.md)); the core has 47 tests of its own; CI is green
-> on Linux and macOS.
+> on Linux and macOS. From 0.4.0 it defaults to logos.test, the v0.3 network,
+> which runs RLN: posting there needs an RLN membership (see
+> [Posting on logos.test](#posting-on-logostest-rln)).
 
 ![A thread with replies from an account, an anonymous key and an alias, each marked as verified](docs/screens/04-thread.png)
 
@@ -131,14 +133,44 @@ blockchain out of scope, and the forum runs no server. What plays that role:
 | | |
 |---|---|
 | Module catalog | `https://raw.githubusercontent.com/edenbd1/logos-forum-catalog/main/logos-repo.json` |
-| Network | Logos Delivery, `logos.dev` preset (cluster 3), since testnet v0.3 switched off the `logos.test` fleet; `LOGOS_FORUM_PRESET=logos.test` picks the other one |
+| Network | Logos Delivery, `logos.test` preset (cluster 2, RLN on); `LOGOS_FORUM_PRESET=logos.dev` picks the development fleet (cluster 3, no RLN) |
+| RLN registry | `logos:testnet:841312e9…c893` (config account `9tZgjoUVHHWuE9D1cgQSXbYu2gm6uN9baTSERtTa9Str`) on the LEZ testnet zone behind `http://209.38.241.182:3240`, as delivery_module 0.3.0's preset names it |
 | Forum topic | `/logos-forum/1/logos-forum-934410ad/json`, on shard `/waku/2/rs/2/6` |
 | History | peers' bundles over Delivery; peers' snapshots on Logos Storage (same network) when opted in |
-| Store nodes queried | the six fleet nodes of the preset (`delivery-01`, `delivery-02` in `do-ams3`, `gc-us-central1-a` and `ac-cn-hongkong-c` for `logos.dev`) |
+| Store nodes queried | the six fleet nodes of the preset (`node-01`, `node-02` in `do-ams3`, `gc-us-central1-a` and `ac-cn-hongkong-c` for `logos.test`) |
 | Data on your machine | `<Basecamp user dir>/module_data/logos_forum/` (`forum.db`, `forum.log`) |
 
 A separate forum can be run by starting Basecamp with `LOGOS_FORUM_NAME=<name>`;
 the topic is derived from the name.
+
+## Posting on logos.test (RLN)
+
+logos.test accepts a message only with an RLN rate-limit proof, and a proof
+needs an RLN membership in the network's registry. The forum depends on
+`liblogos_rln_module` 0.10.0 and `liblogos_lez_rln_module` 4.2.1, so Basecamp
+installs and loads them with it (delivery_module lists them only as optional
+and would run without them, every send then waiting for a proof that never
+comes).
+
+Nothing has to be registered by hand: at startup the RLN module opens its own
+LEZ wallet on the registry's zone and registers a membership by itself as soon
+as that wallet's account holds the price plus a fee reserve, 182,800,000 native
+units at today's base fee (price 1,000,000; the reserve covers the fee and the
+unspent part stays in the account). Until then the forum shows a banner with
+that account (base58, with a Copy button) and the amount, the status line says
+`no RLN membership yet: posting waits`, and own posts are marked `waiting for an
+RLN membership`. Reading, catching up from store nodes and history are not
+affected; posts stay in the outbox and go out once the membership is active.
+When the epoch's quota (10-minute epochs) is spent, held posts are marked and
+go out in the next epoch.
+
+The account has to be funded on the registry's zone (sequencer
+`http://209.38.241.182:3240`), by a transfer from an account already funded
+there or by a deposit from the Logos blockchain into that zone's channel. The
+relaunched LEZ testnet at `testnet.lez.logos.co` is a different chain and has
+no RLN registry, so its balances cannot pay for a membership.
+
+![No membership yet: the banner, and a post waiting for it](docs/screens/rln-no-membership.jpg)
 
 ## Walkthrough
 
@@ -237,8 +269,14 @@ The view adapts instead of clipping. Below 720 px it shows one pane at a time
 ## Test between two real nodes
 
 ```bash
-scripts/e2e-two-nodes.sh result/*.lgx delivery_module-0.3.0.lgx storage_module-3.0.0.lgx
+scripts/e2e-two-nodes.sh result/*.lgx delivery_module-0.3.0.lgx storage_module-3.0.0.lgx \
+    liblogos_rln_module-0.10.0.lgx liblogos_lez_rln_module-4.2.1.lgx
 ```
+
+On logos.test each posting node waits for an active RLN membership first
+([`scripts/e2e-rln.sh`](scripts/e2e-rln.sh)): `E2E_RLN_HOME` keeps the nodes'
+memberships between runs, `E2E_FUND` is called with the account and amount to
+fund. `LOGOS_FORUM_PRESET=logos.dev` runs the tests without RLN.
 
 Starts two Basecamp instances on logos.test, drives the forum's own interface
 and checks each node's store: a topic from A reaches B with the same author

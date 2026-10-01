@@ -8,13 +8,18 @@
 # macOS; needs Basecamp 0.3.0 ($BASECAMP), cliclick, sqlite3, and Accessibility
 # permission for the terminal (System Settings → Privacy → Accessibility).
 #
-#   scripts/e2e-history-offline.sh <logos_forum.lgx> <delivery_module.lgx> <storage_module.lgx>
+#   scripts/e2e-history-offline.sh <logos_forum.lgx> <delivery_module.lgx> <storage_module.lgx> \
+#       [<liblogos_rln_module.lgx> <liblogos_lez_rln_module.lgx>]
+#
+# On logos.test (the default) posting nodes need RLN memberships: see
+# scripts/e2e-rln.sh (E2E_RLN_HOME, E2E_FUND).
 set -euo pipefail
 # Every node runs on this machine, so they may name and dial local addresses
 # (LOGOS_FORUM_LOCAL_PEERS); on the real network only public ones are used.
 BASECAMP=${BASECAMP:-$HOME/Applications/LogosBasecamp-0.3.0.app/Contents/MacOS/LogosBasecamp}
 here=$(cd "$(dirname "$0")" && pwd)
-A=/tmp/forum-e2e-a B=/tmp/forum-e2e-b
+. "$here/e2e-rln.sh"
+A=/tmp/forum-e2e-a B=/tmp/forum-e2e-b C=/tmp/forum-e2e-c
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ui() { local pid=$1; shift; osascript -e "tell application \"System Events\" to tell (first process whose unix id is $pid)" -e "$*" -e "end tell"; }
 front() {  # bring a Basecamp to the front, and refuse to click anything else
@@ -62,6 +67,7 @@ pick_mode() {  # pick_mode <pid> <0 account | 1 alias | 2 anonymous>: click the 
   fail "could not pick posting mode $2"
 }
 start() {
+  rln_restore "$1"
   (LOGOS_FORUM_LOCAL_PEERS=1 LOGOS_FORUM_FETCH_SNAPSHOTS=1 LOGOS_FORUM_NAME="e2e $$" "$BASECAMP" --user-dir "$1" > "$1.log" 2>&1 &)
   local pid=""; for _ in $(seq 30); do pid=$(pgrep -n -f "LogosBasecamp.bin --user-dir $1\$" || true); [ -n "$pid" ] && break; sleep 1; done
   [ -n "$pid" ] || fail "Basecamp did not start for $1"; sleep 10
@@ -79,14 +85,15 @@ wait_for() {  # wait_for <seconds> <description> <command…>
 }
 stop() { pkill -f "user-dir $1\$" || true; for _ in $(seq 20); do pgrep -f "user-dir $1\$" > /dev/null || break; sleep 1; done; pkill -f "$1/" || true; sleep 1; }
 # Never leave a node behind: one left running fills the disk with its logs.
-cleanup() { for d in $A $B; do stop "$d"; done; }
+cleanup() { for d in $A $B; do stop "$d"; rln_save "$d"; done; stop $C; }
 trap cleanup EXIT
 
-stop $A; stop $B; rm -rf $A $B
+stop $A; stop $B; stop $C; rm -rf $A $B $C
 for d in $A $B; do "$here/install-local.sh" "$d" "$@" > /dev/null; done
 
 pa=$(start $A); pb=$(start $B)
 wait_for 90 "both nodes joined the forum" bash -c "grep -q subscribed $A/module_data/logos_forum/forum.log && grep -q subscribed $B/module_data/logos_forum/forum.log"
+rln_ready $A; rln_ready $B
 sleep 5
 
 # 1. A posts a topic
@@ -117,10 +124,12 @@ echo "ok   the anonymous key is none of B's accounts"
 
 # 3. Alice and Bob both go offline; a fresh install arrives with no peer online.
 # The forum's name is unique to this run, so no other node anywhere holds these posts.
-stop $A; stop $B; rm -rf $B; "$here/install-local.sh" "$B" "$@" > /dev/null
+# The newcomer is a third user dir: no keys, no store, no RLN membership (reading needs none).
+stop $A; stop $B; "$here/install-local.sh" "$C" "$@" > /dev/null
 echo "ok   A and B offline"
 sleep 30
-pb=$(start $B)
-wait_for 180 "fresh node with nobody online got the history" bash -c "[ \"\$(sqlite3 $B/module_data/logos_forum/forum.db 'select count(*) from posts' 2>/dev/null)\" = 2 ]"
+pc=$(E2E_RLN_HOME= start $C)
+wait_for 180 "fresh node with nobody online got the history" bash -c "[ \"\$(sqlite3 $C/module_data/logos_forum/forum.db 'select count(*) from posts' 2>/dev/null)\" = 2 ]"
+echo "     came from: $(grep -a 'catch-up' $C/module_data/logos_forum/forum.log | grep -v starting | tail -1 | cut -c25-)"
 echo "     history requests A answered over the whole run: $(grep -a -c "answering a history request" $A/module_data/logos_forum/forum.log || true)"
 echo PASS

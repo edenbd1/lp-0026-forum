@@ -67,6 +67,9 @@ jobs:
           assert m["type"] == "ui_qml" and m["view"] == "qml/Main.qml"
           assert {"name": "storage_module", "version": "~3.0.0"} in m["dependencies"]
           assert {"name": "delivery_module", "version": "~0.3.0"} in m["dependencies"]
+          # logos.test runs RLN: Basecamp must install and load the RLN modules.
+          assert {"name": "liblogos_rln_module", "version": "~0.10.0"} in m["dependencies"]
+          assert {"name": "liblogos_lez_rln_module", "version": "~4.2.1"} in m["dependencies"]
           for v in variants:
               main = m["main"][v]
               assert os.path.exists(f"pkg/variants/{v}/{main}"), main

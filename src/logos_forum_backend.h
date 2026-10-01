@@ -62,6 +62,11 @@ private:
     void startNode();
     void subscribe();
     void refreshStatus();
+    void setRln(const QString& phase, const QString& detail);
+    QString rlnShort() const;
+    void publishRln();
+    void pollMembership();
+    void membershipAnswered(const QJsonObject& o);
 
     // Posting
     QString compose(bool topic, const QString& target, const QString& text, const QString& title, int mode,
@@ -126,7 +131,16 @@ private:
     int uploadProgress_ = 0;        // upload watchdog generation, bumped at every upload step
     bool fetchSnapshots_ = false;
     QString preset_ = QStringLiteral("logos.dev");  // the Logos Delivery network
-    QString rlnState_;  // "RLN ready", "RLN failed: …", or empty where the network runs no RLN   // settings.json "fetchSnapshots": opt in to Storage fetches
+    // RLN membership, on a network that runs RLN. rlnPhase_: "" (no RLN),
+    // starting, wallet, funding, registering, pending, active, quota, lapsed,
+    // failed, missing (the RLN modules are not loaded).
+    QString rlnPhase_, rlnDetail_;
+    QString rlnRegistry_, rlnIdentifier_;          // from delivery's rlnState
+    QString rlnPayer_, rlnNeeds_, rlnPrice_, rlnHolds_;  // while awaiting funding
+    int rlnRate_ = 0;
+    bool rlnPolling_ = false;
+    QTimer rlnTimer_;
+    QSet<QString> quotaHeld_;  // our posts delivery holds for the epoch's quota
     QSet<QString> earlyConfirms_;   // confirmations that arrived before our send reply
     QList<QString> earlyOrder_;     // their arrival order, to drop the oldest
     std::optional<forum::Announcement> pendingAnnouncement_;  // answered before storage was ready

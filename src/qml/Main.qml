@@ -20,6 +20,11 @@ Item {
     readonly property string rotationJson:  backend ? backend.rotationJson : "{}"
     readonly property int    outboxCount:   backend ? backend.outboxCount : 0
     readonly property string historyStatus: backend ? backend.historyStatus : ""
+    readonly property string rlnJson:       backend ? backend.rlnJson : "{}"
+    // RLN membership: {on, phase, title, detail, payer, needs, holds}.
+    readonly property var rln: { try { return JSON.parse(rlnJson) } catch (e) { return ({}) } }
+    // Posting waits on the membership (the posts are kept, not refused).
+    readonly property bool rlnBlocks: rln.on === true && rln.phase !== "active" && rln.phase !== "quota"
 
     property var topics: []
     property var accounts: []
@@ -164,7 +169,8 @@ Item {
         function onPostStateChanged(id, state, detail) {
             root.refreshTopics()
             root.refreshThread()
-            if (state === "failed") root.lastError = "A post did not go out (" + detail + "); it will be retried."
+            // Without an RLN membership every send times out: the banner says why.
+            if (state === "failed" && !root.rlnBlocks) root.lastError = "A post did not go out (" + detail + "); it will be retried."
         }
         function onOutboxCountChanged() { root.refreshTopics(); root.refreshThread() }
     }
@@ -223,8 +229,11 @@ Item {
             visible: post && post.state !== ""
             // A post the node accepted but the network has not confirmed stays
             // "sending" for a few seconds; after that, say what is going on.
-            text: post ? ((post.state === "sending" && root.now - post.ts < 30000)
-                          ? "· sending…" : "· waiting for the network, will retry") : ""
+            text: !post ? ""
+                : root.rlnBlocks ? "· waiting for an RLN membership"
+                : root.rln.phase === "quota" ? "· held by the rate limit, goes out next epoch"
+                : (post.state === "sending" && root.now - post.ts < 30000) ? "· sending…"
+                : "· waiting for the network, will retry"
             color: root.warn; font.pixelSize: 12
         }
     }
@@ -400,6 +409,41 @@ Item {
                 text: root.esc(root.status)
                       + (root.outboxCount > 0 ? " · <font color=\"" + root.warn + "\">" + root.outboxCount + " waiting to send</font>" : "")
                       + (root.historyStatus !== "" ? " · " + root.esc(root.historyStatus) : "")
+            }
+        }
+        // What posting on an RLN network is waiting for, and what to do about
+        // it. Reading never waits on it.
+        Rectangle {
+            Layout.fillWidth: true
+            visible: root.rln.on === true && root.rln.phase !== "active"
+            color: root.raised; radius: 6; border.color: root.rln.phase === "quota" ? root.line : root.warn
+            implicitHeight: rlnCol.implicitHeight + 20
+            ColumnLayout {
+                id: rlnCol
+                anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 10
+                spacing: 6
+                Label2 { Layout.fillWidth: true; text: root.rln.title || ""; font.bold: true; color: root.warn }
+                Dim { Layout.fillWidth: true; text: root.rln.detail || ""; font.pixelSize: 13 }
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: (root.rln.payer || "") !== ""
+                    spacing: 8
+                    Dim { text: "RLN account"; wrapMode: Text.NoWrap }
+                    // Selectable, so it can be copied into a wallet.
+                    TextEdit {
+                        id: payerField
+                        Layout.fillWidth: true
+                        text: root.rln.payer || ""
+                        readOnly: true; selectByMouse: true; textFormat: TextEdit.PlainText
+                        color: root.text; selectionColor: root.accentStrong
+                        font.family: "monospace"; font.pixelSize: 12
+                        wrapMode: TextEdit.WrapAnywhere
+                    }
+                    AppButton {
+                        text: "Copy"
+                        onClicked: { payerField.selectAll(); payerField.copy(); payerField.deselect() }
+                    }
+                }
             }
         }
         Text {

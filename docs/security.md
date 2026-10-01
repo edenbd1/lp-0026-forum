@@ -124,13 +124,36 @@ Invalid mixPubKey in pool entry"). `LOGOS_FORUM_STORAGE_NETWORK` overrides.
 ## RLN
 
 Logos Delivery 0.3 rate-limits with RLN on the networks whose preset enables
-it: `logos.test` does, `logos.dev` (where the forum runs) does not. On an RLN
-network each node needs an active RLN membership, registered once through
-Basecamp's RLN membership app from a funded LEZ testnet account; without one
-the node does not start, and the forum says so in its status line. When a
-message is held because the epoch's quota is spent, it stays queued and goes
-out when the quota refills (`messageQueued`). None of it is configured by the
-forum: RLN follows the network preset.
+it: `logos.test`, the forum's default, does; `logos.dev` does not. On
+logos.test a node attaches a proof to every message it sends, and the proof
+needs an active membership in the registry the preset names
+(`logos:testnet:841312e9…c893`, on the LEZ testnet zone behind
+`http://209.38.241.182:3240`; epoch 600 s). The preset turns proof validation
+off on relays, so today the limit is enforced by each sender's own node.
+
+- The forum's package depends on `liblogos_rln_module` (~0.10.0) and
+  `liblogos_lez_rln_module` (~4.2.1), so Basecamp installs and loads them.
+  Without them delivery's RLN bridge reports `Failed` and the forum says the
+  modules are missing.
+- The membership belongs to the node, not to a forum account: one per
+  Basecamp install, shared by every app that sends through its delivery node.
+  Its identity secret is generated and kept sealed inside the RLN module
+  (`module_data/liblogos_rln_module/`); the forum never sees it and only reads
+  the membership state (`get_membership_state`).
+- Registration is the RLN module's own: it waits for its LEZ account to hold
+  the price plus a fee reserve, then registers. The forum shows that account
+  and the amount; it never moves funds. A membership links the messages a
+  node sends to one registered commitment only through the rate-limit proofs,
+  which reveal nothing about the identity unless the node exceeds its quota
+  within an epoch (two proofs on one slot disclose the secret, which is why
+  the module never reissues a slot and why its keystore must be moved, never
+  copied).
+- Without a membership nothing is lost: posts are kept, delivery gives up on
+  each send after its retry window, and the forum requeues it with back-off.
+  Reading and history from store nodes need no membership.
+- When the epoch's quota is spent, delivery holds the message
+  (`messageQueued`) and sends it when the quota refills; the forum marks the
+  post held until it is confirmed.
 
 ## Running nodes on one machine
 
