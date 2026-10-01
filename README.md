@@ -15,7 +15,7 @@ and every post is checked by the app itself on arrival.
 <p align="center">
   <img alt="Logos Basecamp 0.3.0" src="https://img.shields.io/badge/Logos%20Basecamp-0.3.0-2f6b4f">
   <img alt="Logos Messaging (delivery_module) 0.3.0" src="https://img.shields.io/badge/Logos%20Messaging-0.3.0-2f6b4f">
-  <img alt="network logos.dev" src="https://img.shields.io/badge/network-logos.dev-2f6b4f">
+  <img alt="network logos.test" src="https://img.shields.io/badge/network-logos.test-2f6b4f">
   <a href="https://github.com/edenbd1/logos-forum-catalog"><img alt="catalog 0.3.2" src="https://img.shields.io/badge/catalog-0.3.2-e2552b"></a>
   <img alt="licence MIT / Apache-2.0" src="https://img.shields.io/badge/licence-MIT%20%2F%20Apache--2.0-7a9a3a">
 </p>
@@ -26,13 +26,15 @@ and every post is checked by the app itself on arrival.
 
 > **Status:** the forum runs in **Logos Basecamp 0.3.0** (macOS and Linux) and is
 > installable from its [catalog](#install-in-basecamp). It has been tested end to
-> end on five real nodes, 24 checks, on logos.test and again on logos.dev, the
-> network it uses by default since testnet v0.3
+> end on five real nodes, 24 checks, on logos.test and again on logos.dev
 > ([`docs/e2e.md`](docs/e2e.md)); the core has 47 tests of its own; CI is green
-> on Linux and macOS. logos.test with RLN is supported as an opt-in, tested up to
-> the membership (modules load, the membership is requested, reading works;
-> posting needs a funded membership; see
-> [logos.test and RLN](#logostest-and-rln-opt-in)); it is off by default.
+> on Linux and macOS. On `main`, 0.4.0 moves to **logos.test with RLN by default,
+> with the membership sponsored**: the forum asks the author's open gifter for
+> an RLN membership by itself, so a user with no tokens just installs and posts
+> ([logos.test, RLN and the sponsor](#logostest-rln-and-the-sponsor)). The request
+> has been tested from Basecamp through the sponsor and back; the funded run
+> (memberships granted, posts exchanged) waits for the sponsor's account to be
+> funded, and the catalog keeps serving 0.3.2 (logos.dev) until it passes.
 
 ![A thread with replies from an account, an anonymous key and an alias, each marked as verified](docs/screens/04-thread.png)
 
@@ -90,7 +92,10 @@ and every post is checked by the app itself on arrival.
 a repository*, paste
 `https://raw.githubusercontent.com/edenbd1/logos-forum-catalog/main/logos-repo.json`,
 then *Package Manager → Social → Logos Forum → Install*. Basecamp installs
-`delivery_module` and `storage_module` from the official catalog with it.
+what the forum needs with it: `delivery_module` and `storage_module`, and for
+logos.test the RLN modules and `libp2p_module`, from the official catalog, and
+`rln_gifter_module` from the forum's catalog. Nothing else to do: no token, no
+wallet, no account to fund.
 
 1. **Add the repository** in *Settings → Package Repositories*:
 
@@ -104,8 +109,10 @@ then *Package Manager → Social → Logos Forum → Install*. Basecamp installs
 
    ![The install dialog, with storage_module and delivery_module from Logos Official](docs/screens/03-install-with-dependencies.png)
 
-4. **Open it** from the sidebar. An account exists already, and the history
-   arrives from peers who are online.
+4. **Open it** from the sidebar. An account exists already, the history
+   arrives from peers who are online, and within a few minutes the forum's
+   sponsor has given this node its RLN membership (the banner says so while it
+   happens). Posts written meanwhile wait in the outbox.
 
 **From source**, on a clean machine (macOS or Linux, [Nix](https://nixos.org) and
 [Basecamp 0.3.0](https://github.com/logos-co/logos-basecamp/releases/tag/0.3.0)):
@@ -114,13 +121,18 @@ then *Package Manager → Social → Logos Forum → Install*. Basecamp installs
 git clone https://github.com/edenbd1/lp-0026-forum && cd lp-0026-forum
 nix build .#lgx-portable                      # result/logos-logos_forum-module.lgx
 
-# the two modules it depends on, from the official Logos catalog
+# the modules it depends on, from the official Logos catalog
 base=https://github.com/logos-co/logos-modules-release/releases/download
-curl -LO $base/delivery_module-v0.3.0/delivery_module-0.3.0.lgx
-curl -LO $base/storage_module-v3.0.0/storage_module-3.0.0.lgx
+for m in delivery_module-v0.3.0/delivery_module-0.3.0 storage_module-v3.0.0/storage_module-3.0.0 \
+         liblogos_rln_module-v0.10.0/liblogos_rln_module-0.10.0 liblogos_lez_rln_module-v4.2.1/liblogos_lez_rln_module-4.2.1 \
+         libp2p_module-v1.1.0/libp2p_module-1.1.0; do curl -LO $base/$m.lgx; done
+# and the sponsor's client, built from logos-rln-gifter with gifter/rln-gifter-module.patch
+# (the CI artifact, or: git clone https://github.com/logos-co/logos-rln-gifter && cd logos-rln-gifter &&
+#  git checkout c6d854a && git apply ../lp-0026-forum/gifter/rln-gifter-module.patch &&
+#  nix build ./rust/rln-gifter-module#lgx-portable)
 
-# install all three into a Basecamp user directory and open Basecamp on it
-scripts/install-local.sh ~/basecamp-forum result/*.lgx delivery_module-0.3.0.lgx storage_module-3.0.0.lgx
+# install them all into a Basecamp user directory and open Basecamp on it
+scripts/install-local.sh ~/basecamp-forum result/*.lgx *.lgx
 LogosBasecamp --user-dir ~/basecamp-forum     # macOS: ~/Applications/LogosBasecamp.app/Contents/MacOS/LogosBasecamp
 ```
 
@@ -134,8 +146,9 @@ blockchain out of scope, and the forum runs no server. What plays that role:
 | | |
 |---|---|
 | Module catalog | `https://raw.githubusercontent.com/edenbd1/logos-forum-catalog/main/logos-repo.json` |
-| Network | Logos Delivery, `logos.dev` preset (cluster 3, no RLN) by default; `logos.test` (cluster 2, RLN) as an opt-in, `"network": "logos.test"` in `settings.json` or `LOGOS_FORUM_PRESET=logos.test` |
-| RLN registry (logos.test only) | `logos:testnet:841312e9…c893` (config account `9tZgjoUVHHWuE9D1cgQSXbYu2gm6uN9baTSERtTa9Str`) on the LEZ testnet zone behind `http://209.38.241.182:3240`, as delivery_module 0.3.0's preset names it |
+| Network | Logos Delivery, `logos.test` preset (cluster 2, RLN) by default; `logos.dev` (cluster 3, no RLN) with `"network": "logos.dev"` in `settings.json` or `LOGOS_FORUM_PRESET=logos.dev` |
+| RLN registry (logos.test) | `logos:testnet:841312e9…c893` (config account `9tZgjoUVHHWuE9D1cgQSXbYu2gm6uN9baTSERtTa9Str`) on the LEZ testnet zone behind `http://209.38.241.182:3240`, as delivery_module 0.3.0's preset names it |
+| Membership sponsor | `/ip4/88.160.11.28/tcp/24026/p2p/16Uiu2HAm4XsEj65CPBnXZTZbniEE9SEiRtJUmngGuQxQoGFSHxA6`, paying from `2mDx4MEQkt3JE1ZxmM3W18Nnq8pEZBnJJzTbHpYw75wm` on that zone ([`gifter/`](gifter), `scripts/gifter-status.sh`); `"gifter"` in `settings.json` or `LOGOS_FORUM_GIFTER` names another, `"off"` turns it off |
 | Forum topic | `/logos-forum/1/logos-forum-934410ad/json`, on shard `/waku/2/rs/2/6` |
 | History | peers' bundles over Delivery; peers' snapshots on Logos Storage (same network) when opted in |
 | Store nodes queried | the six fleet nodes of the preset (`delivery-01`, `delivery-02` in `do-ams3`, `gc-us-central1-a` and `ac-cn-hongkong-c` for `logos.dev`; `node-01`, `node-02` for `logos.test`) |
@@ -144,43 +157,64 @@ blockchain out of scope, and the forum runs no server. What plays that role:
 A separate forum can be run by starting Basecamp with `LOGOS_FORUM_NAME=<name>`;
 the topic is derived from the name.
 
-## logos.test and RLN (opt-in)
+## logos.test, RLN and the sponsor
 
-The forum runs on `logos.dev` by default, which has no RLN: anyone can post
-at once. `logos.test`, the testnet v0.3 network, is supported as an opt-in.
-Choose it with `"network": "logos.test"` in
+The forum runs on `logos.test`, the testnet v0.3 network, by default. There a
+message goes out only with an RLN rate-limit proof, and a proof needs an RLN
+membership in the network's registry, which costs native balance on the
+registry's LEZ zone. Forum users do not need any: the forum's author runs a
+**sponsor**, an open RLN gifter (LIP-158,
+[`logos-rln-gifter`](https://github.com/logos-co/logos-rln-gifter)), and the
+forum asks it for a membership by itself.
+
+- On first launch the RLN module makes this node's RLN identity and keeps its
+  secret; the forum sends only its public commitment to the sponsor, which
+  registers it on the registry and pays (price 1,000,000 units plus the fee).
+  The banner reads *Getting you a membership from the forum's sponsor…*, then
+  *Registering the RLN membership*, then goes away once it is active
+  (100 messages per 10-minute epoch, for 30 days; the forum asks again after).
+- If the sponsor cannot be reached or cannot pay, the banner says why, the
+  forum retries after 1, 3, 10 and then every 30 minutes, and *Try again now*
+  asks at once.
+- Reading, catching up and history never wait for it; posts stay in the
+  outbox and go out once the membership is active. When the epoch's quota is
+  spent, held posts are marked and go out in the next one.
+- Tested from a fresh Basecamp through the sponsor and back
+  ([`docs/e2e/e2e-sponsor-0.4.0-logos.test-unfunded.out`](docs/e2e/e2e-sponsor-0.4.0-logos.test-unfunded.out)):
+  with its account still unfunded, the refusal reaches the banner in 15 s.
+
+  ![The banner when the sponsor cannot pay yet](docs/screens/rln-sponsor-unfunded.jpg)
+- What the sponsor sees and cannot see, and why it has no limits:
+  [`docs/security.md`](docs/security.md#rln-and-the-forums-sponsor).
+
+`logos.dev`, which runs no RLN, stays selectable: `"network": "logos.dev"` in
 `<Basecamp user dir>/module_data/logos_forum/settings.json` (or
-`LOGOS_FORUM_PRESET=logos.test`, which wins), then restart Basecamp; the status
-line then names the network.
-
-On logos.test a message goes out only with an RLN rate-limit proof, and a
-proof needs an RLN membership in the network's registry. Today the sender's
-own delivery node enforces it (it will not publish a message without a proof);
-the preset leaves proof validation off on relays. So opting in needs:
-
-1. **The RLN modules.** In Basecamp's Package Manager install *RLN Module*
-   (`liblogos_rln_module` 0.10.0, from the Logos catalog; it brings
-   `liblogos_lez_rln_module` 4.2.1). They are not dependencies of the forum, so
-   logos.dev users never download them (about 270 MB); delivery loads them when
-   they are installed. Without them the forum says so.
-2. **A membership.** Nothing is registered by hand: the RLN module opens its own
-   LEZ wallet on the registry's zone and registers a membership by itself as
-   soon as that wallet's account holds the price plus a fee reserve, 182,800,000
-   native units at today's base fee (price 1,000,000; the unspent part of the
-   reserve stays in the account). Until then the forum shows a banner with that
-   account (base58, with a Copy button) and the amount, the status line says
-   `no RLN membership yet: posting waits`, and own posts are marked `waiting for
-   an RLN membership`. The account has to be funded on the registry's zone
-   (sequencer `http://209.38.241.182:3240`), by a transfer from an account
-   already funded there or by a deposit from the Logos blockchain into that
-   zone's channel. The relaunched LEZ testnet at `testnet.lez.logos.co` is a
-   different chain with no RLN registry, so its balances cannot pay for one.
-
-Reading, catching up from store nodes and history need no membership; posts
-stay in the outbox and go out once it is active. When the epoch's quota
-(10-minute epochs) is spent, held posts are marked and go out in the next one.
+`LOGOS_FORUM_PRESET=logos.dev`, which wins), then restart Basecamp. With
+`"gifter": "off"` the RLN module registers a membership itself once its own
+LEZ account holds the price plus a fee reserve (182,800,000 units at today's
+base fee); the banner then shows that account and the amount:
 
 ![logos.test without a membership yet: the banner, and a post waiting for it](docs/screens/rln-no-membership.jpg)
+
+### Running the sponsor
+
+The sponsor is a headless Logos runtime (`logosctl` 0.3.1) with
+`liblogos_lez_rln_module` (its LEZ wallet pays), `libp2p_module` (a fixed key,
+so its peer id never changes) and `rln_gifter_module` serving open, kept up on
+a Mac by the LaunchAgent `co.logos.forum-gifter`, which also maps its port on
+the router by UPnP ([`gifter/`](gifter)):
+
+```bash
+gifter/install.sh rln_gifter_module.lgx       # into ~/logos-forum-gifter, port 24026
+scripts/gifter-status.sh                      # agent, port, mapping, address, payer, balance
+```
+
+Each membership costs the sponsor the price (1,000,000) and the fee (74M to
+83M at base fee 8, as measured upstream on devnet; not yet measured on
+logos.test), and its account must hold a fee reserve of about 181.8M at
+the moment it registers, so it is funded with native units on the registry's
+zone (`http://209.38.241.182:3240`), for instance by a deposit from the Logos
+blockchain into that zone's channel.
 
 ## Walkthrough
 
@@ -282,12 +316,12 @@ The view adapts instead of clipping. Below 720 px it shows one pane at a time
 scripts/e2e-two-nodes.sh result/*.lgx delivery_module-0.3.0.lgx storage_module-3.0.0.lgx
 ```
 
-The scripts run on the forum's default network. With
-`LOGOS_FORUM_PRESET=logos.test` (and the two RLN packages after the others),
-each posting node first waits for an active RLN membership
+The scripts run on the forum's default network, logos.test: pass the RLN
+packages, `libp2p_module` and `rln_gifter_module` after the others, and each
+posting node first waits for the membership the sponsor gives it
 ([`scripts/e2e-rln.sh`](scripts/e2e-rln.sh)): `E2E_RLN_HOME` keeps the nodes'
-memberships between runs, `E2E_FUND` is called with the account and amount to
-fund.
+memberships between runs, `E2E_GIFTER_ACCOUNT` prints the sponsor's balance as
+the run goes. `LOGOS_FORUM_PRESET=logos.dev` runs them without RLN.
 
 Starts two Basecamp instances on logos.test, drives the forum's own interface
 and checks each node's store: a topic from A reaches B with the same author

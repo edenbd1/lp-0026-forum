@@ -48,6 +48,11 @@ class LogosForum
     // Empty restores the preset's fleet.
     SLOT(QString useStorePeers(QString peers))
 
+    // ── RLN membership ────────────────────────────────────────────────────────
+    // Ask the forum's sponsor for a membership now instead of at the next
+    // scheduled retry. Returns "" or why not.
+    SLOT(QString retryMembership())
+
     PROP(QString status="Starting…" READONLY)
     PROP(bool nodeReady=false READONLY)
     PROP(QString forumName="" READONLY)
@@ -65,10 +70,12 @@ class LogosForum
     PROP(QString historyStatus="" READONLY)
     PROP(QString storePeers="" READONLY)
     // RLN membership, on a network that runs RLN (logos.test):
-    // {on, phase, title, detail, payer, needs, holds}. `on` is false where the
-    // network runs none. phase: starting | wallet | funding | registering |
-    // pending | active | quota | lapsed | failed | missing. `payer` (base58,
-    // while funding) is the LEZ account that pays for the membership.
+    // {on, phase, title, detail, payer, needs, holds, retry}. `on` is false
+    // where the network runs none. phase: starting | wallet | gifting |
+    // gift-failed | funding | registering | pending | active | quota | lapsed |
+    // failed | missing. `payer` (base58, while funding, with the sponsor off)
+    // is the LEZ account that would pay for the membership; `retry` is true
+    // when retryMembership() can do something.
     PROP(QString rlnJson="{}" READONLY)
 
     // A post was stored — ours or a peer's. `topicId` is the thread it belongs

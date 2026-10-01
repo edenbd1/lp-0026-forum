@@ -1,0 +1,39 @@
+# forum 0.4.0 on logos.test (default), one fresh Basecamp 0.3.0 user dir, no funds; 2026-10-01 21:49 CEST
+# packages: logos_forum 0.4.0, delivery_module 0.3.0, storage_module 3.0.0, liblogos_rln_module 0.10.0,
+#   liblogos_lez_rln_module 4.2.1, libp2p_module 1.1.0, rln_gifter_module 0.2.1 (gifter/rln-gifter-module.patch)
+# sponsor: gifter/run.sh under co.logos.forum-gifter on this Mac, dialled at its public address
+#   /ip4/88.160.11.28/tcp/24026 (UPnP); its payer 2mDx4MEQkt3JE1ZxmM3W18Nnq8pEZBnJJzTbHpYw75wm held 0.
+# What it shows: the forum asks by itself, the request goes Basecamp -> liblogos_rln_module (identity made
+# in-module, commitment only) -> rln_gifter_module -> libp2p -> the sponsor -> liblogos_lez_rln_module.register_member,
+# the sequencer refuses the unfunded Register tx, and the refusal comes back to the banner in 15 s; the retry
+# (here 'Try again now') asks again. Screenshot: docs/screens/rln-sponsor-unfunded.jpg.
+# The funded run (memberships granted, topic + reply, newcomer history) waits for the sponsor's funding.
+
+## forum.log
+2026-10-01T21:49:56.527 bootstrap: forum "sponsor check" on /logos-forum/1/sponsor-check-10a6f091/json
+2026-10-01T21:49:56.530 membership sponsor: /ip4/88.160.11.28/tcp/24026/p2p/16Uiu2HAm4XsEj65CPBnXZTZbniEE9SEiRtJUmngGuQxQoGFSHxA6
+2026-10-01T21:49:56.530 network preset logos.test, cluster 2
+2026-10-01T21:49:58.562 rln: Initializing
+2026-10-01T21:49:58.562 rln membership: starting
+2026-10-01T21:49:58.565 rln: Ready
+2026-10-01T21:49:58.565 rln registry logos:testnet:841312e989c77e3f6f58a5d880a8e25b950b8b5ffba2f39748fa44622c20c893, scope 5e269b6a19fce081f5808b13442dcbc3522197638dd38df5a28bc4e55236b977
+2026-10-01T21:49:58.567 rln: asking the sponsor 16Uiu2HAm4XsEj65… for a membership
+2026-10-01T21:49:58.567 rln membership: gifting
+2026-10-01T21:49:58.575 rln: libp2p createNode ok
+2026-10-01T21:49:58.577 rln: libp2p start ok
+2026-10-01T21:50:04.378 rln: sponsored membership requested, pending (commitment db3afa5e8010e1fc…)
+2026-10-01T21:50:04.379 rln membership: pending
+2026-10-01T21:50:19.315 rln: sponsored membership failed (The sponsor cannot pay for a membership right now (the gifter could not submit the registration: wallet_ffi error 18)); retry in 1 min
+2026-10-01T21:50:19.315 rln membership: gift-failed (The sponsor cannot pay for a membership right now (the gifter could not submit the registration: wallet_ffi error 18))
+2026-10-01T21:50:54.167 rln: asking the sponsor 16Uiu2HAm4XsEj65… for a membership
+2026-10-01T21:50:54.167 rln membership: gifting
+2026-10-01T21:50:54.204 rln: sponsored membership requested, pending (commitment b43d5d4fcdea828b…)
+2026-10-01T21:50:54.204 rln membership: pending
+2026-10-01T21:51:09.316 rln: sponsored membership failed (The sponsor cannot pay for a membership right now (the gifter could not submit the registration: wallet_ffi error 18)); retry in 3 min
+2026-10-01T21:51:09.316 rln membership: gift-failed (The sponsor cannot pay for a membership right now (the gifter could not submit the registration: wallet_ffi error 18))
+
+## sponsor (logosctl daemon log, same window)
+[2026-10-01 21:50:04.816] [info] [logos] [liblogos_lez_rln_module] [wallet-ffi] Public send failed: SequencerClientError(Call(ErrorObject { code: InvalidParams, message: "Incorrect fee", data: None })
+[2026-10-01 21:50:04.816] [info] [logos] [liblogos_lez_rln_module] send_generic_public_transaction failed: code 18
+[2026-10-01 21:50:54.538] [info] [logos] [liblogos_lez_rln_module] [wallet-ffi] Public send failed: SequencerClientError(Call(ErrorObject { code: InvalidParams, message: "Incorrect fee", data: None })
+[2026-10-01 21:50:54.538] [info] [logos] [liblogos_lez_rln_module] send_generic_public_transaction failed: code 18

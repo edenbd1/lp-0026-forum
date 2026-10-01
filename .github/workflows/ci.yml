@@ -67,10 +67,13 @@ jobs:
           assert m["type"] == "ui_qml" and m["view"] == "qml/Main.qml"
           assert {"name": "storage_module", "version": "~3.0.0"} in m["dependencies"]
           assert {"name": "delivery_module", "version": "~0.3.0"} in m["dependencies"]
-          # RLN (logos.test) is opt-in: the RLN modules are installed by those
-          # who choose it, never forced on every installer.
-          names = [d if isinstance(d, str) else d["name"] for d in m["dependencies"]]
-          assert not any("rln" in n for n in names), names
+          # logos.test runs RLN, and the forum's sponsor gifts the membership:
+          # Basecamp must install and load the RLN modules and the gifter client.
+          for d in ({"name": "liblogos_rln_module", "version": "~0.10.0"},
+                    {"name": "liblogos_lez_rln_module", "version": "~4.2.1"},
+                    {"name": "libp2p_module", "version": "~1.1.0"},
+                    {"name": "rln_gifter_module", "version": "~0.2.1"}):
+              assert d in m["dependencies"], (d, m["dependencies"])
           for v in variants:
               main = m["main"][v]
               assert os.path.exists(f"pkg/variants/{v}/{main}"), main
@@ -81,9 +84,43 @@ jobs:
           name: logos_forum-${{ runner.os }}-${{ runner.arch }}
           path: logos_forum.lgx
 
+  gifter:
+    # rln_gifter_module is not in the official catalog: the forum's catalog
+    # serves it, built here from logos-rln-gifter at a pinned commit with
+    # gifter/rln-gifter-module.patch (the register target liblogos_rln_module
+    # 0.10.0 needs, and a refused Register reported as refused).
+    name: rln_gifter_module (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: Upstream at the pinned commit, patched
+        run: |
+          git clone https://github.com/logos-co/logos-rln-gifter upstream
+          git -C upstream checkout c6d854a82cb9eb0cbc6a5c8b1f23030f74e711da
+          git -C upstream apply ../gifter/rln-gifter-module.patch
+          grep -q 'RLN_MODULE: &str = "liblogos_lez_rln_module"' upstream/rust/rln-gifter-module/rust-lib/src/lp.rs
+      - name: Build
+        run: |
+          cd upstream/rust/rln-gifter-module && git add -A
+          nix build .#lgx-portable --accept-flake-config -L -o result
+          cp result/*.lgx "$GITHUB_WORKSPACE/rln_gifter_module.lgx"
+      - name: Check the package
+        run: |
+          mkdir pkg && tar xzf rln_gifter_module.lgx -C pkg
+          python3 -c 'import json; m = json.load(open("pkg/manifest.json")); print(m["name"], m["version"], m["main"]); assert m["name"] == "rln_gifter_module" and m["version"] == "0.2.1"'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rln_gifter_module-${{ runner.os }}-${{ runner.arch }}
+          path: rln_gifter_module.lgx
+
   package:
     name: multi-platform package
-    needs: module
+    needs: [module, gifter]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -94,11 +131,17 @@ jobs:
       - name: Merge macOS and Linux into one .lgx
         run: |
           nix build github:logos-co/logos-package --accept-flake-config -o lgxtool
-          ./lgxtool/bin/lgx merge parts/*/logos_forum.lgx -o logos_forum.lgx -y
+          ./lgxtool/bin/lgx merge parts/logos_forum-*/logos_forum.lgx -o logos_forum.lgx -y
           ./lgxtool/bin/lgx verify logos_forum.lgx
           mkdir m && tar xzf logos_forum.lgx -C m && ls m/variants
           test -d m/variants/linux-amd64 && test -d m/variants/darwin-arm64
+          ./lgxtool/bin/lgx merge parts/rln_gifter_module-*/rln_gifter_module.lgx -o rln_gifter_module.lgx -y
+          ./lgxtool/bin/lgx verify rln_gifter_module.lgx
+          mkdir g && tar xzf rln_gifter_module.lgx -C g && ls g/variants
+          test -d g/variants/linux-amd64 && test -d g/variants/darwin-arm64
       - uses: actions/upload-artifact@v4
         with:
           name: logos_forum-all-platforms
-          path: logos_forum.lgx
+          path: |
+            logos_forum.lgx
+            rln_gifter_module.lgx

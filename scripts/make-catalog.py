@@ -58,7 +58,7 @@ json.dump({
     "schemaVersion": 1,
     "name": "logos-forum",
     "displayName": "Logos Forum",
-    "description": "A serverless forum over Logos Delivery and Logos Storage. Its dependencies (delivery_module, storage_module) come from the official Logos catalog.",
+    "description": "A serverless forum over Logos Delivery and Logos Storage. Its dependencies come from the official Logos catalog, except rln_gifter_module, built from logos-rln-gifter by the forum's CI and served here, which asks the forum's sponsor for an RLN membership on logos.test.",
     "homepage": "https://github.com/edenbd1/lp-0026-forum",
     "indexUrl": a.index_url,
     "trustedSigners": [],

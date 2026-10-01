@@ -51,6 +51,7 @@ public:
     QString catchUp() override;
     QString saveSnapshot() override;
     QString useStorePeers(QString peers) override;
+    QString retryMembership() override;
 
 protected:
     void onContextReady() override;
@@ -67,6 +68,12 @@ private:
     void publishRln();
     void pollMembership();
     void membershipAnswered(const QJsonObject& o);
+    void membershipsAnswered(const QJsonObject& o);
+    // A membership gifted by the forum's sponsor (rln_gifter_module).
+    void requestGift();
+    void giftLibp2p(const QString& method, const QString& arg, int attempt, std::function<void(QString)> done);
+    void giftRegister();
+    void giftFailed(const QString& reason);
 
     // Posting
     QString compose(bool topic, const QString& target, const QString& text, const QString& title, int mode,
@@ -130,10 +137,10 @@ private:
     QString lastCatchUp_, lastSnapshot_;
     int uploadProgress_ = 0;        // upload watchdog generation, bumped at every upload step
     bool fetchSnapshots_ = false;
-    QString preset_ = QStringLiteral("logos.dev");  // the Logos Delivery network
+    QString preset_ = QStringLiteral("logos.test");  // the Logos Delivery network
     // RLN membership, on a network that runs RLN. rlnPhase_: "" (no RLN),
-    // starting, wallet, funding, registering, pending, active, quota, lapsed,
-    // failed, missing (the RLN modules are not loaded).
+    // starting, wallet, gifting, gift-failed, funding, registering, pending,
+    // active, quota, lapsed, failed, missing (the RLN modules are not loaded).
     QString networkSetting_;  // settings.json "network": the user's opt-in network, or empty
     QString rlnPhase_, rlnDetail_;
     QString rlnRegistry_, rlnIdentifier_;          // from delivery's rlnState
@@ -141,6 +148,15 @@ private:
     int rlnRate_ = 0;
     bool rlnPolling_ = false;
     QTimer rlnTimer_;
+    // The sponsor: an open gifter that registers a membership for this node
+    // and pays for it. Empty peer id = sponsorship off ("gifter": "off").
+    QString gifterSetting_;               // settings.json "gifter", kept across saves
+    QString gifterPeer_, gifterAddr_;
+    bool gifting_ = false;                // a request is on its way
+    bool libp2pUp_ = false;
+    int giftFailures_ = 0;
+    qint64 giftRetryAt_ = 0;              // ms since epoch; 0 = ask now
+    QString giftError_;
     QSet<QString> quotaHeld_;  // our posts delivery holds for the epoch's quota
     QSet<QString> earlyConfirms_;   // confirmations that arrived before our send reply
     QList<QString> earlyOrder_;     // their arrival order, to drop the oldest

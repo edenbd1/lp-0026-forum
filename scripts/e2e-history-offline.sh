@@ -9,10 +9,10 @@
 # permission for the terminal (System Settings → Privacy → Accessibility).
 #
 #   scripts/e2e-history-offline.sh <logos_forum.lgx> <delivery_module.lgx> <storage_module.lgx> \
-#       [<liblogos_rln_module.lgx> <liblogos_lez_rln_module.lgx>]
+#       <liblogos_rln_module.lgx> <liblogos_lez_rln_module.lgx> <libp2p_module.lgx> <rln_gifter_module.lgx>
 #
-# With LOGOS_FORUM_PRESET=logos.test posting nodes need RLN memberships: see
-# scripts/e2e-rln.sh (E2E_RLN_HOME, E2E_FUND).
+# On logos.test (the default) each posting node gets an RLN membership from the
+# forum's sponsor by itself: see scripts/e2e-rln.sh (E2E_RLN_HOME, E2E_GIFTER_ACCOUNT).
 set -euo pipefail
 # Every node runs on this machine, so they may name and dial local addresses
 # (LOGOS_FORUM_LOCAL_PEERS); on the real network only public ones are used.
@@ -91,9 +91,11 @@ trap cleanup EXIT
 stop $A; stop $B; stop $C; rm -rf $A $B $C
 for d in $A $B; do "$here/install-local.sh" "$d" "$@" > /dev/null; done
 
+gifter_balance "before the run"
 pa=$(start $A); pb=$(start $B)
 wait_for 90 "both nodes joined the forum" bash -c "grep -q subscribed $A/module_data/logos_forum/forum.log && grep -q subscribed $B/module_data/logos_forum/forum.log"
 rln_ready $A; rln_ready $B
+gifter_balance "with A and B's memberships active"
 sleep 5
 
 # 1. A posts a topic
@@ -132,4 +134,5 @@ pc=$(E2E_RLN_HOME= start $C)
 wait_for 180 "fresh node with nobody online got the history" bash -c "[ \"\$(sqlite3 $C/module_data/logos_forum/forum.db 'select count(*) from posts' 2>/dev/null)\" = 2 ]"
 echo "     came from: $(grep -a 'catch-up' $C/module_data/logos_forum/forum.log | grep -v starting | tail -1 | cut -c25-)"
 echo "     history requests A answered over the whole run: $(grep -a -c "answering a history request" $A/module_data/logos_forum/forum.log || true)"
+gifter_balance "at the end"
 echo PASS

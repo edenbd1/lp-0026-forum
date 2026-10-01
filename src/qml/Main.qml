@@ -424,6 +424,11 @@ Item {
                 spacing: 6
                 Label2 { Layout.fillWidth: true; text: root.rln.title || ""; font.bold: true; color: root.warn }
                 Dim { Layout.fillWidth: true; text: root.rln.detail || ""; font.pixelSize: 13 }
+                AppButton {
+                    visible: root.rln.retry === true
+                    text: "Try again now"
+                    onClicked: root.call(root.backend.retryMembership())
+                }
                 RowLayout {
                     Layout.fillWidth: true
                     visible: (root.rln.payer || "") !== ""

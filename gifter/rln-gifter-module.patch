@@ -1,0 +1,56 @@
+--- a/rust/rln-gifter-module/metadata.json
++++ b/rust/rln-gifter-module/metadata.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "rln_gifter_module",
+-  "version": "0.2.0",
+-  "description": "RLN membership gifter over libp2p: vector-agnostic client requests + gifter serve (auth via pluggable rln_auth_vector modules)",
++  "version": "0.2.1",
++  "description": "RLN membership gifter over libp2p (logos-rln-gifter c6d854a, registering through liblogos_lez_rln_module.register_member as liblogos_rln_module 0.10.0 / lez 4.2.1 require): client requests + gifter serve",
+   "author": "Logos",
+   "type": "core",
+   "interface": "cdylib",
+@@ -27,4 +27,4 @@
+       "extra_include_dirs": []
+     }
+   }
+-}
++}
+\ No newline at end of file
+--- a/rust/rln-gifter-module/rust-lib/Cargo.toml
++++ b/rust/rln-gifter-module/rust-lib/Cargo.toml
+@@ -1,6 +1,6 @@
+ [package]
+ name = "rln_gifter_module"
+-version = "0.2.0"
++version = "0.2.1"
+ edition = "2021"
+ 
+ [workspace]
+--- a/rust/rln-gifter-module/rust-lib/src/lp.rs
++++ b/rust/rln-gifter-module/rust-lib/src/lp.rs
+@@ -22,7 +22,7 @@
+ // and only fails if that target is actually called. Auth vector modules are
+ // named by CONFIGURATION (authProvider / authVerifiers), never by constants
+ // here — this module knows no vector by name.
+-pub const RLN_MODULE: &str = "liblogos_rln_module";
++pub const RLN_MODULE: &str = "liblogos_lez_rln_module";
+ pub const LIBP2P_MODULE: &str = "libp2p_module";
+ 
+ /// Standard base64 (padded) — the encoding libp2p_module's stream JSON wrappers
+--- a/rust/rln-gifter-module/rust-lib/src/server.rs
++++ b/rust/rln-gifter-module/rust-lib/src/server.rs
+@@ -347,6 +347,13 @@
+     let mut tx_hash_bytes = Vec::new();
+     if let Some(tx_result) = reply.get("tx_result").and_then(Value::as_str) {
+         if let Ok(inner) = serde_json::from_str::<Value>(tx_result) {
++            // The registry module answers a leaf index even when the sequencer
++            // refused the Register tx (an unfunded payer: "Incorrect fee").
++            // Granting that leaf would leave the client pending for nothing.
++            if inner.get("success").and_then(Value::as_bool) == Some(false) {
++                let why = inner.get("error").and_then(Value::as_str).unwrap_or("refused");
++                return Err(format!("the gifter could not submit the registration: {why}"));
++            }
+             if let Some(txh) = inner.get("tx_hash").and_then(Value::as_str) {
+                 tx_hash_bytes = hex::decode(txh.trim_start_matches("0x")).unwrap_or_default();
+             }

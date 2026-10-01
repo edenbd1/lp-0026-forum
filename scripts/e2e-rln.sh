@@ -1,24 +1,22 @@
-# Sourced by the e2e scripts: RLN memberships for nodes on an RLN network
-# (logos.test, opt-in: run the scripts with LOGOS_FORUM_PRESET=logos.test and
-# pass the two RLN packages after the others).
+# Sourced by the e2e scripts: RLN memberships for nodes on logos.test, the
+# default network (LOGOS_FORUM_PRESET=logos.dev runs without RLN).
 #
-# A node that posts needs an active RLN membership. liblogos_rln_module
-# registers one by itself once its LEZ account holds the price plus a fee
-# reserve (about 182.8M native units at base fee 8), on the zone of the
-# registry. Registering one per run would be wasteful, so a node's RLN state
-# (its keystore and its wallet) can live outside the throwaway user dir:
+# A node that posts needs an active RLN membership. The forum asks its sponsor
+# (gifter/, an open rln_gifter_module) for one by itself: a fresh node with no
+# funds gets one in a few minutes, with nothing to do here. Pass every package:
+#   <script> <logos_forum.lgx> <delivery.lgx> <storage.lgx> <rln.lgx> <lez_rln.lgx> <libp2p.lgx> <rln_gifter.lgx>
 #
 #   E2E_RLN_HOME=<dir>   keeps each node's RLN state in <dir>/<node name>, moved
 #                        into the user dir before the node starts and back out
 #                        when the run ends (moved, never copied: two copies of
-#                        one keystore would reuse rate-limit slots)
-#   E2E_FUND=<command>   run as `<command> <payer base58> <amount>` when a node
-#                        is waiting for funds, to send them
+#                        one keystore would reuse rate-limit slots), so a rerun
+#                        does not cost the sponsor a membership per node
+#   E2E_GIFTER_ACCOUNT=<base58>  the sponsor's paying account: its balance is
+#                        printed as the run goes, which measures what a gifted
+#                        membership costs
+#   E2E_FUND=<command>   with the sponsor off ("gifter": "off"), run as
+#                        `<command> <payer base58> <amount>` to fund a node
 #   E2E_RLN_WAIT=<s>     how long to wait for a membership (default 900)
-#
-# On logos.dev, the default, which runs no RLN, all of this is a no-op. The
-# RLN modules are passed like the other packages:
-#   <script> <logos_forum.lgx> <delivery.lgx> <storage.lgx> <rln.lgx> <lez_rln.lgx>
 
 rln_dirs="module_data/liblogos_rln_module module_data/liblogos_lez_rln_module"
 
@@ -46,6 +44,14 @@ A="123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 b=bytes.fromhex(sys.argv[1]); n=int.from_bytes(b,"big"); s=""
 while n: n,r=divmod(n,58); s=A[r]+s
 print("1"*(len(b)-len(b.lstrip(b"\0")))+s)' "$1"; }
+
+gifter_balance() {  # gifter_balance <label>: the sponsor's balance, when E2E_GIFTER_ACCOUNT is set
+  [ -n "${E2E_GIFTER_ACCOUNT:-}" ] || return 0
+  local b; b=$(curl -s -m 10 "${E2E_GIFTER_SEQUENCER:-http://209.38.241.182:3240}" -H 'content-type: application/json' \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getAccountBalance\",\"params\":[\"$E2E_GIFTER_ACCOUNT\"]}" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"])' 2> /dev/null)
+  echo "     sponsor balance $1: ${b:-unreadable}"
+}
 
 rln_ready() {  # rln_ready <user dir>: wait until the node can post
   local log="$1/module_data/logos_forum/forum.log" funded="" line payer amount

@@ -121,37 +121,94 @@ Storage then runs on the `logos.test` storage network: in `storage_module`
 and Storage refuses to start with Mix there ("Failed to load Mix relay pool:
 Invalid mixPubKey in pool entry"). `LOGOS_FORUM_STORAGE_NETWORK` overrides.
 
-## RLN
+## RLN, and the forum's sponsor
 
 Logos Delivery 0.3 rate-limits with RLN on the networks whose preset enables
-it: `logos.test` does, `logos.dev`, the forum's default, does not. logos.test
-is an opt-in (`"network": "logos.test"` in settings.json, or
-`LOGOS_FORUM_PRESET`). There a node attaches a proof to every message it
-sends, and the proof needs an active membership in the registry the preset
-names (`logos:testnet:841312e9…c893`, on the LEZ testnet zone behind
+it: `logos.test`, the forum's default, does; `logos.dev` (still selectable,
+`"network": "logos.dev"` in settings.json or `LOGOS_FORUM_PRESET`) does not.
+On logos.test a node attaches a proof to every message it sends, and the proof
+needs an active membership in the registry the preset names
+(`logos:testnet:841312e9…c893`, on the LEZ testnet zone behind
 `http://209.38.241.182:3240`; epoch 600 s). The sender's own node enforces it:
 without a proof it does not publish. The preset leaves proof validation off on
-relays, so a node that strips the check could still post past the limit;
-that is the network's choice, not the forum's.
+relays, so a node that strips the check could still post past the limit; that
+is the network's choice, not the forum's.
 
-- The RLN modules (`liblogos_rln_module` 0.10.0, which brings
-  `liblogos_lez_rln_module` 4.2.1) are not dependencies of the forum: whoever
-  opts in installs them from the Logos catalog, and delivery loads them when
-  present. Without them delivery's RLN bridge reports `Failed` and the forum
-  says what to install.
+A membership costs native balance on that zone, which forum users do not hold.
+So the forum's author runs a **sponsor**: an open gifter (LIP-158,
+[`logos-rln-gifter`](https://github.com/logos-co/logos-rln-gifter)) that
+registers a membership for any node that asks and pays for it. The forum asks
+by itself on first launch; the user installs from the catalog, opens the forum
+and posts, and never holds a token or signs anything.
+
+How a node gets one:
+
+1. delivery starts `liblogos_rln_module` with the preset's registry; the
+   forum reads which registry and application scope delivery proves against
+   (`rlnState`).
+2. The forum brings up a plain libp2p node (`libp2p_module`, dialling out
+   only) and calls `liblogos_rln_module.register_membership` with
+   `delegated: true` and the sponsor's address. The RLN module generates the
+   identity in-module, seals its secret in its keystore, and hands only the
+   identity **commitment** to `rln_gifter_module`, which sends it to the
+   sponsor over `/logos/rln/membership/1.0.0`.
+3. The sponsor registers that commitment at rate 100 (the registry's minimum:
+   100 messages per epoch), paying the price (1,000,000 units) and the fee
+   from its own account, and answers with the leaf index. The node's RLN
+   module watches the registry until the membership is active, then delivery
+   proves with it like any other membership.
+4. If the sponsor fails (unreachable, out of funds), the banner says so and
+   the forum asks again after 1, 3, 10, then 30 minutes, or at once with
+   *Try again now*. A membership is active 30 days, then 7 days of grace; the
+   forum asks for a new one when none is usable.
+
+The sponsor's address is built into the forum
+(`/ip4/88.160.11.28/tcp/24026/p2p/16Uiu2HAm4XsEj65CPBnXZTZbniEE9SEiRtJUmngGuQxQoGFSHxA6`);
+`"gifter": "<multiaddr>/p2p/<peer id>"` in settings.json, or
+`LOGOS_FORUM_GIFTER`, names another one, and `"gifter": "off"` goes back to the
+RLN module's own registration, which waits for its LEZ account to be funded
+(the forum then shows that account and the amount).
+
+**What the sponsor sees.** The IP address and the libp2p peer id of the node
+asking (a fresh one at every start: the client node has no fixed key), the
+identity commitment, and when. It registers the commitment from its own
+account, so it is public on the registry's zone that the sponsor paid for that
+leaf. It could log which address asked for which commitment.
+
+**What it cannot see or do.** It never sees the identity secret, which stays
+sealed in the node's RLN module, nor any forum key: forum posts are signed with
+the forum's own Ed25519 keys, which have nothing to do with the membership.
+It cannot post as the node, and it cannot tell which messages a membership
+sends: an RLN proof shows that its sender holds *some* leaf of the tree, not
+which one. The one exception is RLN's own penalty: a node that spends the same
+message slot twice in one epoch reveals its secret, and with it its
+commitment, which the sponsor could then tie to the address that asked. The
+RLN module never reuses a slot, which is why its keystore must be moved and
+never copied between installs. The sponsor learns nothing about what a user
+reads.
+
+**Open, with no limit.** The sponsor has no allowlist and no cap, by the
+author's choice: whoever asks gets a membership, and asking again with a new
+commitment gets another. Anyone can therefore spend the sponsor's balance.
+When it runs out, new nodes see "The sponsor cannot pay for a membership right
+now" and keep reading; posts wait in the outbox, and memberships already
+granted are not affected. What the sponsor spends is visible on chain
+(`scripts/gifter-status.sh` shows its balance and how many memberships it
+still covers).
+
+**Code the forum brings.** `liblogos_rln_module` 0.10.0,
+`liblogos_lez_rln_module` 4.2.1 and `libp2p_module` 1.1.0 come from the
+official Logos catalog. `rln_gifter_module` 0.2.1 is not in it: the forum's
+catalog serves a build of `logos-rln-gifter` at commit c6d854a with
+[`gifter/rln-gifter-module.patch`](../gifter/rln-gifter-module.patch), made by
+this repository's CI. The patch does two things: it registers through
+`liblogos_lez_rln_module.register_member`, where that method lives since the
+RLN module 0.10.0 split, and it reports a registration the sequencer refused
+as a failure instead of granting a leaf that will never confirm. The client
+half the forum uses (`request`, `libp2p_call`) is unchanged.
+
 - The membership belongs to the node, not to a forum account: one per
   Basecamp install, shared by every app that sends through its delivery node.
-  Its identity secret is generated and kept sealed inside the RLN module
-  (`module_data/liblogos_rln_module/`); the forum never sees it and only reads
-  the membership state (`get_membership_state`).
-- Registration is the RLN module's own: it waits for its LEZ account to hold
-  the price plus a fee reserve, then registers. The forum shows that account
-  and the amount; it never moves funds. A membership links the messages a
-  node sends to one registered commitment only through the rate-limit proofs,
-  which reveal nothing about the identity unless the node exceeds its quota
-  within an epoch (two proofs on one slot disclose the secret, which is why
-  the module never reissues a slot and why its keystore must be moved, never
-  copied).
 - Without a membership nothing is lost: posts are kept, delivery gives up on
   each send after its retry window, and the forum requeues it with back-off.
   Reading and history from store nodes need no membership.
