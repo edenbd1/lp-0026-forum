@@ -1,5 +1,6 @@
 # Sourced by the e2e scripts: RLN memberships for nodes on an RLN network
-# (logos.test, the forum's default).
+# (logos.test, opt-in: run the scripts with LOGOS_FORUM_PRESET=logos.test and
+# pass the two RLN packages after the others).
 #
 # A node that posts needs an active RLN membership. liblogos_rln_module
 # registers one by itself once its LEZ account holds the price plus a fee
@@ -15,8 +16,8 @@
 #                        is waiting for funds, to send them
 #   E2E_RLN_WAIT=<s>     how long to wait for a membership (default 900)
 #
-# Without RLN on the network (LOGOS_FORUM_PRESET=logos.dev) all of this is a
-# no-op. The RLN modules are passed like the other packages:
+# On logos.dev, the default, which runs no RLN, all of this is a no-op. The
+# RLN modules are passed like the other packages:
 #   <script> <logos_forum.lgx> <delivery.lgx> <storage.lgx> <rln.lgx> <lez_rln.lgx>
 
 rln_dirs="module_data/liblogos_rln_module module_data/liblogos_lez_rln_module"

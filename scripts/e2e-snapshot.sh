@@ -13,7 +13,7 @@
 #   scripts/e2e-snapshot.sh <logos_forum.lgx> <delivery_module.lgx> <storage_module.lgx> \
 #       [<liblogos_rln_module.lgx> <liblogos_lez_rln_module.lgx>]
 #
-# On logos.test (the default) posting nodes need RLN memberships: see
+# With LOGOS_FORUM_PRESET=logos.test posting nodes need RLN memberships: see
 # scripts/e2e-rln.sh (E2E_RLN_HOME, E2E_FUND).
 set -euo pipefail
 # Every node runs on this machine, so they may name and dial local addresses

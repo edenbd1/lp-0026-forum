@@ -124,17 +124,21 @@ Invalid mixPubKey in pool entry"). `LOGOS_FORUM_STORAGE_NETWORK` overrides.
 ## RLN
 
 Logos Delivery 0.3 rate-limits with RLN on the networks whose preset enables
-it: `logos.test`, the forum's default, does; `logos.dev` does not. On
-logos.test a node attaches a proof to every message it sends, and the proof
-needs an active membership in the registry the preset names
-(`logos:testnet:841312e9…c893`, on the LEZ testnet zone behind
-`http://209.38.241.182:3240`; epoch 600 s). The preset turns proof validation
-off on relays, so today the limit is enforced by each sender's own node.
+it: `logos.test` does, `logos.dev`, the forum's default, does not. logos.test
+is an opt-in (`"network": "logos.test"` in settings.json, or
+`LOGOS_FORUM_PRESET`). There a node attaches a proof to every message it
+sends, and the proof needs an active membership in the registry the preset
+names (`logos:testnet:841312e9…c893`, on the LEZ testnet zone behind
+`http://209.38.241.182:3240`; epoch 600 s). The sender's own node enforces it:
+without a proof it does not publish. The preset leaves proof validation off on
+relays, so a node that strips the check could still post past the limit;
+that is the network's choice, not the forum's.
 
-- The forum's package depends on `liblogos_rln_module` (~0.10.0) and
-  `liblogos_lez_rln_module` (~4.2.1), so Basecamp installs and loads them.
-  Without them delivery's RLN bridge reports `Failed` and the forum says the
-  modules are missing.
+- The RLN modules (`liblogos_rln_module` 0.10.0, which brings
+  `liblogos_lez_rln_module` 4.2.1) are not dependencies of the forum: whoever
+  opts in installs them from the Logos catalog, and delivery loads them when
+  present. Without them delivery's RLN bridge reports `Failed` and the forum
+  says what to install.
 - The membership belongs to the node, not to a forum account: one per
   Basecamp install, shared by every app that sends through its delivery node.
   Its identity secret is generated and kept sealed inside the RLN module

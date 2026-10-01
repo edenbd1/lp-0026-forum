@@ -41,7 +41,7 @@ constexpr int kHistoryMaxPages = 20;
 
 } // namespace
 
-DeliveryTransport::DeliveryTransport(LogosModules& modules) : modules_(modules), peers_(default_store_peers("logos.test")), cluster_(2) {}
+DeliveryTransport::DeliveryTransport(LogosModules& modules) : modules_(modules), peers_(default_store_peers("logos.dev")), cluster_(3) {}
 
 std::vector<std::string> DeliveryTransport::default_store_peers(const std::string& preset) {
     if (preset == "logos.dev")  // the development fleet, cluster 3 (logos-delivery networks_config)

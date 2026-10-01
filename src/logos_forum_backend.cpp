@@ -166,10 +166,21 @@ void LogosForumBackend::bootstrap() {
         return;
     }
     net_ = std::make_unique<DeliveryTransport>(modules());
-    // Which Logos Delivery network: logos.test, the network of testnet v0.3,
-    // which runs RLN. LOGOS_FORUM_PRESET picks another fleet (logos.dev, with
-    // no RLN), its cluster and its store nodes.
-    preset_ = qEnvironmentVariable("LOGOS_FORUM_PRESET", QStringLiteral("logos.test"));
+    // Which Logos Delivery network. logos.dev by default: it runs no RLN, so
+    // anyone can post at once. logos.test, the testnet v0.3 network, is
+    // opt-in ("network": "logos.test" in settings.json, or
+    // LOGOS_FORUM_PRESET, which wins): there every sender needs an RLN
+    // membership and the RLN modules installed.
+    {
+        QFile f(dataDir() + QStringLiteral("/settings.json"));
+        if (f.open(QIODevice::ReadOnly))
+            networkSetting_ = QJsonDocument::fromJson(f.readAll()).object().value(QLatin1String("network")).toString();
+    }
+    preset_ = qEnvironmentVariable("LOGOS_FORUM_PRESET", networkSetting_);
+    if (preset_ != QLatin1String("logos.dev") && preset_ != QLatin1String("logos.test")) {
+        if (!preset_.isEmpty()) log("unknown network \"" + s(preset_) + "\": using logos.dev");
+        preset_ = QStringLiteral("logos.dev");
+    }
     net_->set_cluster(DeliveryTransport::cluster_of(s(preset_)));
     net_->set_store_peers(DeliveryTransport::default_store_peers(s(preset_)));
     log("network preset " + s(preset_) + ", cluster " + std::to_string(DeliveryTransport::cluster_of(s(preset_))));
@@ -339,12 +350,13 @@ void LogosForumBackend::wireDelivery() {
     d.on("messagePropagated", [confirmed](const QVariantList& data) { confirmed(data, "propagated"); });
     d.on("messageSent", [confirmed](const QVariantList& data) { confirmed(data, "sent"); });
     // RLN (rate-limiting nullifiers) comes with the network preset: on
-    // logos.test every sender needs an active RLN membership, and each 600 s
-    // epoch allows only so many messages. The forum depends on the RLN modules
-    // so Basecamp installs and loads them; liblogos_rln_module then registers
-    // a membership by itself once its LEZ account holds the fee. The forum
-    // only watches: it says where the membership stands and what a user has
-    // to do, and reading never waits for it.
+    // logos.test (opt-in) every sender needs an active RLN membership, and
+    // each 600 s epoch allows only so many messages. Delivery loads the RLN
+    // modules when they are installed (they are optional, not the forum's
+    // dependencies, so logos.dev users never download them);
+    // liblogos_rln_module then registers a membership by itself once its LEZ
+    // account holds the fee. The forum only watches: it says where the
+    // membership stands and what a user has to do, and reading never waits.
     d.on("rlnStateChanged", [this](const QVariantList& data) {
         const QString state = data.value(0).toString(), message = data.value(1).toString();
         log("rln: " + s(state) + (message.isEmpty() ? "" : " (" + s(message) + ")"));
@@ -434,7 +446,8 @@ void LogosForumBackend::refreshStatus() {
     // A node with no peers still accepts sends; say so rather than "Connected".
     const QString base = connectionState_.isEmpty() ? QStringLiteral("Joined, waiting for peers") : connectionState_;
     const QString rln = rlnShort();
-    setStatus(rln.isEmpty() ? base : base + QStringLiteral(" · ") + rln);
+    const QString net = preset_ == QLatin1String("logos.dev") ? QString() : QStringLiteral(" · ") + preset_;
+    setStatus(base + net + (rln.isEmpty() ? QString() : QStringLiteral(" · ") + rln));
 }
 
 
@@ -533,7 +546,7 @@ QString LogosForumBackend::rlnShort() const {
     if (rlnPhase_ == QLatin1String("funding")) return QStringLiteral("no RLN membership yet: posting waits");
     if (rlnPhase_ == QLatin1String("registering") || rlnPhase_ == QLatin1String("pending"))
         return QStringLiteral("RLN membership registering");
-    if (rlnPhase_ == QLatin1String("missing")) return QStringLiteral("RLN modules missing: posting off");
+    if (rlnPhase_ == QLatin1String("missing")) return QStringLiteral("RLN modules not installed: posting waits");
     if (rlnPhase_ == QLatin1String("failed") || rlnPhase_ == QLatin1String("lapsed"))
         return QStringLiteral("RLN membership unavailable: posting waits");
     return QStringLiteral("RLN starting…");
@@ -570,9 +583,11 @@ void LogosForumBackend::publishRln() {
                               "Reading works meanwhile.");
     } else if (rlnPhase_ == QLatin1String("missing")) {
         title = QStringLiteral("RLN modules missing");
-        what = QStringLiteral("This network needs the RLN modules (liblogos_rln_module and liblogos_lez_rln_module), "
-                              "which Basecamp did not load. Reinstall Logos Forum from its catalog: it installs "
-                              "them as dependencies. Reading works meanwhile; posts wait in the outbox.");
+        what = QStringLiteral("logos.test needs the RLN modules, which are not installed. In Basecamp's Package "
+                              "Manager install \"RLN Module\" (liblogos_rln_module, from the Logos catalog; it brings "
+                              "liblogos_lez_rln_module), then restart Basecamp. Or go back to logos.dev: remove "
+                              "\"network\" from the forum's settings.json. Reading works meanwhile; posts wait in "
+                              "the outbox.");
     } else if (rlnPhase_ == QLatin1String("lapsed")) {
         title = QStringLiteral("RLN membership no longer usable");
         what = QStringLiteral("The membership is %1. Restart Basecamp and the node registers a new one "
@@ -1012,8 +1027,10 @@ void LogosForumBackend::saveSettings() {
                         {"readUpTo", readJson()},
                         {"fetchSnapshots", fetchSnapshots_},
                         {"readSince", readSince_}};
+    QJsonObject out = o;
+    if (!networkSetting_.isEmpty()) out.insert(QStringLiteral("network"), networkSetting_);  // the user's opt-in, kept
     QFile f(dataDir() + QStringLiteral("/settings.json"));
-    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) f.write(QJsonDocument(o).toJson());
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) f.write(QJsonDocument(out).toJson());
 }
 
 QString LogosForumBackend::useStorePeers(QString peers) {

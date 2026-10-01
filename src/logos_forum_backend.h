@@ -134,6 +134,7 @@ private:
     // RLN membership, on a network that runs RLN. rlnPhase_: "" (no RLN),
     // starting, wallet, funding, registering, pending, active, quota, lapsed,
     // failed, missing (the RLN modules are not loaded).
+    QString networkSetting_;  // settings.json "network": the user's opt-in network, or empty
     QString rlnPhase_, rlnDetail_;
     QString rlnRegistry_, rlnIdentifier_;          // from delivery's rlnState
     QString rlnPayer_, rlnNeeds_, rlnPrice_, rlnHolds_;  // while awaiting funding

@@ -1,0 +1,42 @@
+# scripts/e2e-history-offline.sh, forum 0.4.0 on logos.dev (the default), 2026-10-01 19:44 CEST
+# logos.dev fleet at the time: 1 of 6 delivery nodes reachable on tcp/30303 (delivery-01.do-ams3).
+# Neither node reports a connection, A's topic is handed to delivery and never confirmed, B never receives it,
+# and every store query fails to dial. Not a forum fault: the same run passed on this fleet on 2026-09-30.
+ok   both nodes joined the forum
+ok   forum-e2e-a: no RLN on this network
+ok   forum-e2e-b: no RLN on this network
+FAIL: B received A's topic
+
+# node A forum.log
+2026-10-01T19:44:03.566 bootstrap: forum "e2e 70965" on /logos-forum/1/e2e-70965-9e9440b8/json
+2026-10-01T19:44:03.570 network preset logos.dev, cluster 3
+2026-10-01T19:44:03.571 history from peers: Logos Storage snapshots, then Delivery
+2026-10-01T19:44:03.586 storage init ok (without disc-port)
+2026-10-01T19:44:04.880 subscribed on attempt 1
+2026-10-01T19:44:16.040 nodeStarted ok
+2026-10-01T19:44:16.040 catch-up starting (node started)
+2026-10-01T19:44:32.065 handed 861d20192c4d to delivery as request 9494f21e5c88354c5120
+2026-10-01T19:44:32.066 received a known or foreign message
+2026-10-01T19:45:04.086 catch-up (node started): 0 messages, 0 new, peer none — StoreRequest failed store query: storeQuery failed: PEER_DIAL_FAILURE: 16Uiu2HAkvwhGHKNry6LACrB8TmEFoCJKEX29XR5dDUzk3UT3UNSE, status 
+2026-10-01T19:45:04.087 asked peers for history
+2026-10-01T19:45:04.089 received a known or foreign message
+2026-10-01T19:45:04.142 storage start: ok
+2026-10-01T19:45:04.144 storage peer 16Uiu2HAmGxN3mpWNshgNBhvSgU7qZ7wrsc3uiyFJg62pLCbsqf83 at /ip4/127.0.0.1/tcp/38993 /ip4/192.168.1.175/tcp/38993 /ip4/169.254.117.0/tcp/38993
+2026-10-01T19:45:24.262 asked peers for history again (nothing arrived yet)
+2026-10-01T19:45:24.263 received a known or foreign message
+
+# node B forum.log
+2026-10-01T19:44:20.658 bootstrap: forum "e2e 70965" on /logos-forum/1/e2e-70965-9e9440b8/json
+2026-10-01T19:44:20.662 network preset logos.dev, cluster 3
+2026-10-01T19:44:20.663 history from peers: Logos Storage snapshots, then Delivery
+2026-10-01T19:44:20.678 storage init ok (without disc-port)
+2026-10-01T19:44:22.015 subscribed on attempt 1
+2026-10-01T19:44:33.230 nodeStarted ok
+2026-10-01T19:44:33.230 catch-up starting (node started)
+2026-10-01T19:45:21.037 storage start: ok
+2026-10-01T19:45:21.039 storage peer 16Uiu2HAmS8W4YJuYjZtTDfoPWLPA3UaHhaFvL3im9pmyuFoxwsUp at /ip4/127.0.0.1/tcp/20240 /ip4/192.168.1.175/tcp/20240 /ip4/169.254.117.0/tcp/20240
+2026-10-01T19:45:21.280 catch-up (node started): 0 messages, 0 new, peer none — StoreRequest failed store query: storeQuery failed: PEER_DIAL_FAILURE: 16Uiu2HAkvwhGHKNry6LACrB8TmEFoCJKEX29XR5dDUzk3UT3UNSE, status 
+2026-10-01T19:45:21.281 asked peers for history
+2026-10-01T19:45:21.282 received a known or foreign message
+2026-10-01T19:45:41.263 asked peers for history again (nothing arrived yet)
+2026-10-01T19:45:41.264 received a known or foreign message
