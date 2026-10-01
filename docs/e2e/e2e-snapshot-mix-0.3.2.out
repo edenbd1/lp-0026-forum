@@ -1,0 +1,6 @@
+ok   A started offline
+ok   A stored its post locally
+ok   A's outbox emptied: the post will never be published, only offered as a snapshot
+ok   A online with storage
+ok   fresh B got A's offline post
+FAIL: the post did not come from a snapshot
