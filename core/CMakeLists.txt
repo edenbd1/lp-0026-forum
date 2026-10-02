@@ -11,6 +11,10 @@ find_package(nlohmann_json REQUIRED)
 add_library(forum_core STATIC src/post.cpp src/identity.cpp src/store.cpp src/engine.cpp)
 target_include_directories(forum_core PUBLIC include)
 target_link_libraries(forum_core PUBLIC PkgConfig::SODIUM PkgConfig::SQLITE nlohmann_json::nlohmann_json)
+# inet_pton lives in Winsock on Windows.
+if(WIN32)
+    target_link_libraries(forum_core PUBLIC ws2_32)
+endif()
 
 option(FORUM_CORE_TESTS "Build the core's tests" ON)
 if(FORUM_CORE_TESTS)

@@ -1,7 +1,7 @@
 {
   "name": "logos_forum",
   "display_name": "Logos Forum",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "type": "ui_qml",
   "interface": "universal",
   "category": "social",
@@ -10,8 +10,8 @@
   "icon": "assets/icon.png",
   "view": "qml/Main.qml",
   "dependencies": [
-    "delivery_module",
-    "storage_module"
+    { "name": "delivery_module", "version": "~0.3.0" },
+    { "name": "storage_module", "version": "~3.0.0" }
   ],
   "codegen": {
     "rep": "src/logos_forum.rep"

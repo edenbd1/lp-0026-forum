@@ -16,7 +16,7 @@ and every post is checked by the app itself on arrival.
   <img alt="Logos Basecamp 0.3.0" src="https://img.shields.io/badge/Logos%20Basecamp-0.3.0-2f6b4f">
   <img alt="Logos Messaging (delivery_module) 0.3.0" src="https://img.shields.io/badge/Logos%20Messaging-0.3.0-2f6b4f">
   <img alt="network logos.dev" src="https://img.shields.io/badge/network-logos.dev-2f6b4f">
-  <a href="https://github.com/edenbd1/logos-forum-catalog"><img alt="catalog 0.3.2" src="https://img.shields.io/badge/catalog-0.3.2-e2552b"></a>
+  <a href="https://github.com/edenbd1/logos-forum-catalog"><img alt="catalog 0.3.3" src="https://img.shields.io/badge/catalog-0.3.3-e2552b"></a>
   <img alt="licence MIT / Apache-2.0" src="https://img.shields.io/badge/licence-MIT%20%2F%20Apache--2.0-7a9a3a">
 </p>
 
