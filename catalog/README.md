@@ -6,7 +6,7 @@ URLs, in the format of the official
 [`logos-modules-release`](https://github.com/logos-co/logos-modules-release).
 A user adds one under **Settings → Package Repositories → Add a repository**;
 the catalog then merges it with the official one, which is where the forum's
-dependencies (`delivery_module` 0.2.1, `storage_module` 2.1.2) come from.
+dependencies (`delivery_module` ~0.3.0, `storage_module` ~3.0.0) come from.
 
 Basecamp requires the repository to be served over **HTTPS**.
 
@@ -17,10 +17,10 @@ The published catalog is
 https://raw.githubusercontent.com/edenbd1/logos-forum-catalog/main/logos-repo.json
 ```
 
-To publish a release: build, pin the dependency versions into the package
-manifest (unpinned, Basecamp installs storage_module 3.0.0-rc1, whose upload
-and download calls differ from the 2.1 series the forum is built against), then
-generate the two files:
+To publish a release: build (metadata.json declares the `delivery_module` and
+`storage_module` ranges, and the builder writes them into the package
+manifest), add the runtime-only RLN and gifter dependencies with
+`scripts/pin-deps.py`, then generate the two files:
 
 ```bash
 nix build .#lgx-portable

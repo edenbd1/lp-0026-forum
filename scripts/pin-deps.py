@@ -16,10 +16,10 @@ catalog, built from gifter/rln-gifter-module) carry the request for a gifted
 membership to the forum's sponsor. The forum calls these modules without a
 generated wrapper, so they are added to the manifest only.
 
-The builder's code generator reads metadata.json's `dependencies` as plain
-names, so the ranges cannot live there; they are written into the package
-manifest instead, in the form the package manager resolves
-({"name", "version"} with an npm-style range).
+metadata.json declares delivery_module and storage_module with their ranges
+(logos-module-builder 0.3 reads {"name", "version"} entries and writes them
+into the package manifest); PINS only re-asserts them. The modules below are
+added to the manifest in the same form, with an npm-style range.
 
   scripts/pin-deps.py result/logos-logos_forum-module.lgx out.lgx
 """
