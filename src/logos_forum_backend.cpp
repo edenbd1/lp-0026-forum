@@ -172,11 +172,12 @@ void LogosForumBackend::bootstrap() {
         return;
     }
     net_ = std::make_unique<DeliveryTransport>(modules());
-    // Which Logos Delivery network. logos.test, the testnet v0.3 network, by
-    // default: there every sender needs an RLN membership, which the forum's
-    // sponsor registers and pays for (requestGift below). logos.dev, which
-    // runs no RLN, stays selectable ("network": "logos.dev" in settings.json,
-    // or LOGOS_FORUM_PRESET, which wins).
+    // Which Logos Delivery network. logos.dev by default: it runs no RLN, so
+    // anyone can post with nothing to set up. logos.test, the testnet v0.3
+    // network, is selectable ("network": "logos.test" in settings.json, or
+    // LOGOS_FORUM_PRESET, which wins); there every sender needs an RLN
+    // membership, which the forum's sponsor registers and pays for
+    // (requestGift below).
     QJsonObject settings;
     {
         QFile f(dataDir() + QStringLiteral("/settings.json"));
@@ -185,8 +186,8 @@ void LogosForumBackend::bootstrap() {
     networkSetting_ = settings.value(QLatin1String("network")).toString();
     preset_ = qEnvironmentVariable("LOGOS_FORUM_PRESET", networkSetting_);
     if (preset_ != QLatin1String("logos.dev") && preset_ != QLatin1String("logos.test")) {
-        if (!preset_.isEmpty()) log("unknown network \"" + s(preset_) + "\": using logos.test");
-        preset_ = QStringLiteral("logos.test");
+        if (!preset_.isEmpty()) log("unknown network \"" + s(preset_) + "\": using logos.dev");
+        preset_ = QStringLiteral("logos.dev");
     }
     // The sponsor: "<multiaddr>/p2p/<peer id>" in settings.json "gifter" or
     // LOGOS_FORUM_GIFTER (which wins), "off" to pay for a membership yourself.

@@ -15,7 +15,7 @@ and every post is checked by the app itself on arrival.
 <p align="center">
   <img alt="Logos Basecamp 0.3.0" src="https://img.shields.io/badge/Logos%20Basecamp-0.3.0-2f6b4f">
   <img alt="Logos Messaging (delivery_module) 0.3.0" src="https://img.shields.io/badge/Logos%20Messaging-0.3.0-2f6b4f">
-  <img alt="network logos.test" src="https://img.shields.io/badge/network-logos.test-2f6b4f">
+  <img alt="network logos.dev" src="https://img.shields.io/badge/network-logos.dev-2f6b4f">
   <a href="https://github.com/edenbd1/logos-forum-catalog"><img alt="catalog 0.3.2" src="https://img.shields.io/badge/catalog-0.3.2-e2552b"></a>
   <img alt="licence MIT / Apache-2.0" src="https://img.shields.io/badge/licence-MIT%20%2F%20Apache--2.0-7a9a3a">
 </p>
@@ -28,13 +28,12 @@ and every post is checked by the app itself on arrival.
 > installable from its [catalog](#install-in-basecamp). It has been tested end to
 > end on five real nodes, 24 checks, on logos.test and again on logos.dev
 > ([`docs/e2e.md`](docs/e2e.md)); the core has 47 tests of its own; CI is green
-> on Linux and macOS. On `main`, 0.4.0 moves to **logos.test with RLN by default,
-> with the membership sponsored**: the forum asks the author's open gifter for
-> an RLN membership by itself, so a user with no tokens just installs and posts
-> ([logos.test, RLN and the sponsor](#logostest-rln-and-the-sponsor)). The request
-> has been tested from Basecamp through the sponsor and back; the funded run
-> (memberships granted, posts exchanged) waits for the sponsor's account to be
-> funded, and the catalog keeps serving 0.3.2 (logos.dev) until it passes.
+> on Linux and macOS. It runs on `logos.dev`, which needs no RLN, so anyone
+> can post with nothing to set up, and a newcomer gets the whole history from
+> the network's store nodes even when nobody else is online
+> ([run](docs/e2e/e2e-history-offline-0.3.2.out)). Support for `logos.test`
+> with RLN, the membership paid by a sponsor, is built and opt-in
+> ([logos.test, RLN and the sponsor](#logostest-rln-and-the-sponsor)).
 
 ![A thread with replies from an account, an anonymous key and an alias, each marked as verified](docs/screens/04-thread.png)
 
@@ -146,7 +145,7 @@ blockchain out of scope, and the forum runs no server. What plays that role:
 | | |
 |---|---|
 | Module catalog | `https://raw.githubusercontent.com/edenbd1/logos-forum-catalog/main/logos-repo.json` |
-| Network | Logos Delivery, `logos.test` preset (cluster 2, RLN) by default; `logos.dev` (cluster 3, no RLN) with `"network": "logos.dev"` in `settings.json` or `LOGOS_FORUM_PRESET=logos.dev` |
+| Network | Logos Delivery, `logos.dev` preset (cluster 3, no RLN) by default; `logos.test` (cluster 2, RLN) with `"network": "logos.test"` in `settings.json` or `LOGOS_FORUM_PRESET=logos.test` |
 | RLN registry (logos.test) | `logos:testnet:841312e9…c893` (config account `9tZgjoUVHHWuE9D1cgQSXbYu2gm6uN9baTSERtTa9Str`) on the LEZ testnet zone behind `http://209.38.241.182:3240`, as delivery_module 0.3.0's preset names it |
 | Membership sponsor | `/ip4/88.160.11.28/tcp/24026/p2p/16Uiu2HAm4XsEj65CPBnXZTZbniEE9SEiRtJUmngGuQxQoGFSHxA6`, paying from `2mDx4MEQkt3JE1ZxmM3W18Nnq8pEZBnJJzTbHpYw75wm` on that zone ([`gifter/`](gifter), `scripts/gifter-status.sh`); `"gifter"` in `settings.json` or `LOGOS_FORUM_GIFTER` names another, `"off"` turns it off |
 | Forum topic | `/logos-forum/1/logos-forum-934410ad/json`, on shard `/waku/2/rs/2/6` |
@@ -159,7 +158,8 @@ the topic is derived from the name.
 
 ## logos.test, RLN and the sponsor
 
-The forum runs on `logos.test`, the testnet v0.3 network, by default. There a
+The forum runs on `logos.dev` by default. It can also run on `logos.test`, the
+testnet v0.3 network (`"network": "logos.test"`, opt-in). There a
 message goes out only with an RLN rate-limit proof, and a proof needs an RLN
 membership in the network's registry, which costs native balance on the
 registry's LEZ zone. Forum users do not need any: the forum's author runs a
