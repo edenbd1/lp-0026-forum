@@ -42,19 +42,25 @@ jobs:
         run: ./build/forum_core_tests
 
   module:
-    name: Basecamp module (${{ matrix.os }})
+    name: Basecamp module (${{ matrix.target }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14]
+        include:
+          - { target: linux-amd64, os: ubuntu-24.04, attr: ".#lgx-portable" }
+          - { target: darwin-arm64, os: macos-14, attr: ".#lgx-portable" }
+          # A mingw cross build from Linux, as the official catalog builds it.
+          - { target: windows-x86_64, os: ubuntu-24.04, attr: ".#packages.x86_64-windows.lgx-portable" }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
       - name: Build the portable package
-        run: nix build .#lgx-portable --accept-flake-config -L -o result
-      - name: Pin dependency versions
-        run: python3 scripts/pin-deps.py result/logos-logos_forum-module.lgx logos_forum.lgx
+        run: nix build '${{ matrix.attr }}' --accept-flake-config -L -o result
+      # metadata.json declares the dependency ranges; the builder writes them
+      # into the package manifest as they are.
+      - name: Take the package
+        run: cp result/logos-logos_forum-module.lgx logos_forum.lgx
       - name: Check the package
         run: |
           mkdir pkg && tar xzf logos_forum.lgx -C pkg
@@ -64,6 +70,7 @@ jobs:
           variants = sorted(os.listdir("pkg/variants"))
           print("name", m["name"], "version", m["version"], "variants", variants)
           print("dependencies", m["dependencies"])
+          assert variants == ["${{ matrix.target }}"], variants
           assert m["type"] == "ui_qml" and m["view"] == "qml/Main.qml"
           assert {"name": "storage_module", "version": "~3.0.0"} in m["dependencies"]
           assert {"name": "delivery_module", "version": "~0.3.0"} in m["dependencies"]
@@ -74,7 +81,7 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: logos_forum-${{ runner.os }}-${{ runner.arch }}
+          name: logos_forum-${{ matrix.target }}
           path: logos_forum.lgx
 
   package:
@@ -87,13 +94,13 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: parts
-      - name: Merge macOS and Linux into one .lgx
+      - name: Merge macOS, Linux and Windows into one .lgx
         run: |
           nix build github:logos-co/logos-package --accept-flake-config -o lgxtool
           ./lgxtool/bin/lgx merge parts/*/logos_forum.lgx -o logos_forum.lgx -y
           ./lgxtool/bin/lgx verify logos_forum.lgx
           mkdir m && tar xzf logos_forum.lgx -C m && ls m/variants
-          test -d m/variants/linux-amd64 && test -d m/variants/darwin-arm64
+          test -d m/variants/linux-amd64 && test -d m/variants/darwin-arm64 && test -d m/variants/windows-x86_64
       - uses: actions/upload-artifact@v4
         with:
           name: logos_forum-all-platforms

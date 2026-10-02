@@ -29,7 +29,8 @@ and every post is checked by the app itself on arrival.
 > end on five real nodes, 24 checks, on logos.test and again on logos.dev, the
 > network it uses since testnet v0.3
 > ([`docs/e2e.md`](docs/e2e.md)); the core has 47 tests of its own; CI is green
-> on Linux and macOS.
+> on Linux and macOS, and builds the Windows x86_64 package (a mingw cross
+> build, not yet run in Basecamp on Windows).
 
 ![A thread with replies from an account, an anonymous key and an alias, each marked as verified](docs/screens/04-thread.png)
 
@@ -83,7 +84,7 @@ and every post is checked by the app itself on arrival.
 
 ## Install in Basecamp
 
-**From the catalog** (Basecamp 0.3.0, macOS Apple silicon or Linux x86_64): *Settings → Package Repositories → Add
+**From the catalog** (Basecamp 0.3.0, macOS Apple silicon, Linux x86_64 or Windows x86_64): *Settings → Package Repositories → Add
 a repository*, paste
 `https://raw.githubusercontent.com/edenbd1/logos-forum-catalog/main/logos-repo.json`,
 then *Package Manager → Social → Logos Forum → Install*. Basecamp installs
