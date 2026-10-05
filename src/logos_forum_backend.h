@@ -18,9 +18,11 @@
 
 #include <QSet>
 #include <string>
+#include <vector>
 
 #include <QHash>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QString>
 #include <QTimer>
 
@@ -62,6 +64,7 @@ private:
     void wireDelivery();
     void wireStorage();
     void startNode();
+    std::vector<std::string> dnsServers() const;  // name servers handed to Delivery, empty for its defaults
     void subscribe();
     void refreshStatus();
     void setRln(const QString& phase, const QString& detail);
@@ -159,6 +162,7 @@ private:
     qint64 giftRetryAt_ = 0;              // ms since epoch; 0 = ask now
     QString giftError_;
     QSet<QString> quotaHeld_;  // our posts delivery holds for the epoch's quota
+    QJsonValue dnsSetting_;         // settings.json "dns": name servers chosen by hand
     QSet<QString> earlyConfirms_;   // confirmations that arrived before our send reply
     QList<QString> earlyOrder_;     // their arrival order, to drop the oldest
     std::optional<forum::Announcement> pendingAnnouncement_;  // answered before storage was ready
