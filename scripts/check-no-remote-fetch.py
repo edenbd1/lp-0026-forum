@@ -13,7 +13,8 @@ URL), plain http URLs, and javascript:, file: and data: URLs. Then:
   only https ones: a plain http URL is not a link;
 - nothing may be fetched without a click;
 - a click on the body's link, as Text reports it (linkAt, then linkActivated),
-  opens exactly that https URL (into a stub, so the check opens no browser).
+  asks the backend to open exactly that https URL (the harness's stand-in
+  backend only logs it, so the check opens no browser).
 
 Any connection other than the harness's own controls is a failure: it would
 tell whoever wrote that text the reader's IP address.

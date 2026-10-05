@@ -124,6 +124,9 @@ Window {
         function rotateAccount() { return "" }
         function setRotation() { return "" }
         function saveSnapshot() { return "" }
+        // What the view asked to open, in order (a click calls this).
+        property var opened: []
+        function openLink(url) { opened.push(url); console.log("click opens " + url); return "" }
     }
 
     Loader { id: view; anchors.fill: parent; source: "../../src/qml/Main.qml" }
@@ -219,11 +222,9 @@ Window {
         var href = (m.linkify(typed).match(/href="([^"]*)"/) || [])[1]
         eq("round trip", m.safeUrl(href), "https://a.org/p?x=1&y=")
         // A click opens exactly that URL; a refused one opens nothing.
-        var opened = []
-        m.urlOpener = function (u) { opened.push(u) }
+        backend.opened = []
         m.openLink(href); m.openLink("javascript:alert(1)"); m.openLink("http://a.org")
-        eq("a click opens exactly the https URL, nothing else", JSON.stringify(opened), JSON.stringify(["https://a.org/p?x=1&y="]))
-        m.urlOpener = null
+        eq("a click opens exactly the https URL, nothing else", JSON.stringify(backend.opened), JSON.stringify(["https://a.org/p?x=1&y="]))
         console.log(fails === 0 ? "linkify: all cases pass" : "linkify: " + fails + " FAILED")
         Qt.exit(fails === 0 ? 0 : 1)
     }
@@ -303,15 +304,13 @@ Window {
             console.log("links rendered in " + n + " texts")
             console.log("hrefs " + JSON.stringify(hrefs))
             // A click on the topic's first link, as Text reports it (linkAt under
-            // the pointer, then linkActivated), into a stub that records the URL.
+            // the pointer, then linkActivated): the stand-in backend logs what it is asked to open.
             if (win.state === "inject") {
                 var body = find(view.item, function (o) { return o.linked === true && o.raw !== undefined && o.raw.indexOf(" body, see ") > 0 })
                 var href = ""
                 for (var y = 2; y < body.height && href === ""; y += 4)
                     for (var x = 0; x < body.width && href === ""; x += 4) href = body.linkAt(x, y)
-                view.item.urlOpener = function (u) { console.log("click opens " + u) }
                 body.linkActivated(href)
-                view.item.urlOpener = null
             }
             win.contentItem.grabToImage(function (r) { r.saveToFile(win.args[3] || "/tmp/shot.png"); Qt.quit() })
         }

@@ -48,6 +48,13 @@ class LogosForum
     // Empty restores the logos.test fleet.
     SLOT(QString useStorePeers(QString peers))
 
+    // ── Links ─────────────────────────────────────────────────────────────────
+    // Open an https link from a post in the system browser, on the reader's
+    // click. Basecamp's QML sandbox refuses Qt.openUrlExternally for every
+    // remote URL, so the view hands the URL here. Anything but an https URL
+    // with a host is refused. Returns "" or "error: …".
+    SLOT(QString openLink(QString url))
+
     PROP(QString status="Starting…" READONLY)
     PROP(bool nodeReady=false READONLY)
     PROP(QString forumName="" READONLY)

@@ -778,6 +778,21 @@ TEST(snapshot_chunks_never_cut_a_character) {
     CHECK(utf8_cut("\xE2\x82\xAC", 0, 2) == 2);                  // one character longer than a chunk: best effort
 }
 
+TEST(only_an_https_link_can_be_opened) {
+    CHECK(is_openable_link("https://docs.logos.co/run-a-node"));
+    CHECK(is_openable_link("HTTPS://a.org"));
+    CHECK(is_openable_link("https://a.org/p?x=1&y=2#f"));
+    CHECK(is_openable_link("https://127.0.0.1:8979/x"));
+    CHECK(is_openable_link("https://\xe4\xbe\x8b\xe3\x81\x88.jp/"));
+    for (const char* u : {"http://a.org", "javascript:alert(1)", "file:///etc/passwd", "data:text/html,x", "ftp://a.org",
+                          "https://", "https:///x", "https://?q", "https://#f", "https://.a.org", "https://-a",
+                          "https://user@a.org", "https://a.org@b.org/", " https://a.org", "https://a.org x",
+                          "https://a\"onmouseover=x", "https://a'x", "https://a<img>", "https://a\\b", "https://a`b",
+                          "https://a\tb", "https://a\nb", "https:a.org", "https:/a.org", ""})
+        CHECK(!is_openable_link(u));
+    CHECK(!is_openable_link("https://a.org/" + std::string(2048, 'x')));
+}
+
 TEST(announced_addresses_must_be_public) {
     CHECK(!is_public_multiaddr("/ip4/127.0.0.1/tcp/20001"));
     CHECK(!is_public_multiaddr("/ip4/192.168.1.175/tcp/20001"));

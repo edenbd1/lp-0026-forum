@@ -51,6 +51,7 @@ public:
     QString catchUp() override;
     QString saveSnapshot() override;
     QString useStorePeers(QString peers) override;
+    QString openLink(QString url) override;
 
 protected:
     void onContextReady() override;
