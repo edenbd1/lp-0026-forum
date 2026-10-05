@@ -43,6 +43,7 @@ Item {
     readonly property color accentStrong: "#e2552b"   // Logos orange: buttons and selection
     readonly property color ok: "#4cc38a"
     readonly property color warn: "#f2c14e"          // amber, kept apart from the orange accent
+    readonly property color link: "#6cb4ff"          // links in posts
 
     // Every stock control (buttons, combo boxes, fields, spin boxes, popups)
     // reads its colours from the palette, so one dark palette here keeps the
@@ -94,22 +95,52 @@ Item {
     function refreshTopics() {
         if (!ready) return
         logos.watch(backend.listTopics(), function (json) {
-            try { root.topics = JSON.parse(json) } catch (e) { log("topics: " + e) }
+            try { root.topics = JSON.parse(json); root.revealIfListed() } catch (e) { log("topics: " + e) }
         }, function (err) { log("listTopics failed: " + err) })
     }
     function refreshThread() {
         if (!ready || openId === "") return
+        var asked = openId
         logos.watch(backend.thread(openId), function (json) {
             try {
                 var t = JSON.parse(json)
+                if (asked !== root.openId) return   // another topic was opened meanwhile
+                var replies = t.replies || []
+                // Replies that arrive while the reader is scrolled up are
+                // counted for the "new replies" pill instead of pulling the view down.
+                if (!root.followEnd && replies.length > root.openReplies.length)
+                    root.unseen += replies.length - root.openReplies.length
+                // Replacing the replies rebuilds them, and the pane briefly
+                // shrinks: a reader who scrolled up keeps their place through it.
+                if (!root.followEnd) { root.keepY = threadScroll.contentItem.contentY; settle.restart() }
                 root.openTopic = t.topic
-                root.openReplies = t.replies || []
+                root.openReplies = replies
             } catch (e) { log("thread: " + e) }
         }, function (err) { log("thread failed: " + err) })
     }
     function openThread(id) {
-        openId = id; openTopic = null; openReplies = []; refreshThread()
+        openId = id; openTopic = null; openReplies = []
+        followEnd = true; unseen = 0
+        refreshThread()
         call(backend.markRead(id), function () { root.refreshTopics() })
+    }
+    // A topic just posted: scrolled into view in the list once it is listed.
+    property string revealTopic: ""
+    function revealIfListed() {
+        if (revealTopic === "") return
+        var i = shownTopics.findIndex(function (t) { return t.id === root.revealTopic })
+        if (i >= 0) { topicList.positionViewAtIndex(i, ListView.Contain); revealTopic = "" }
+    }
+    // The thread keeps to its newest message while the reader is at (or within
+    // 80 px of) the bottom; once they scroll up to read, it stays where they are.
+    property bool followEnd: true
+    property int unseen: 0
+    property real keepY: -1
+    Timer { id: settle; interval: 300; onTriggered: root.keepY = -1 }
+    function scrollToEnd() {
+        followEnd = true; unseen = 0; keepY = -1
+        var f = threadScroll.contentItem
+        f.contentY = Math.max(0, f.contentHeight - f.height)
     }
     // "just now", "5 min ago", "3 h ago", "yesterday 14:02", "12 Sep"
     function when(ms) {
@@ -127,6 +158,55 @@ Item {
         return h.length > 10 ? h.substring(0, 4) + "…" + h.substring(h.length - 4) : h
     }
     function esc(t) { return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;") }
+
+    // Links in text from the network. The whole text is escaped first, so no
+    // tag of its author's can exist. Then only https URLs become
+    // <a href="…">…</a>, built here from the escaped URL (plain http stays
+    // text: it is not offered as a link), and the result is
+    // shown as StyledText (never RichText). So there is no <img> to fetch, and
+    // nothing is loaded at all until the reader clicks a link. Line breaks
+    // become <br> and runs of spaces &nbsp;, so the text reads as typed.
+    function linkify(t) {
+        var s = esc(t).replace(/'/g, "&#39;")
+        // A URL runs up to whitespace or an escaped < > " ' (in the escaped
+        // text, the only & left are the ones escaping starts with).
+        var re = /https:\/\/(?:(?!&(?:lt|gt|quot|#39);)[^\s<>"'])+/gi
+        var out = "", last = 0, m
+        while ((m = re.exec(s)) !== null) {
+            var u = m[0]
+            // Punctuation that ends a sentence is not part of the URL.
+            while (u.length > 0 && ".,:;!?)]}".indexOf(u.charAt(u.length - 1)) >= 0) {
+                if (u.charAt(u.length - 1) === ";" && /&amp;$/.test(u)) break   // an escaped &
+                u = u.substring(0, u.length - 1)
+            }
+            if (!/^https:\/\/[^\/?#&.]/i.test(u)) continue   // no host: leave as text
+            out += spaces(s.substring(last, m.index), last === 0) + "<a href=\"" + u + "\">" + u + "</a>"
+            last = m.index + u.length
+            re.lastIndex = last
+        }
+        return out + spaces(s.substring(last), last === 0)
+    }
+    // Line breaks and runs of spaces, which StyledText would collapse.
+    function spaces(s, lineStart) {
+        s = s.replace(/\r\n|\r|\n/g, "<br>").replace(/\t/g, "    ").replace(/ (?= )/g, "&nbsp;")
+        return s.replace(lineStart ? /(^|<br>) /g : /(<br>) /g, "$1&nbsp;")
+    }
+    // What a clicked link opens: only an https URL as linkify wrote
+    // it (the href arrives still escaped), anything else opens nothing.
+    function safeUrl(href) {
+        var u = String(href || "")
+        if (!/^https:\/\/(?:(?!&(?:lt|gt|quot|#39);)[^\s<>"'])+$/i.test(u)) return ""
+        u = u.replace(/&amp;/g, "&")
+        return /^https:\/\/[^\/?#&.]/i.test(u) ? u : ""
+    }
+    // Set only by tests/qml/Harness.qml, to see what a click would open.
+    property var urlOpener: null
+    function openLink(href) {
+        var u = safeUrl(href)
+        if (u === "") { log("refused to open a link: " + href); return }
+        if (urlOpener) urlOpener(u)
+        else Qt.openUrlExternally(u)
+    }
     function exact(ms) { return Qt.formatDateTime(new Date(ms), "d MMM yyyy, HH:mm") }
     function result(r) {
         // Posting slots return the new id, or "error: …".
@@ -182,6 +262,23 @@ Item {
     // its author the reader's IP address.
     component Label2: Text { color: root.text; font.pixelSize: 14; wrapMode: Text.WrapAtWordBoundaryOrAnywhere; textFormat: Text.PlainText }
     component Dim: Text { color: root.dim; font.pixelSize: 12; wrapMode: Text.WrapAtWordBoundaryOrAnywhere; textFormat: Text.PlainText }
+    // Text from the network with its https links clickable (see linkify).
+    // Text without a link stays plain text, exactly as before.
+    component LinkText: Text {
+        id: lt
+        property string raw: ""
+        readonly property string html: root.linkify(raw)
+        readonly property bool linked: html.indexOf("<a href=") >= 0
+        text: linked ? html : raw
+        textFormat: linked ? Text.StyledText : Text.PlainText
+        color: root.text; font.pixelSize: 14; wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+        linkColor: root.link
+        onLinkActivated: function (href) { root.openLink(href) }
+        HoverHandler { cursorShape: lt.hoveredLink !== "" ? Qt.PointingHandCursor : Qt.ArrowCursor }
+        ToolTip.visible: lt.hoveredLink !== ""
+        ToolTip.delay: 400
+        ToolTip.text: root.safeUrl(lt.hoveredLink)
+    }
     // A label between controls in a Flow: centred on the 40 px control height.
     component FlowDim: Dim { height: 40; verticalAlignment: Text.AlignVCenter; wrapMode: Text.NoWrap }
 
@@ -440,14 +537,17 @@ Item {
                         AccentButton { text: "New topic"; onClicked: newTopic.open() }
                     }
                     AppField {
+                        id: searchField
                         Layout.fillWidth: true
                         placeholderText: "Search topics"
                         onTextChanged: root.search = text
                     }
                     ListView {
+                        id: topicList
                         Layout.fillWidth: true; Layout.fillHeight: true
                         clip: true; spacing: 4
                         model: root.shownTopics
+                        onCountChanged: root.revealIfListed()
                         delegate: Rectangle {
                             width: ListView.view.width
                             height: col.implicitHeight + 16
@@ -546,31 +646,63 @@ Item {
                         onClicked: { root.openId = ""; root.openTopic = null; root.openReplies = [] }
                     }
 
-                    ScrollView {
-                        id: threadScroll
+                    Item {
                         Layout.fillWidth: true; Layout.fillHeight: true
-                        clip: true
-                        contentWidth: availableWidth   // wrap to the pane, never scroll sideways
-                        ColumnLayout {
-                            width: threadScroll.availableWidth
-                            spacing: 14
-                            Text {
-                                Layout.fillWidth: true
-                                text: root.openTopic ? root.openTopic.title : "Topic not received yet. Its replies are shown below."
-                                textFormat: Text.PlainText
-                                color: root.text; font.pixelSize: 18; font.bold: true; wrapMode: Text.WrapAtWordBoundaryOrAnywhere
-                            }
-                            Byline { post: root.openTopic; visible: root.openTopic !== null; Layout.fillWidth: true }
-                            Label2 { Layout.fillWidth: true; text: root.openTopic ? root.openTopic.body : ""; textFormat: Text.PlainText }
-                            Rectangle { Layout.fillWidth: true; height: 1; color: root.line }
-                            Repeater {
-                                model: root.openReplies
-                                delegate: ColumnLayout {
-                                    Layout.fillWidth: true; spacing: 4
-                                    Byline { post: modelData; Layout.fillWidth: true }
-                                    Label2 { Layout.fillWidth: true; text: modelData.body; textFormat: Text.PlainText }
+                        ScrollView {
+                            id: threadScroll
+                            objectName: "threadScroll"
+                            anchors.fill: parent
+                            clip: true
+                            contentWidth: availableWidth   // wrap to the pane, never scroll sideways
+                            ColumnLayout {
+                                width: threadScroll.availableWidth
+                                spacing: 14
+                                LinkText {
+                                    Layout.fillWidth: true
+                                    raw: root.openTopic ? root.openTopic.title : "Topic not received yet. Its replies are shown below."
+                                    font.pixelSize: 18; font.bold: true
+                                }
+                                Byline { post: root.openTopic; visible: root.openTopic !== null; Layout.fillWidth: true }
+                                LinkText { Layout.fillWidth: true; raw: root.openTopic ? root.openTopic.body : "" }
+                                Rectangle { Layout.fillWidth: true; height: 1; color: root.line }
+                                Repeater {
+                                    model: root.openReplies
+                                    delegate: ColumnLayout {
+                                        Layout.fillWidth: true; spacing: 4
+                                        Byline { post: modelData; Layout.fillWidth: true }
+                                        LinkText { Layout.fillWidth: true; raw: modelData.body }
+                                    }
                                 }
                             }
+                        }
+                        // Where the reader is: following the newest message when at
+                        // (or within 80 px of) the bottom. Scrolling there resumes it.
+                        Connections {
+                            target: threadScroll.contentItem
+                            function onContentYChanged() {
+                                if (root.keepY >= 0) return   // the replies are being rebuilt
+                                var f = threadScroll.contentItem
+                                root.followEnd = f.contentY >= f.contentHeight - f.height - 80
+                                if (root.followEnd) root.unseen = 0
+                            }
+                            function onContentHeightChanged() {
+                                var f = threadScroll.contentItem
+                                if (root.followEnd) root.scrollToEnd()
+                                else if (root.keepY >= 0) f.contentY = Math.max(0, Math.min(root.keepY, f.contentHeight - f.height))
+                            }
+                            function onHeightChanged() { if (root.followEnd) root.scrollToEnd() }
+                        }
+                        // Replies that came in below while the reader was scrolled up.
+                        Rectangle {
+                            objectName: "newReplies"
+                            visible: root.unseen > 0 && !root.followEnd
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            anchors.bottom: parent.bottom; anchors.bottomMargin: 8
+                            radius: height / 2; color: root.accentStrong
+                            implicitWidth: pillText.implicitWidth + 24; implicitHeight: 28
+                            Text { id: pillText; anchors.centerIn: parent; color: "white"; font.pixelSize: 12; font.bold: true
+                                   text: root.unseen + (root.unseen === 1 ? " new reply ↓" : " new replies ↓") }
+                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.scrollToEnd() }
                         }
                     }
 
@@ -602,6 +734,7 @@ Item {
                                     onClicked: root.call(root.backend.reply(root.openId, replyBody.text, replyAs.mode, replyAs.alias), function (r) {
                                         if (root.result(r)) {
                                             replyBody.text = ""
+                                            root.scrollToEnd()   // show the reply just posted
                                             root.refreshThread(); root.refreshTopics()
                                         }
                                     })
@@ -646,7 +779,9 @@ Item {
                     if (root.result(r)) {
                         topicTitle.text = ""; topicBody.text = ""
                         newTopic.close()
-                        root.refreshTopics(); root.openThread(r)
+                        // Open it, and show it in the list: a search that hides it is cleared.
+                        searchField.text = ""; root.revealTopic = r
+                        root.openThread(r); root.refreshTopics()
                     }
                 })
               }

@@ -3,7 +3,7 @@
   "source_of_truth": "metadata.json",
   "name": "logos_forum",
   "display_name": "Logos Forum",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "type": "ui_qml",
   "category": "social",
   "description": "A forum with no server. Topics and replies travel over Logos Messaging (Logos Delivery), history is kept on this device and on Logos Storage, and every post is signed and verified on arrival. Post as an account, under an alias, or anonymously.",
