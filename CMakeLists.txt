@@ -34,3 +34,8 @@ logos_module(
 
 target_compile_definitions(${MODULE_NAME}_module_plugin PRIVATE
     LOGOS_FORUM_VERSION="${MODULE_VERSION}")
+
+# The system's DNS servers are read from the adapters on Windows.
+if(WIN32)
+    target_link_libraries(${MODULE_NAME}_module_plugin PRIVATE iphlpapi ws2_32)
+endif()

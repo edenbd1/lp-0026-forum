@@ -18,9 +18,11 @@
 
 #include <QSet>
 #include <string>
+#include <vector>
 
 #include <QHash>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QString>
 #include <QTimer>
 
@@ -61,6 +63,7 @@ private:
     void wireDelivery();
     void wireStorage();
     void startNode();
+    std::vector<std::string> dnsServers() const;  // name servers handed to Delivery, empty for its defaults
     void subscribe();
     void refreshStatus();
 
@@ -126,6 +129,7 @@ private:
     QString lastCatchUp_, lastSnapshot_;
     int uploadProgress_ = 0;        // upload watchdog generation, bumped at every upload step
     bool fetchSnapshots_ = false;
+    QJsonValue dnsSetting_;         // settings.json "dns": name servers chosen by hand
     QString preset_ = QStringLiteral("logos.dev");  // the Logos Delivery network
     QString rlnState_;  // "RLN ready", "RLN failed: …", or empty where the network runs no RLN   // settings.json "fetchSnapshots": opt in to Storage fetches
     QSet<QString> earlyConfirms_;   // confirmations that arrived before our send reply

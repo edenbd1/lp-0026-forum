@@ -16,7 +16,7 @@ and every post is checked by the app itself on arrival.
   <img alt="Logos Basecamp 0.3.0" src="https://img.shields.io/badge/Logos%20Basecamp-0.3.0-2f6b4f">
   <img alt="Logos Messaging (delivery_module) 0.3.0" src="https://img.shields.io/badge/Logos%20Messaging-0.3.0-2f6b4f">
   <img alt="network logos.dev" src="https://img.shields.io/badge/network-logos.dev-2f6b4f">
-  <a href="https://github.com/edenbd1/logos-forum-catalog"><img alt="catalog 0.3.4" src="https://img.shields.io/badge/catalog-0.3.4-e2552b"></a>
+  <a href="https://github.com/edenbd1/logos-forum-catalog"><img alt="catalog 0.3.5" src="https://img.shields.io/badge/catalog-0.3.5-e2552b"></a>
   <img alt="licence MIT / Apache-2.0" src="https://img.shields.io/badge/licence-MIT%20%2F%20Apache--2.0-7a9a3a">
 </p>
 
@@ -135,6 +135,7 @@ blockchain out of scope, and the forum runs no server. What plays that role:
 | Network | Logos Delivery, `logos.dev` preset (cluster 3), since testnet v0.3 switched off the `logos.test` fleet; `LOGOS_FORUM_PRESET=logos.test` picks the other one |
 | Forum topic | `/logos-forum/1/logos-forum-934410ad/json`, on shard `/waku/2/rs/2/6` |
 | History | peers' bundles over Delivery; peers' snapshots on Logos Storage (same network) when opted in |
+| DNS | the fleet's `/dns4/` addresses are resolved through the name servers the system uses (`scutil --dns` on macOS, `/etc/resolv.conf` on Linux, the adapters on Windows), then 1.1.1.1 and 1.0.0.1, so networks that block public DNS still find peers; `LOGOS_FORUM_DNS=a,b` or `"dns": ["a", "b"]` in `settings.json` sets them by hand; `forum.log` names the ones used |
 | Store nodes queried | the six fleet nodes of the preset (`delivery-01`, `delivery-02` in `do-ams3`, `gc-us-central1-a` and `ac-cn-hongkong-c` for `logos.dev`) |
 | Data on your machine | `<Basecamp user dir>/module_data/logos_forum/` (`forum.db`, `forum.log`) |
 

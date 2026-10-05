@@ -22,6 +22,20 @@
 #include <nlohmann/json.hpp>
 #include <sodium.h>
 
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
+#endif
+
+#include "forum/dns.h"
+
 #include "logos_sdk.h"
 #include "logos_types.h"
 
@@ -111,6 +125,72 @@ bool g_fetchSnapshots = false;
 // storage node joins the network's Mix (mix-enabled) and downloads tunnel
 // through it, so fetching one no longer tells the provider our address.
 bool g_snapshotsOverMix = true;
+
+// The name servers this machine uses, in its order; empty if they cannot be
+// read. Delivery resolves the fleet's /dns4/ entry nodes itself and by default
+// asks 1.1.1.1 and 1.0.0.1, which networks that block public DNS never answer.
+std::vector<std::string> readFile(const QString& path) {
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return {};
+    return forum::parse_resolv_conf(f.readAll().toStdString());
+}
+
+std::vector<std::string> systemDnsServers(std::string* source) {
+    std::vector<std::string> found;
+#if defined(Q_OS_MACOS)
+    // scutil reports the resolvers macOS actually uses, VPNs included;
+    // /etc/resolv.conf is its summary of the primary one.
+    QProcess p;
+    p.start(QStringLiteral("/usr/sbin/scutil"), {QStringLiteral("--dns")});
+    if (p.waitForFinished(3000) && p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0)
+        found = forum::parse_scutil_dns(p.readAllStandardOutput().toStdString());
+    else
+        p.kill();
+    *source = "scutil --dns";
+    if (forum::dns_servers_for_delivery(found).empty()) {
+        found = readFile(QStringLiteral("/etc/resolv.conf"));
+        *source = "/etc/resolv.conf";
+    }
+#elif defined(Q_OS_WIN)
+    // Every adapter that is up, in the system's order, IPv4 and IPv6.
+    ULONG size = 16 * 1024;
+    std::vector<unsigned char> buf;
+    ULONG rc = ERROR_BUFFER_OVERFLOW;
+    for (int attempt = 0; attempt < 3 && rc == ERROR_BUFFER_OVERFLOW; ++attempt) {
+        buf.resize(size);
+        rc = GetAdaptersAddresses(AF_UNSPEC,
+                                  GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_FRIENDLY_NAME,
+                                  nullptr, reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.data()), &size);
+    }
+    if (rc == NO_ERROR) {
+        for (auto* a = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.data()); a; a = a->Next) {
+            if (a->OperStatus != IfOperStatusUp || a->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+            for (auto* d = a->FirstDnsServerAddress; d; d = d->Next) {
+                const sockaddr* sa = d->Address.lpSockaddr;
+                if (!sa) continue;
+                char text[INET6_ADDRSTRLEN] = {};
+                if (sa->sa_family == AF_INET)
+                    inet_ntop(AF_INET, &reinterpret_cast<const sockaddr_in*>(sa)->sin_addr, text, sizeof text);
+                else if (sa->sa_family == AF_INET6)
+                    inet_ntop(AF_INET6, &reinterpret_cast<const sockaddr_in6*>(sa)->sin6_addr, text, sizeof text);
+                if (text[0]) found.push_back(text);
+            }
+        }
+    }
+    *source = "GetAdaptersAddresses";
+#else
+    // systemd-resolved points /etc/resolv.conf at its stub, 127.0.0.53, which
+    // answers like any server; its upstream servers follow it, in case not.
+    found = readFile(QStringLiteral("/etc/resolv.conf"));
+    *source = "/etc/resolv.conf";
+    if (std::find(found.begin(), found.end(), "127.0.0.53") != found.end()) {
+        const auto upstream = readFile(QStringLiteral("/run/systemd/resolve/resolv.conf"));
+        found.insert(found.end(), upstream.begin(), upstream.end());
+        if (!upstream.empty()) *source += " and /run/systemd/resolve/resolv.conf";
+    }
+#endif
+    return found;
+}
 
 // Anything thrown inside a module event or timer callback would abort the
 // ui-host: log it and drop the message instead.
@@ -374,10 +454,54 @@ void LogosForumBackend::wireDelivery() {
     });
 }
 
+std::vector<std::string> LogosForumBackend::dnsServers() const {
+    // An explicit list wins: LOGOS_FORUM_DNS, then "dns" in settings.json
+    // (a list of addresses, or one comma-separated string).
+    std::vector<std::string> found;
+    std::string source;
+    if (qEnvironmentVariableIsSet("LOGOS_FORUM_DNS")) {
+        found = forum::split_dns_list(s(qEnvironmentVariable("LOGOS_FORUM_DNS")));
+        source = "LOGOS_FORUM_DNS";
+    } else if (dnsSetting_.isArray() || dnsSetting_.isString()) {
+        if (dnsSetting_.isString()) found = forum::split_dns_list(s(dnsSetting_.toString()));
+        for (const auto& v : dnsSetting_.toArray())
+            for (const auto& d : forum::split_dns_list(s(v.toString()))) found.push_back(d);
+        source = "settings.json";
+    }
+    if (!source.empty() && forum::dns_servers_for_delivery(found).empty()) {
+        log("DNS: no usable address in " + source + ", reading the system's instead");
+        found.clear();
+        source.clear();
+    }
+    if (source.empty()) found = systemDnsServers(&source);
+    const auto list = forum::dns_servers_for_delivery(found);
+    std::string shown;
+    for (const auto& d : list) shown += (shown.empty() ? "" : ", ") + d;
+    if (list.empty())
+        log("DNS: no name server found in " + source + "; Delivery keeps its defaults (1.1.1.1, 1.0.0.1)");
+    else
+        log("DNS for Delivery's /dns4/ addresses: " + shown + " (from " + source + ", then Delivery's own)");
+    return list;
+}
+
 void LogosForumBackend::startNode() {
     // The layered config shape; bare node keys at top level would switch the
     // parser to the legacy shape and fixed ports (see forum-sample-app).
-    const QString cfg = QString::fromUtf8(QJsonDocument(QJsonObject{{"mode", "Core"}, {"preset", preset_}}).toJson(QJsonDocument::Compact));
+    QJsonObject conf{{"mode", "Core"}, {"preset", preset_}};
+    const auto dns = dnsServers();
+    if (!dns.empty()) {
+        // The layered shape has no name server option (messagingOverrides
+        // does not carry it), so this goes through Delivery's flat shape: the
+        // same preset and mode, the node's own fields at top level. The flat
+        // shape's ports default to fixed ones (60000, 9000); 0 keeps them
+        // random like the layered shape, so two instances never collide.
+        QJsonArray servers;
+        for (const auto& d : dns) servers.append(q(d));
+        conf.insert("dnsAddrsNameServers", servers);
+        conf.insert("tcpPort", 0);
+        conf.insert("discv5UdpPort", 0);
+    }
+    const QString cfg = QString::fromUtf8(QJsonDocument(conf).toJson(QJsonDocument::Compact));
     setStatus(QStringLiteral("Starting node…"));
     // Asynchronous, like every delivery call: a stalled node must not freeze the backend.
     modules().delivery_module.createNodeAsync(cfg, [this](LogosResult created) {
@@ -724,6 +848,7 @@ void LogosForumBackend::loadSettings() {
     // what was there before the first launch counts as seen, what comes after
     // does not.
     fetchSnapshots_ = o.value("fetchSnapshots").toBool(false);
+    dnsSetting_ = o.value("dns");
     readSince_ = o.value("readSince").toDouble(0);
     if (readSince_ <= 0) {
         readSince_ = static_cast<double>(now_ms());
@@ -750,13 +875,14 @@ void LogosForumBackend::saveSettings() {
     const auto defaults = DeliveryTransport::default_store_peers(s(preset_));
     if (net_ && net_->store_peers() != defaults)
         for (const auto& p : net_->store_peers()) peers.append(q(p));
-    const QJsonObject o{{"rotateAfterPosts", static_cast<int>(rotation_.max_posts)},
+    QJsonObject o{{"rotateAfterPosts", static_cast<int>(rotation_.max_posts)},
                         {"rotateAfterDays", static_cast<int>(rotation_.max_age_ms / 86400000ull)},
                         {"storePeers", peers},
                         {"storagePort", storagePort_},
                         {"readUpTo", readJson()},
                         {"fetchSnapshots", fetchSnapshots_},
                         {"readSince", readSince_}};
+    if (dnsSetting_.isArray() || dnsSetting_.isString()) o.insert("dns", dnsSetting_);  // set by hand, kept as written
     QFile f(dataDir() + QStringLiteral("/settings.json"));
     if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) f.write(QJsonDocument(o).toJson());
 }
