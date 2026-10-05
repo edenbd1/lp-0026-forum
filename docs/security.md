@@ -52,7 +52,7 @@ request this node has open, and only public IP addresses are dialled.
 
 | # | Was possible | Now | Checked by |
 |---|---|---|---|
-| 1 | Rich text in a title or alias made readers fetch a URL (revealing their IP) | Titles, aliases, names, bodies and the error line are plain text; the status line, which can carry a store node's error text, is escaped | `scripts/check-no-remote-fetch.py`: 0 requests (5 on the previous build), with a rich-text control that must be fetched |
+| 1 | Rich text in a title or alias made readers fetch a URL (revealing their IP) | Titles, aliases, names, bodies and the error line are plain text; the status line, which can carry a store node's error text, is escaped. Since 0.3.4, https links in a topic's title and in post bodies can be clicked: see [Links in posts](#links-in-posts) | `scripts/check-no-remote-fetch.py`: 0 requests (5 on the previous build), with a rich-text and a StyledText control that must be fetched |
 | 2 | An unsigned announcement made readers dial any address and download up to 32 MB | See above: no Storage fetch or offer by default; when on, only answers to our open request, once, public IPs only (DNS names refused; addresses parsed, with loopback, private, link-local, CGNAT, documentation, mapped, translated, NAT64, 6to4 and Teredo forms refused) | tests above |
 | 3 | One 120-byte request put ~650 KB on the topic, bypassing the rate limit (6.5 MB for ten; 12.3 MB an hour sustained) | Bounded as in the first table: about 1.0 MB for the ten, at most 1 MB an hour sustained; the answer reads only the posts it sends (`ORDER BY ts DESC LIMIT`), counts use `COUNT(*)` | tests above |
 | 4 | A post dated 2036 was pinned at the top and broke catch-up | Posts dated more than 10 minutes ahead are refused; `since` ignores posts dated after now + 10 minutes; any stored before this release are hidden from the topic list and never sent on in answers | `a_post_dated_in_the_future_is_refused` |
@@ -64,6 +64,36 @@ request this node has open, and only public IP addresses are dialled.
 | 10 | A 1,000-post import meant 1,000 refreshes and 1,000 commits | An import is one transaction; arrivals reach the view at most every 150 ms (up to three signals, or one for a large import); read markers are saved at most every 2 s and on quit | `a_large_import_is_one_commit` |
 | – | Exceptions in network callbacks could abort the process | The store never throws after opening (a failed statement reads as no rows; a post that cannot be queued is refused with an error); the callbacks that process network input (messages, send results, the pump, snapshot imports) are also wrapped | |
 | – | `forum.log` grew without limit | Rotated at 5 MB, one previous file kept | |
+
+## Links in posts
+
+Since 0.3.4 an https link in a post body or a topic's title opens in the
+system browser when clicked. Showing it fetches nothing:
+
+- The whole text is HTML-escaped first (`&`, `<`, `>`, `"`, `'`), so no tag
+  written by the post's author survives. Only then are `https://` URLs found
+  (up to whitespace or an escaped `<`, `>`, `"` or `'`, without trailing
+  `. , : ; ! ? ) ] }`), and each becomes `<a href="URL">URL</a>` built from the
+  escaped URL. Line breaks become `<br>`. Nothing else is ever produced, so
+  there is no `<img>` to load.
+- Plain `http://` URLs are not links: they are shown as ordinary text, and so
+  are `javascript:`, `file:`, `data:` and every other scheme.
+- The text is shown as StyledText, never RichText, and text with no link stays
+  plain text, as before.
+- A link is opened only on an explicit click, with `Qt.openUrlExternally`, and
+  only if it is an https URL as the forum wrote it; anything else (an http or
+  other scheme, a broken href) opens nothing. Hovering shows the URL in a
+  tooltip.
+- Clicking does tell the site's owner your IP address, as any link does.
+
+Checked by `scripts/check-no-remote-fetch.py`: https links to the check's own
+server, some built to break out of the href, are rendered as links, plain
+http URLs are not, and no connection is made without a click; a click opens
+exactly the link's URL (into a stub); a StyledText `<img>` control is fetched,
+so the format would load an image if one could get through. And by the unit
+cases in `tests/qml/Harness.qml -- 800 600 linkify` (escaping, schemes, http
+left as text, trailing punctuation, `<img src=x>https://a`,
+`https://a"onmouseover=`, `javascript:alert(1)`).
 
 ## Limits, stated plainly
 
