@@ -52,6 +52,7 @@ public:
     QString saveSnapshot() override;
     QString useStorePeers(QString peers) override;
     QString retryMembership() override;
+    QString openLink(QString url) override;
 
 protected:
     void onContextReady() override;

@@ -13,9 +13,11 @@
 #include <QHostAddress>
 #include <QJsonObject>
 #include <QNetworkInterface>
+#include <QProcess>
 #include <QRandomGenerator>
 #include <QRegularExpression>
 #include <QStandardPaths>
+#include <QUrl>
 #include <QVariant>
 
 #include <nlohmann/json.hpp>
@@ -1497,6 +1499,28 @@ void LogosForumBackend::initStorage(bool withDiscPort) {
         publishHistory();
         if (r.success) learnStorageIdentity();
     });
+}
+
+QString LogosForumBackend::openLink(QString url) {
+    // The view only offers https links; checked again here, on the raw string
+    // and as parsed, since this slot opens whatever it is given.
+    const QUrl u(url, QUrl::StrictMode);
+    if (!forum::is_openable_link(url.toStdString()) || !u.isValid() || u.scheme() != QLatin1String("https")
+        || u.host().isEmpty() || !u.userInfo().isEmpty()) {
+        log("refused to open a link: " + url.left(200).toStdString());
+        return QStringLiteral("error: only https links can be opened");
+    }
+    // The system's own opener, given the URL as one argument (no shell).
+#if defined(Q_OS_MACOS)
+    const bool ok = QProcess::startDetached(QStringLiteral("/usr/bin/open"), {url});
+#elif defined(Q_OS_WIN)
+    const bool ok = QProcess::startDetached(QStringLiteral("rundll32.exe"), {QStringLiteral("url.dll,FileProtocolHandler"), url});
+#else
+    const bool ok = QProcess::startDetached(QStringLiteral("xdg-open"), {url});
+#endif
+    if (!ok) return QStringLiteral("error: no browser could be started");
+    log("opened a link on the reader's click: " + u.host().toStdString());
+    return QString();
 }
 
 QString LogosForumBackend::saveSnapshot() {

@@ -80,20 +80,27 @@ system browser when clicked. Showing it fetches nothing:
   are `javascript:`, `file:`, `data:` and every other scheme.
 - The text is shown as StyledText, never RichText, and text with no link stays
   plain text, as before.
-- A link is opened only on an explicit click, with `Qt.openUrlExternally`, and
-  only if it is an https URL as the forum wrote it; anything else (an http or
-  other scheme, a broken href) opens nothing. Hovering shows the URL in a
+- A link is opened only on an explicit click, and only if it is an https URL
+  as the forum wrote it; anything else (an http or other scheme, a broken href)
+  opens nothing. Basecamp's QML sandbox refuses `Qt.openUrlExternally` for
+  remote URLs, so the view hands the URL to the forum's backend, which checks
+  it again (`is_openable_link`: https, a host, no user info, no whitespace,
+  quote, angle bracket or control character, at most 2048 bytes; then parsed
+  strictly) and starts the system's own opener with the URL as one argument,
+  never through a shell (`open` on macOS, `xdg-open` on Linux,
+  `url.dll,FileProtocolHandler` on Windows). Hovering shows the URL in a
   tooltip.
 - Clicking does tell the site's owner your IP address, as any link does.
 
 Checked by `scripts/check-no-remote-fetch.py`: https links to the check's own
 server, some built to break out of the href, are rendered as links, plain
 http URLs are not, and no connection is made without a click; a click opens
-exactly the link's URL (into a stub); a StyledText `<img>` control is fetched,
+exactly the link's URL (the harness's stand-in backend only logs it); a StyledText `<img>` control is fetched,
 so the format would load an image if one could get through. And by the unit
 cases in `tests/qml/Harness.qml -- 800 600 linkify` (escaping, schemes, http
 left as text, trailing punctuation, `<img src=x>https://a`,
-`https://a"onmouseover=`, `javascript:alert(1)`).
+`https://a"onmouseover=`, `javascript:alert(1)`), and the backend's check by
+`only_an_https_link_can_be_opened` in the core tests.
 
 ## Limits, stated plainly
 

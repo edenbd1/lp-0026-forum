@@ -79,6 +79,12 @@ size_t utf8_cut(const std::string& s, size_t from, size_t max);
 // machine or LAN. Addresses are parsed, not matched as text.
 bool is_public_multiaddr(const std::string& addr);
 
+// Whether a link from a post may be opened in the system browser, on a click:
+// an https URL with a host, at most 2048 bytes, with no whitespace, control
+// character, quote, angle bracket, backslash or backtick, and no user info
+// before the host. Plain http and every other scheme are refused.
+bool is_openable_link(const std::string& url);
+
 // Where a snapshot lives. The storage peer is optional: when present, a
 // fetcher dials it directly instead of relying on the DHT, which finds nothing
 // when both ends are behind NAT.

@@ -55,6 +55,20 @@ size_t utf8_cut(const std::string& s, size_t from, size_t max) {
     return k > 0 ? k : n;  // a single character longer than `max`: cannot help it
 }
 
+bool is_openable_link(const std::string& url) {
+    static const std::string scheme = "https://";
+    if (url.size() <= scheme.size() || url.size() > 2048) return false;
+    for (size_t i = 0; i < scheme.size(); ++i)
+        if (std::tolower(static_cast<unsigned char>(url[i])) != scheme[i]) return false;
+    for (unsigned char c : url)
+        if (c <= 0x20 || c == 0x7F || c == '<' || c == '>' || c == '"' || c == '\'' || c == '\\' || c == '`') return false;
+    const size_t end = url.find_first_of("/?#", scheme.size());
+    const std::string authority = url.substr(scheme.size(), end == std::string::npos ? std::string::npos : end - scheme.size());
+    if (authority.empty() || authority.find('@') != std::string::npos) return false;
+    const char first = authority[0];
+    return first != '.' && first != '-' && first != ':' && first != '&';
+}
+
 bool is_public_multiaddr(const std::string& addr) {
     // /ip4/<a>/… or /ip6/<a>/… only. DNS names are refused: they can resolve
     // to anything, including this machine ("localhost.", "127.0.0.1.nip.io").

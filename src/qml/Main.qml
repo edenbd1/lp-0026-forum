@@ -204,13 +204,12 @@ Item {
         u = u.replace(/&amp;/g, "&")
         return /^https:\/\/[^\/?#&.]/i.test(u) ? u : ""
     }
-    // Set only by tests/qml/Harness.qml, to see what a click would open.
-    property var urlOpener: null
+    // On a click only. Basecamp's QML sandbox refuses Qt.openUrlExternally for
+    // remote URLs, so the backend opens it, after checking it again.
     function openLink(href) {
         var u = safeUrl(href)
         if (u === "") { log("refused to open a link: " + href); return }
-        if (urlOpener) urlOpener(u)
-        else Qt.openUrlExternally(u)
+        call(backend.openLink(u), function (r) { if (r !== "") root.lastError = "The link was not opened: " + r.replace(/^error: /, "") })
     }
     function exact(ms) { return Qt.formatDateTime(new Date(ms), "d MMM yyyy, HH:mm") }
     function result(r) {
@@ -281,9 +280,15 @@ Item {
         linkColor: root.link
         onLinkActivated: function (href) { root.openLink(href) }
         HoverHandler { cursorShape: lt.hoveredLink !== "" ? Qt.PointingHandCursor : Qt.ArrowCursor }
-        ToolTip.visible: lt.hoveredLink !== ""
-        ToolTip.delay: 400
-        ToolTip.text: root.safeUrl(lt.hoveredLink)
+        // Where a link goes, shown on hover.
+        ToolTip {
+            id: tip
+            visible: lt.hoveredLink !== ""
+            delay: 400
+            text: root.safeUrl(lt.hoveredLink)
+            contentItem: Text { text: tip.text; textFormat: Text.PlainText; color: root.text; font.pixelSize: 12 }
+            background: Rectangle { color: root.raised; radius: 4; border.color: root.line }
+        }
     }
     // A label between controls in a Flow: centred on the 40 px control height.
     component FlowDim: Dim { height: 40; verticalAlignment: Text.AlignVCenter; wrapMode: Text.NoWrap }
