@@ -1,0 +1,9 @@
+ok   both nodes joined the forum
+ok   B received A's topic
+ok   same author key on both nodes
+ok   A received B's anonymous reply
+ok   the anonymous key is none of B's accounts
+ok   A and B offline
+ok   fresh node with nobody online got the history
+     history requests A answered over the whole run: 0
+PASS
