@@ -134,6 +134,28 @@ waits a random 0–3 s and stands down if it sees another peer's answer to the
 same request, so a newcomer costs the network one answer rather than one per
 peer (a core test with five peers checks exactly one answer).
 
+## Links and auto-scroll (0.3.4)
+
+Two Basecamp 0.3.0 instances on one Mac, each with its own `--user-dir`, in a
+forum of their own. Node A creates a topic (it opens at once), then posts
+replies one after another: after each, the newest reply is the last thing in
+view. A reply from node B arrives while A is at the bottom: A scrolls to it.
+With A scrolled up to read, the next reply from B leaves A where it is and
+shows a "1 new reply" pill; a click on it goes to the newest message.
+
+An https link in a post is blue and underlined, the pointer turns into a hand
+over it and a tooltip shows the URL. A local https server logged every
+connection: none while the posts were shown and hovered, two (the browser's
+TLS handshakes) at the moment of the click, which opened the system browser. A
+plain `http://` URL in the same posts stays text.
+
+History with everyone offline still passes on 0.3.4:
+[e2e-history-offline-0.3.4.out](e2e/e2e-history-offline-0.3.4.out).
+
+![The pill when a reply arrives while reading older posts](screens/14-new-replies-pill.png)
+![A posted reply scrolled into view](screens/15-reply-scrolled-into-view.png)
+![An https link on hover](screens/16-https-link-hover.png)
+
 ## Bugs this found
 
 Running in the real host found three faults that no unit test could:
