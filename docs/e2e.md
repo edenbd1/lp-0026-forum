@@ -156,6 +156,26 @@ History with everyone offline still passes on 0.3.4:
 ![A posted reply scrolled into view](screens/15-reply-scrolled-into-view.png)
 ![An https link on hover](screens/16-https-link-hover.png)
 
+## A network that blocks public DNS (0.3.5)
+
+On a network whose firewall drops DNS to public resolvers (`dig @1.1.1.1` and
+`dig @8.8.8.8` time out, the system's own server answers), Delivery used to ask
+only 1.1.1.1 and 1.0.0.1 for the fleet's `/dns4/` addresses: a fresh node found
+no peer, store queries failed with `PEER_DIAL_FAILURE`, and two nodes on that
+network could not exchange posts. 0.3.5 hands Delivery the system's servers
+first. On that network, with no environment override, `forum.log` reads
+
+```
+DNS for Delivery's /dns4/ addresses: 10.16.0.1, 1.1.1.1, 1.0.0.1 (from scutil --dns, then Delivery's own)
+```
+
+and history with everyone offline passes with the package downloaded from the
+published catalog (sha256 `031a17df…a770c`, the one `index.json` serves):
+[e2e-history-offline-0.3.5.out](e2e/e2e-history-offline-0.3.5.out). A loopback
+resolver works too: with `LOGOS_FORUM_DNS=127.0.0.1` and a forwarder on port 53,
+the node resolved all six fleet nodes through it and connected, which is the
+case of systemd-resolved's 127.0.0.53 stub on Linux.
+
 ## Bugs this found
 
 Running in the real host found three faults that no unit test could:
