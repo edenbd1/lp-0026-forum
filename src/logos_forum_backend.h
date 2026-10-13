@@ -28,6 +28,8 @@
 
 #include "delivery_transport.h"
 #include "forum/engine.h"
+#include "forum/group.h"
+#include "forum/moderation.h"
 #include "forum/identity.h"
 #include "forum/store.h"
 #include "logos_ui_plugin_context.h"
@@ -55,6 +57,18 @@ public:
     QString useStorePeers(QString peers) override;
     QString retryMembership() override;
     QString openLink(QString url) override;
+
+    // Private forums and moderation (forum_groups.cpp).
+    QString selectForum(QString id) override;
+    QString createGroup(QString name) override;
+    QString joinGroup(QString invite) override;
+    QString leaveGroup(QString id) override;
+    QString groupInvite(QString id) override;
+    QString muteAuthor(QString key) override;
+    QString unmuteAuthor(QString key) override;
+    QString hidePost(QString id) override;
+    QString unhidePost(QString id) override;
+    QString moderationList() override;
 
 protected:
     void onContextReady() override;
@@ -105,6 +119,31 @@ private:
     void initStorage(bool withDiscPort);
     void armUploadWatchdog();
     QJsonObject readJson() const;
+
+    // ── Private forums and moderation (forum_groups.cpp) ──
+    // A joined group: its own engine on the shared store, behind a transport
+    // that seals everything it sends on the group's topic.
+    struct Joined {
+        forum::Group group;
+        std::unique_ptr<forum::SealedTransport> net;
+        std::unique_ptr<forum::Engine> engine;
+    };
+    void initGroups();
+    Joined* attachGroup(const forum::Group& g);
+    Joined* joinedById(const std::string& forumId);
+    forum::Engine* currentEngine();
+    std::string currentForumId() const;
+    // A message on a topic that is not the public forum's: a group's (opened
+    // and handed to its engine) or another app's (ignored).
+    void routeGroupMessage(const QString& topic, const std::string& wire, bool history);
+    std::optional<std::string> openOwnSealed(const std::string& wire) const;
+    void subscribeGroups();
+    void pumpGroups();
+    void catchUpGroups();
+    void publishForums();
+    std::vector<std::unique_ptr<Joined>> joined_;
+    std::unique_ptr<forum::Groups> groups_;
+    std::unique_ptr<forum::Moderation> moderation_;
 
     std::unique_ptr<forum::Store> store_;
     std::unique_ptr<DeliveryTransport> net_;

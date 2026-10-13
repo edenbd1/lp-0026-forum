@@ -24,6 +24,7 @@ logos_module(
     SOURCES
         src/logos_forum_backend.h
         src/logos_forum_backend.cpp
+        src/forum_groups.cpp
         src/delivery_transport.h
         src/delivery_transport.cpp
     INCLUDE_DIRS

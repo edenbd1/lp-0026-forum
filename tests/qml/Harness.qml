@@ -8,6 +8,7 @@ import QtQuick.Controls
 //   qml tests/qml/Harness.qml -- <width> <height> <state> <out.png>
 //   out.png "live" keeps the window open (to resize it by hand) instead of saving.
 //   state: welcome | list | thread | alias | anonymous | newtopic | accounts | offline | stress | inject | links
+//          | private | create | join | invite | leave | muted   (private forums and moderation)
 //   (inject: a title, an alias and bodies carrying <img> tags, https links and plain http URLs pointing at 127.0.0.1:8977, none to be fetched)
 //   (links: a thread whose posts carry links, for screenshots)
 //
@@ -115,6 +116,26 @@ Window {
             }
             return JSON.stringify({ topic: topicList[0], replies: win.state === "offline" ? replies : replies.slice(0, 3) })
         }
+        // Private forums and moderation.
+        readonly property bool inGroup: ["private", "invite", "leave"].indexOf(win.state) >= 0
+        property string currentForum: inGroup ? "g:5f87b6d87b776f47eebb30ac7baaec95" : ""
+        property string forumsJson: JSON.stringify([
+            { id: "", name: "Logos Forum", private: false, current: currentForum === "" },
+            { id: "g:5f87b6d87b776f47eebb30ac7baaec95", name: "Core contributors", private: true, current: currentForum !== "" },
+            { id: "g:0a1b2c3d4e5f60718293a4b5c6d7e8f9", name: "Night shift", private: true, current: false }])
+        function selectForum(id) { currentForum = id; return "" }
+        function createGroup(name) { return "logosforum://join/AQdHzx3nW1Jm4yU0mY2c1Q9f8x7v6u5t4s3r2q1p0o9n8m7l6k5j4i3Q29yZSBjb250cmlidXRvcnM" }
+        function groupInvite(id) { return createGroup("") }
+        function joinGroup(invite) { return invite.indexOf("logosforum://join/") === 0 ? "" : "error: this is not a Logos Forum invite (logosforum://join/…)" }
+        function leaveGroup(id) { currentForum = ""; return "" }
+        function muteAuthor(key) { return "" }
+        function unmuteAuthor(key) { return "" }
+        function hidePost(id) { return "" }
+        function unhidePost(id) { return "" }
+        function moderationList() { return JSON.stringify({
+            muted: [ { key: "32e5a1c09d8b7f6e5d4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4af39c", at: t0 - 3600000 },
+                     { key: "6b79c6d4e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5", at: t0 - 86400000 * 3 } ],
+            hidden: [ { id: "t3", title: "LEZ wallet 1.1.1 update fails to install", at: t0 - 600000 } ] }) }
         function markRead(id) { return "" }
         function catchUp() { return "" }
         function reply() { return "r9" }
@@ -299,6 +320,12 @@ Window {
             var m = view.item
             if (win.state === "linkify") { linkifyCases(m); return }
             if (win.state === "authors") { authorCases(m); return }
+            var pf = find(m, function (o) { return o.openInvite !== undefined && o.openMuted !== undefined })
+            if (win.state === "create") { pf.openCreate(); shot.start(); return }
+            if (win.state === "join") { pf.openJoin(); shot.start(); return }
+            if (win.state === "invite") { pf.openInvite(backend.currentForum); shot.start(); return }
+            if (win.state === "leave") { pf.openLeave(backend.currentForum, "Core contributors"); shot.start(); return }
+            if (win.state === "muted") { pf.openMuted(); shot.start(); return }
             if (win.state !== "welcome" && win.state !== "list" && win.state !== "newtopic") m.openThread("t1")
             if (win.state === "list") m.openId = ""
             var replyAs = find(m, function (o) { return o.objectName === "replyAs" })

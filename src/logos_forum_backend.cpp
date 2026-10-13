@@ -214,6 +214,9 @@ template <typename F> void guarded(const char* what, F&& f) {
 
 } // namespace
 
+// For forum_groups.cpp: the same log, which never names a group or a post.
+void forumLog(const std::string& m) { log(m); }
+
 LogosForumBackend::LogosForumBackend() {
     setAppVersion(QStringLiteral(LOGOS_FORUM_VERSION));
     const QString name = qEnvironmentVariable("LOGOS_FORUM_NAME", QString::fromLatin1(kDefaultForum));
@@ -304,7 +307,9 @@ void LogosForumBackend::bootstrap() {
     net_->on_send_result = [this](const std::string& payload, bool sent, const std::string& request,
                                   const std::string& error) {
         guarded("send result", [&]() {
-            const auto p = forum::decode(payload);
+            auto p = forum::decode(payload);
+            if (!p)
+                if (const auto opened = openOwnSealed(payload)) p = forum::decode(*opened);  // a group's post
             if (!p || !engine_) return;  // a history answer or a request: nothing to track
             const std::string id = p->id();
             if (sent) {
@@ -353,6 +358,7 @@ void LogosForumBackend::bootstrap() {
     if (accounts_.empty()) createAccount(QString());
     else if (!selected()) selectedLabel_ = q(accounts_.front().label);
     publishAccounts();
+    initGroups();
     publishOutbox();
     postsAtLastSnapshot_ = store_->count();
     setNodeReady(true);  // composing needs only the local store
@@ -395,13 +401,19 @@ void LogosForumBackend::wireDelivery() {
     });
     d.on("messageReceived", [this](const QVariantList& data) {
         if (data.size() < 3 || !engine_) return;
-        if (data.at(1).toString() != contentTopic()) return;  // another app's traffic
+        // Delivery says whether it recovered the message from the store
+        // ("history") or saw it published ("live"): the budget it is charged to.
+        const bool history = data.value(3).toString() == QLatin1String("history");
+        if (data.at(1).toString() != contentTopic()) {  // a private forum's, or another app's traffic
+            guarded("received message", [&]() { routeGroupMessage(data.at(1).toString(), data.at(2).toByteArray().toStdString(), history); });
+            return;
+        }
         guarded("received message", [&]() {
             const std::string payload = data.at(2).toByteArray().toStdString();
             // What it added, from the engine: counting the store before and
             // after would cost two queries for any message anyone sends.
             const uint64_t before = engine_->posts_received();
-            engine_->receive(payload, now_ms());
+            engine_->receive(payload, now_ms(), history ? forum::Origin::History : forum::Origin::Live);
             const size_t added = static_cast<size_t>(engine_->posts_received() - before);
             countActivity(payload, added > 0 && payload.find("\"logos-forum-snapshot\"") == std::string::npos);
             if (payload.find("\"logos-forum-snapshot\"") != std::string::npos) {
@@ -586,6 +598,7 @@ void LogosForumBackend::subscribe() {
             log("subscribed on attempt " + std::to_string(subscribeAttempts_));
             subscribed_ = true;
             refreshStatus();
+            subscribeGroups();
             return;
         }
         // Usually the node is still bootstrapping; that passes. Posting is not
@@ -1076,6 +1089,7 @@ void LogosForumBackend::pump() {
     if (!engine_) return;
     guarded("pump", [&]() {
         engine_->tick(now_ms());  // lets a pending history answer go out once its wait has passed
+        pumpGroups();
         if (engine_->pump(now_ms()) > 0 || outboxCount() != static_cast<int>(store_->outbox().size())) publishOutbox();
     });
 }
@@ -1115,8 +1129,9 @@ QString LogosForumBackend::compose(bool topic, const QString& target, const QStr
         }
     }
     const std::string a = mode == 1 ? s(alias.trimmed()) : std::string();
-    const std::string id = topic ? engine_->post_topic(as, s(title.trimmed()), s(text), a, now_ms())
-                                 : engine_->post_reply(as, s(target), s(text), a, now_ms());
+    forum::Engine* e = currentEngine();  // the public forum, or the private one shown
+    const std::string id = topic ? e->post_topic(as, s(title.trimmed()), s(text), a, now_ms())
+                                 : e->post_reply(as, s(target), s(text), a, now_ms());
     if (id.empty()) return QStringLiteral("error: the post could not be saved on this device");
     if (as) {
         store_->save_account(*as, true);
@@ -1185,7 +1200,9 @@ QString LogosForumBackend::listTopics() {
     QHash<QString, int> outbox;
     for (const auto& o : store_->outbox()) outbox.insert(q(o.id), o.attempts);
     QJsonArray out;
-    for (const auto& t : store_->topics(s(forumName()))) {
+    const auto rows = moderation_ ? moderation_->visible(s(selectedLabel_), store_->topics(currentForumId()))
+                                  : store_->topics(currentForumId());
+    for (const auto& t : rows) {
         // Kept from before dates were checked: not pinned above everything.
         if (t.topic.ts_ms > now_ms() + forum::Engine::kMaxClockSkewMs) continue;
         QJsonObject o = postJson(t.topic, t.id, accounts_, outbox);
@@ -1205,11 +1222,18 @@ QString LogosForumBackend::thread(QString topicId) {
     QHash<QString, int> outbox;
     for (const auto& o : store_->outbox()) outbox.insert(q(o.id), o.attempts);
     QJsonObject out;
-    const auto t = store_->get(s(topicId));
+    // Only the forum shown: a reply in another forum (a private group, say)
+    // that names this topic is not part of this thread.
+    const std::string forumId = currentForumId();
+    auto t = store_->get(s(topicId));
+    if (t && t->forum != forumId) t.reset();
     out.insert("topic", t && t->kind == Kind::Topic ? QJsonValue(postJson(*t, s(topicId), accounts_, outbox))
                                                      : QJsonValue(QJsonValue::Null));
     QJsonArray replies;
-    for (const auto& r : store_->replies(s(topicId))) replies.append(postJson(r, r.id(), accounts_, outbox));
+    auto list = store_->replies(s(topicId));
+    list.erase(std::remove_if(list.begin(), list.end(), [&](const Post& r) { return r.forum != forumId; }), list.end());
+    if (moderation_) list = moderation_->visible(s(selectedLabel_), std::move(list));
+    for (const auto& r : list) replies.append(postJson(r, r.id(), accounts_, outbox));
     out.insert("replies", replies);
     return dump(QJsonDocument(out));
 }
@@ -1217,7 +1241,7 @@ QString LogosForumBackend::thread(QString topicId) {
 QString LogosForumBackend::markRead(QString topicId) {
     if (!store_) return QString();
     double last = 0;
-    for (const auto& t : store_->topics(s(forumName())))
+    for (const auto& t : store_->topics(currentForumId()))
         if (q(t.id) == topicId) last = static_cast<double>(t.last_activity_ms);
     readUpTo_.insert(topicId, last);
     saveSettingsSoon();
@@ -1326,6 +1350,7 @@ QString LogosForumBackend::deleteAccount(QString label) {
     auto it = std::find_if(accounts_.begin(), accounts_.end(), [&](const Account& a) { return q(a.label) == label; });
     if (it == accounts_.end()) return QStringLiteral("no such account");
     sodium_memzero(it->key.sk.data(), it->key.sk.size());
+    if (moderation_) moderation_->forget(it->label);  // what it muted and hid goes with it
     store_->remove_account(it->label);
     store_->scrub();
     accounts_.erase(it);
@@ -1463,6 +1488,7 @@ void LogosForumBackend::runCatchUp(const char* why) {
     if (!engine_ || catchingUp_) return;
     catchingUp_ = true;
     log(std::string("catch-up starting (") + why + ")");
+    catchUpGroups();
     lastCatchUp_ = QStringLiteral("Fetching missed posts…");
     publishHistory();
     const std::string reason = why;
@@ -1471,7 +1497,7 @@ void LogosForumBackend::runCatchUp(const char* why) {
         if (!engine_) return;
         int added = 0;
         for (const auto& m : payloads)
-            if (engine_->receive(m, now_ms())) ++added;
+            if (engine_->receive(m, now_ms(), forum::Origin::History)) ++added;
         const std::string& peer = net_->last_history_peer();
         log("catch-up (" + reason + "): " + std::to_string(payloads.size()) + " messages, " + std::to_string(added) +
             " new, peer " + (peer.empty() ? "none — " + net_->last_history_error() : peer) + ", status " +
