@@ -36,6 +36,16 @@ jobs:
           assert not bad, f"module.json differs from metadata.json on: {bad}"
           print("module.json matches metadata.json")
           PY
+      - name: No QRegularExpression in the code
+        if: runner.os == 'Linux'
+        # It JIT-compiles inside Basecamp's hardened runtime, which traps.
+        # Comments may name it; code may not.
+        run: |
+          if grep -rnE --include='*.cpp' --include='*.h' --include='*.qml' 'QRegularExpression' src core gifter \
+              | grep -vE '^[^:]+:[0-9]+:\s*//'; then
+            echo "QRegularExpression is used above"; exit 1
+          fi
+          echo "no QRegularExpression in code"
       - name: Build
         run: cmake -S core -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
       - name: Test

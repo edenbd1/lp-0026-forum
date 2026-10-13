@@ -5,6 +5,7 @@
 #include "forum/identity.h"
 #include "forum/store.h"
 #include "forum/post.h"
+#include "forum/rln.h"
 
 #include <nlohmann/json.hpp>
 
@@ -606,6 +607,22 @@ TEST(a_replayed_partial_bundle_does_not_silence_the_answerers) {
     bool answered = false;
     for (size_t i = before; i < bus.log.size(); ++i) answered = answered || bus.log[i].find("\"re\":\"r1\"") != std::string::npos;
     CHECK(answered);
+}
+
+TEST(the_funding_detail_is_read_without_a_regex) {
+    // As logged in a real run (docs/e2e/e2e-history-offline-0.4.0-logos.test-unfunded.out).
+    const std::string payer = "605134f405356b008c981d10d518fb0eab27cc9ee08580251a2ece452e6e61ec";
+    const auto f = parse_funding_detail(payer + " needs 182800000 native (1000000 price + 181800000 fee reserve); it holds 0");
+    CHECK(f && f->payer == payer && f->needs == "182800000" && f->price == "1000000" &&
+          f->reserve == "181800000" && f->holds == "0");
+    const auto unknown = parse_funding_detail(payer + " needs 5 native (1 price + 4 fee reserve)");
+    CHECK(unknown && unknown->needs == "5" && unknown->holds.empty());
+    CHECK(!parse_funding_detail(payer.substr(1) + " needs 5 native (1 price + 4 fee reserve)"));   // short payer
+    CHECK(!parse_funding_detail(payer + "a needs 5 native (1 price + 4 fee reserve)"));            // long payer
+    CHECK(!parse_funding_detail(payer + " needs  native (1 price + 4 fee reserve)"));              // no amount
+    CHECK(!parse_funding_detail(payer + " needs 5 native (1 price + 4 fee reserve"));              // cut short
+    CHECK(!parse_funding_detail("waiting for the wallet"));
+    CHECK(!parse_funding_detail(""));
 }
 
 TEST(a_flood_of_unsigned_wants_costs_one_count_per_window) {

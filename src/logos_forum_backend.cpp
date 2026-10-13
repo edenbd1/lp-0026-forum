@@ -15,7 +15,6 @@
 #include <QNetworkInterface>
 #include <QProcess>
 #include <QRandomGenerator>
-#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QUrl>
 #include <QVariant>
@@ -36,6 +35,7 @@
 #endif
 
 #include "forum/dns.h"
+#include "forum/rln.h"
 
 #include "logos_sdk.h"
 #include "logos_types.h"
@@ -1048,15 +1048,11 @@ void LogosForumBackend::membershipAnswered(const QJsonObject& o) {
     const QString step = prov.value(QLatin1String("step")).toString();
     const QString detail = prov.value(QLatin1String("detail")).toString();
     if (step == QLatin1String("awaiting_funding")) {
-        // "<payer> needs <n> native (<price> price + <reserve> fee reserve); it holds <m>"
-        static const QRegularExpression re(
-            QStringLiteral("^([0-9a-fA-F]{64}) needs ([0-9]+) native \\(([0-9]+) price \\+ ([0-9]+) fee reserve\\)(?:; it holds ([0-9]+))?"));
-        const auto m = re.match(detail);
-        if (m.hasMatch()) {
-            rlnPayer_ = m.captured(1);
-            rlnNeeds_ = m.captured(2);
-            rlnPrice_ = m.captured(3);
-            rlnHolds_ = m.captured(5);
+        if (const auto f = forum::parse_funding_detail(s(detail))) {
+            rlnPayer_ = q(f->payer);
+            rlnNeeds_ = q(f->needs);
+            rlnPrice_ = q(f->price);
+            rlnHolds_ = q(f->holds);
         }
         setRln(QStringLiteral("funding"), detail);
     } else if (step == QLatin1String("registering") || step == QLatin1String("done")) {
