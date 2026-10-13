@@ -12,6 +12,7 @@
 #pragma once
 
 #include "forum/identity.h"
+#include "forum/intake.h"
 #include "forum/post.h"
 #include "forum/store.h"
 
@@ -143,8 +144,17 @@ public:
     // future is refused: its author chose the date, and a far-future one would
     // pin it at the top and poison history requests. A snapshot announcement
     // is passed to `on_snapshot` only if it answers a request this node made.
-    bool receive(const std::string& payload, uint64_t now_ms);
+    //
+    // `from` says which budget a post is charged to (see intake.h): Live for
+    // what arrives on the topic, History for a store node's archive. A bundle
+    // is History only when it answers a request of ours that is still open.
+    // A payload larger than kMaxPayloadBytes is dropped before it is parsed.
+    bool receive(const std::string& payload, uint64_t now_ms, Origin from = Origin::Live);
+    static constexpr size_t kMaxPayloadBytes = 160 * 1024;
     static constexpr uint64_t kMaxClockSkewMs = 10 * 60 * 1000;
+    // What this node agrees to store from the network, per hour of arrival.
+    const Intake& intake() const { return intake_; }
+    void set_intake_limits(const IntakeLimits& l) { intake_ = Intake(l); }
     // How many history requests made this node count its posts: at most one
     // per kLookupEveryMs, however many requests arrive.
     static constexpr uint64_t kLookupEveryMs = 1000;
@@ -174,8 +184,10 @@ public:
     // post in it exactly as if it had arrived live — a snapshot is a bundle of
     // signed posts, not a source of trust. Returns how many were new.
     std::string snapshot() const;
-    // `valid`, if given, receives its well-signed posts of this forum, new or not.
-    int import_snapshot(const std::string& doc, uint64_t now_ms, std::vector<Post>* valid = nullptr);
+    // `valid`, if given, receives its well-signed posts of this forum that are
+    // now stored, new or not; `refused`, those an intake budget turned away.
+    int import_snapshot(const std::string& doc, uint64_t now_ms, std::vector<Post>* valid = nullptr,
+                        Origin from = Origin::History, std::vector<Post>* refused = nullptr);
 
     // Announce a snapshot stored under `cid` on the forum's topic, so peers who
     // were away for longer than the network keeps history can fetch it.
@@ -281,7 +293,9 @@ public:
 
 private:
     std::string compose(Post p, Account* as, const std::string& alias, uint64_t now_ms);
-    bool accept(const Post& p, uint64_t now_ms);
+    // 1: stored, 0: not stored (duplicate, foreign, future-dated), -1: refused by a budget.
+    int accept(const Post& p, uint64_t now_ms, Origin from, size_t bytes);
+    Intake intake_;
     // What Delivery answers have cost this hour, and when someone last sent
     // history bundles here (then there is no need for us to send ours).
     uint64_t budget_since_ms_ = 0;

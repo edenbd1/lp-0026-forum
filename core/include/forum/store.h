@@ -48,6 +48,8 @@ public:
     // True if the post was new; false if its id was already stored.
     bool put(const Post& p, uint64_t received_ms);
     bool has(const std::string& id) const;
+    // Whether the store holds a post of `forum` signed by `author`.
+    bool has_author(const std::string& forum, const PublicKey& author) const;
     std::optional<Post> get(const std::string& id) const;
 
     // Topics of a forum, most recently active first.
@@ -70,10 +72,6 @@ public:
     // At most `limit`, read without loading the rest.
     std::vector<Post> recent(const std::string& forum, uint64_t since_ms, uint64_t before_ts,
                              const std::string& after_id, size_t limit) const;
-
-    // The connection, for tables kept beside the posts (attachments,
-    // reactions, the search index).
-    sqlite3* handle() const { return db_; }
 
     // Many writes as one commit (a history import), instead of one each.
     class Batch {
@@ -109,6 +107,11 @@ public:
     // Flush the write-ahead log into the database so a replaced or deleted key
     // does not linger in it (deleted content is zeroed: secure_delete is on).
     void scrub();
+
+    // The open database, for the parts of the core that keep tables of their
+    // own in the same file (moderation, groups, attachments, reactions, the
+    // search index).
+    sqlite3* handle() const { return db_; }
 
 private:
     sqlite3* db_ = nullptr;

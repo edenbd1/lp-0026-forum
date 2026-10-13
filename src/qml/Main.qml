@@ -25,6 +25,17 @@ Item {
     readonly property var rln: { try { return JSON.parse(rlnJson) } catch (e) { return ({}) } }
     // Posting waits on the membership (the posts are kept, not refused).
     readonly property bool rlnBlocks: rln.on === true && rln.phase !== "active" && rln.phase !== "quota"
+    // The forum shown: the public one (id "") or a private one joined from an
+    // invite (ForumSwitcher.qml, PrivateForums.qml).
+    readonly property string forumsJson:    backend && backend.forumsJson !== undefined ? backend.forumsJson : "[]"
+    readonly property string currentForum:  backend && backend.currentForum !== undefined ? backend.currentForum : ""
+    readonly property var forums: { try { var f = JSON.parse(forumsJson); return f.length ? f : [{ id: "", name: forumName, private: false, current: true }] } catch (e) { return [] } }
+    readonly property bool isPrivate: currentForum !== ""
+    readonly property string currentForumName: forumNameOf(currentForum)
+    function forumNameOf(id) { var f = forums.find(function (x) { return x.id === id }); return f ? f.name : forumName }
+    function plainOrError(r) { if (r === "" ) { lastError = ""; return true } lastError = r.replace(/^error: /, ""); return false }
+    function closeThread() { openId = ""; openTopic = null; openReplies = [] }
+    onCurrentForumChanged: { closeThread(); refreshTopics() }
 
     property var topics: []
     property var accounts: []
@@ -347,6 +358,10 @@ Item {
                 : "· waiting for the network, will retry"
             color: root.warn; font.pixelSize: 12
         }
+        PostActions {
+            app: root; post: parent.post
+            onHidden: if (root.openTopic && post && post.id === root.openTopic.id) root.closeThread()
+        }
     }
 
     // The main action button: a dark button outlined in a bright version of
@@ -479,12 +494,13 @@ Item {
                     // too short for it; the version takes whatever is left.
                     Text { id: titleText
                            Layout.maximumWidth: Math.ceil(titleMetrics.advanceWidth) + 1; Layout.minimumWidth: 0; Layout.fillWidth: true; elide: Text.ElideRight
-                           text: root.forumName; textFormat: Text.PlainText; color: root.text; font.pixelSize: root.compact ? 18 : 20; font.bold: true
+                           text: root.currentForumName; textFormat: Text.PlainText; color: root.text; font.pixelSize: root.compact ? 18 : 20; font.bold: true
                            TextMetrics { id: titleMetrics; font: titleText.font; text: titleText.text } }
                     Dim { Layout.fillWidth: true; Layout.minimumWidth: implicitWidth; text: "v" + root.appVersion; wrapMode: Text.NoWrap }
                 }
                 Dim { Layout.fillWidth: true; wrapMode: root.phone ? Text.Wrap : Text.NoWrap; elide: Text.ElideRight
-                      text: "No server · every post signed and verified · Logos Delivery + Logos Storage" }
+                      text: root.isPrivate ? "Private · members only · every post signed, then sealed with the invite's key"
+                                           : "No server · every post signed and verified · Logos Delivery + Logos Storage" }
             }
             RowLayout {
                 Layout.fillWidth: root.narrow
@@ -502,6 +518,7 @@ Item {
                 Item { visible: root.narrow && !root.phone; Layout.fillWidth: true }
             }
         }
+        ForumSwitcher { Layout.fillWidth: true; app: root; dialogs: privateForums }
         // Node status, what is waiting to go out, and where history came from.
         RowLayout {
             Layout.fillWidth: true
@@ -679,7 +696,9 @@ Item {
                         y: Math.max(30, (welcomeScroll.height - implicitHeight) / 2)
                         spacing: 14
                         Text { Layout.fillWidth: true; wrapMode: Text.WrapAtWordBoundaryOrAnywhere; textFormat: Text.PlainText
-                               text: "Welcome to " + root.forumName; color: root.text; font.pixelSize: 18; font.bold: true }
+                               text: "Welcome to " + root.currentForumName; color: root.text; font.pixelSize: 18; font.bold: true }
+                        Label2 { Layout.fillWidth: true; color: root.dim; visible: root.isPrivate
+                                 text: "A private forum. Only people holding its invite can read it: posts are signed as usual, then sealed before they leave this device, on a topic of their own. The network still sees that sealed messages pass, when, and roughly how big." }
                         Label2 { Layout.fillWidth: true; color: root.dim
                                  text: "There is no server here. Posts travel peer to peer over Logos Delivery, history is shared through Logos Storage, and every post is signed. The ✓ next to an author means this app checked the signature itself." }
                         Repeater {
@@ -824,6 +843,8 @@ Item {
     }
 
     // ── Dialogs ───────────────────────────────────────────────────────────────
+
+    PrivateForums { id: privateForums; app: root }
 
     Dialog {
         id: newTopic

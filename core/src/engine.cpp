@@ -49,6 +49,11 @@ int64_t int_at(const json& j, const char* k) {
     const auto it = j.find(k);
     return it != j.end() && it->is_number_integer() ? it->get<int64_t>() : 0;
 }
+// The forum an outbox payload (an encoded post) belongs to; "" if unreadable.
+std::string forum_of(const std::string& payload) {
+    const json j = json::parse(payload, nullptr, false);
+    return j.is_object() ? str_at(j, "forum") : std::string();
+}
 // A clock before 2020 is a test's clock, not a real one: no date check then.
 constexpr uint64_t kRealClockMs = 1577836800000ull;
 } // namespace
@@ -320,6 +325,9 @@ int Engine::pump(uint64_t now_ms) {
         ++sent;
     }
     for (const auto& item : store_.due(now_ms)) {
+        // The outbox is shared by every forum in this store (the public one
+        // and each private group): only this forum's posts go on its topic.
+        if (forum_of(item.payload) != forum_) continue;
         if (!limiter_.take(now_ms)) break;  // paced, not dropped: it stays due
         const SendResult r = net_.send(topic_, item.payload);
         if (r.ok) {
@@ -334,7 +342,10 @@ int Engine::pump(uint64_t now_ms) {
     return sent;
 }
 
-bool Engine::receive(const std::string& payload, uint64_t now_ms) {
+bool Engine::receive(const std::string& payload, uint64_t now_ms, Origin from) {
+    // Nothing a forum sends is this large (Delivery itself caps a message at
+    // 150 KiB): not even parsed.
+    if (payload.size() > kMaxPayloadBytes) return false;
     const auto p = decode(payload);
     if (!p) {
         // Not a post: perhaps a peer pointing at a history snapshot. It is
@@ -424,9 +435,15 @@ bool Engine::receive(const std::string& payload, uint64_t now_ms) {
         // History sent as bundles over Delivery: the snapshot format, carried
         // inline. Every post in it is checked as if it had arrived alone.
         if (a.is_object() && int_at(a, kSnapshotTag) == 1 && str_at(a, "forum") == forum_) {
-            std::vector<Post> valid;
-            const int added = import_snapshot(payload, now_ms, &valid);
             const std::string re = str_at(a, "re");
+            // History only when it answers a request of ours that is still
+            // open: anyone can send a bundle, and one nobody here asked for is
+            // charged like the posts it carries would be, live.
+            const auto asked = asked_.find(re);
+            const bool ours = !re.empty() && asked != asked_.end() && now_ms <= asked->second.closes_ms;
+            std::vector<Post> valid, refused;
+            const int added = import_snapshot(payload, now_ms, &valid,
+                                              from == Origin::History || ours ? Origin::History : Origin::Live, &refused);
             // Someone else answered the request we were about to answer: stand
             // down only if they sent everything our own first page would have
             // carried. Anything less (empty, forged, a replay of a few posts)
@@ -437,6 +454,7 @@ bool Engine::receive(const std::string& payload, uint64_t now_ms) {
                 // times our page's.
                 std::set<std::string> got;
                 for (const auto& p : valid) got.insert(p.id());
+                for (const auto& p : refused) got.insert(p.id());
                 bool covers = true;
                 for (const auto& id : first_page_ids(*pending_, now_ms)) covers = covers && got.count(id) > 0;
                 if (covers) pending_.reset();
@@ -445,10 +463,28 @@ bool Engine::receive(const std::string& payload, uint64_t now_ms) {
             // where the next page starts. That is worked out from the verified
             // posts in it, never taken from the unsigned fields.
             const auto mine = asked_.find(re);
+            // Posts our budget turned away must not be paged past: the next
+            // page starts above the first of them (newest first, ties by id),
+            // and they come again once the budget has room.
+            if (!refused.empty()) {
+                const Post* first = &refused.front();
+                for (const auto& p : refused)
+                    if (p.ts_ms > first->ts_ms || (p.ts_ms == first->ts_ms && p.id() < first->id())) first = &p;
+                const uint64_t fts = first->ts_ms;
+                const std::string fid = first->id();
+                valid.erase(std::remove_if(valid.begin(), valid.end(), [&](const Post& p) {
+                                return !(p.ts_ms > fts || (p.ts_ms == fts && p.id() < fid));
+                            }), valid.end());
+            }
+            if (mine != asked_.end() && now_ms <= mine->second.closes_ms && !refused.empty()) {
+                // The backlog is not done while part of it waits for room.
+                mine->second.answered = true;
+                mine->second.more = true;
+            }
             if (mine != asked_.end() && now_ms <= mine->second.closes_ms && !valid.empty()) {
                 mine->second.answered = true;
                 const auto more = a.find("more");
-                if (more != a.end() && more->is_boolean() && more->get<bool>()) {
+                if ((more != a.end() && more->is_boolean() && more->get<bool>()) || !refused.empty()) {
                     mine->second.more = true;
                     const Post* last = &valid.front();
                     for (const auto& p : valid)
@@ -488,31 +524,37 @@ bool Engine::receive(const std::string& payload, uint64_t now_ms) {
         }
         return false;
     }
-    return accept(*p, now_ms);
+    return accept(*p, now_ms, from, payload.size()) > 0;
 }
 
-bool Engine::accept(const Post& p, uint64_t now_ms) {
-    if (p.forum != forum_) return false;
-    if (now_ms >= kRealClockMs && p.ts_ms > now_ms + kMaxClockSkewMs) return false;  // dated in the future
-    // A reply to a topic we do not have yet is still kept: the topic may arrive
-    // later, from another peer or from history, and the reply attaches then.
-    if (!store_.put(p, now_ms)) {
+int Engine::accept(const Post& p, uint64_t now_ms, Origin from, size_t bytes) {
+    if (p.forum != forum_) return 0;
+    if (now_ms >= kRealClockMs && p.ts_ms > now_ms + kMaxClockSkewMs) return 0;  // dated in the future
+    // A copy of a post we hold costs no budget: replaying it changes nothing.
+    const std::string id = p.id();
+    if (store_.has(id)) {
         // Known already, perhaps without its images (a peer that does not
         // keep manifests relayed it): this copy's manifest is the signed one.
-        if (!p.att.empty() && att_->put(p.id(), p.att) && on_post) on_post(p, p.id());
-        return false;
+        // Written once at most (the manifest must hash to the signed line).
+        if (!p.att.empty() && att_->put(id, p.att) && on_post) on_post(p, id);
+        return 0;
     }
-    if (!p.att.empty()) att_->put(p.id(), p.att);
+    // Charged on arrival time (now_ms), never on the post's own date.
+    if (intake_.admit(p, store_.has_author(forum_, p.author), from, now_ms, bytes) != Intake::Verdict::Ok) return -1;
+    // A reply to a topic we do not have yet is still kept: the topic may arrive
+    // later, from another peer or from history, and the reply attaches then.
+    if (!store_.put(p, now_ms)) return 0;
+    if (!p.att.empty()) att_->put(id, p.att);
     ++posts_received_;
     counted_ = false;
-    if (on_post) on_post(p, p.id());
-    return true;
+    if (on_post) on_post(p, id);
+    return 1;
 }
 
 int Engine::catch_up(uint64_t now_ms) {
     int added = 0;
     for (const auto& m : net_.history(topic_))
-        if (receive(m, now_ms)) ++added;
+        if (receive(m, now_ms, Origin::History)) ++added;
     return added;
 }
 
@@ -543,7 +585,8 @@ std::string Engine::snapshot() const {
     return json{{kSnapshotTag, 1}, {"forum", forum_}, {"posts", posts}, {"reactions", reactions}}.dump();
 }
 
-int Engine::import_snapshot(const std::string& doc, uint64_t now_ms, std::vector<Post>* valid) {
+int Engine::import_snapshot(const std::string& doc, uint64_t now_ms, std::vector<Post>* valid, Origin from,
+                            std::vector<Post>* refused) {
     const json s = json::parse(doc, nullptr, false);
     if (!s.is_object() || int_at(s, kSnapshotTag) != 1 || str_at(s, "forum") != forum_) return 0;
     const auto it = s.find("posts");
@@ -554,9 +597,16 @@ int Engine::import_snapshot(const std::string& doc, uint64_t now_ms, std::vector
     int added = 0;
     for (const auto& m : *it) {
         if (!m.is_string()) continue;
-        const auto p = decode(m.get<std::string>());
-        if (p && p->forum == forum_ && valid) valid->push_back(*p);
-        if (p && accept(*p, now_ms)) ++added;
+        const std::string& e = m.get_ref<const std::string&>();
+        const auto p = decode(e);
+        if (!p || p->forum != forum_) continue;
+        const int r = accept(*p, now_ms, from, e.size());
+        if (r < 0) {
+            if (refused) refused->push_back(*p);
+            continue;
+        }
+        if (valid) valid->push_back(*p);
+        if (r > 0) ++added;
     }
     // Then the reactions on them (a 0.3.x node ignores this field). Capped
     // per document: they cost a signature check each, like the posts.
@@ -573,6 +623,9 @@ int Engine::import_snapshot(const std::string& doc, uint64_t now_ms, std::vector
 
 std::string Engine::request_history(uint64_t now_ms, bool via_delivery) {
     if (!session_start_ms_) session_start_ms_ = now_ms;
+    // No point asking for pages the history budget would turn away: the
+    // cursor waits, and the next request after the budget refills resumes it.
+    if (!intake_.history_room(now_ms)) return {};
     uint64_t since = 0;
     if (via_delivery) {
         // Ask for what is newer than what we held when this session began,
@@ -620,6 +673,8 @@ void Engine::stand_down(const std::string& re) {
 }
 
 void Engine::tick(uint64_t now_ms) {
+    if (follow_up_for_ && now_ms >= follow_up_due_ms_ && !intake_.history_room(now_ms))
+        follow_up_due_ms_ = now_ms + kDeliveryAnswerEveryMs;  // the page waits for room, it is not dropped
     if (follow_up_for_ && now_ms >= follow_up_due_ms_) {
         follow_up_for_.reset();
         ++follow_ups_;

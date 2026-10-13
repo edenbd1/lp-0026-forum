@@ -3,6 +3,9 @@
 #include "forum/dns.h"
 #include "forum/engine.h"
 #include "forum/identity.h"
+#include "forum/group.h"
+#include "forum/intake.h"
+#include "forum/moderation.h"
 #include "forum/store.h"
 #include "forum/post.h"
 #include "forum/rln.h"
@@ -13,6 +16,9 @@
 #include "compat_v036.h"
 
 #include <nlohmann/json.hpp>
+#include <sodium.h>
+
+#include <cstring>
 
 #include <chrono>
 #include <cstdio>
@@ -1629,6 +1635,10 @@ TEST(search_skips_the_image_line_and_hidden_authors) {
     const auto hits = s.find("Logos Forum", "cat", 50, [&](const PublicKey& k) { return k == muted.key.pk; });
     CHECK(hits.size() == 1 && hits[0].title == "Cat");
 }
+
+#include "intake_tests.inc"
+#include "moderation_tests.inc"
+#include "group_tests.inc"
 
 int main() {
     for (auto& t : all()) {

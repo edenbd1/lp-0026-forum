@@ -27,6 +27,30 @@ class LogosForum
     // across restarts. `unread` in listTopics is activity after that point.
     SLOT(QString markRead(QString topicId))
 
+    // ── Private forums ────────────────────────────────────────────────────────
+    // The public forum has id ""; a private group, the id from forumsJson.
+    // listTopics, thread, createTopic and reply act on the selected forum.
+    // A group's posts are sealed before they reach the network, on a topic
+    // public nodes never subscribe to. Each returns "" or "error: …", except
+    // createGroup and groupInvite, which return the invite
+    // (logosforum://join/…) or "error: …".
+    SLOT(QString selectForum(QString id))
+    SLOT(QString createGroup(QString name))
+    SLOT(QString joinGroup(QString invite))
+    // Leaving deletes the group's secret and posts from this device.
+    SLOT(QString leaveGroup(QString id))
+    SLOT(QString groupInvite(QString id))
+
+    // ── Moderation, for this reader only ──────────────────────────────────────
+    // By key (64 hex characters, as authorKey) or post id; stored on this
+    // device for the selected account, never sent. moderationList:
+    // {muted:[{key,at}], hidden:[{id,at,title}]}.
+    SLOT(QString muteAuthor(QString key))
+    SLOT(QString unmuteAuthor(QString key))
+    SLOT(QString hidePost(QString id))
+    SLOT(QString unhidePost(QString id))
+    SLOT(QString moderationList())
+
     // ── Accounts ──────────────────────────────────────────────────────────────
     // Accounts are Ed25519 keys kept in this install's store. Each slot returns
     // "" or an error, and re-publishes accountsJson / myLabel / myKey.
@@ -115,6 +139,9 @@ class LogosForum
     // is the LEZ account that would pay for the membership; `retry` is true
     // when retryMembership() can do something.
     PROP(QString rlnJson="{}" READONLY)
+    // [{id,name,private,current}]: the public forum first, then joined groups.
+    PROP(QString forumsJson="[]" READONLY)
+    PROP(QString currentForum="" READONLY)
 
     // A post was stored — ours or a peer's. `topicId` is the thread it belongs
     // to (its own id for a topic).
