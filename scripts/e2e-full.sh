@@ -43,6 +43,10 @@ click_ax() {
   [ -n "$pos" ] || return 1
   front "$1"; IFS=, read -r x y w h <<< "$pos"; cliclick "c:$((x + w / 2)),$((y + h / 2))"
 }
+open_first_topic() {  # the most recently active topic: the first row, just under the search field
+  front "$1"; local pos; pos=$(ui "$1" 'get {position, size} of (first text field of group 1 of window 1 whose description is "Search posts on this device")' | tr -d ' ')
+  IFS=, read -r x y w h <<< "$pos"; cliclick "c:$((x + 60)),$((y + h + 30))"
+}
 click_in_window() { front "$1"; local pos; pos=$(ui "$1" 'get position of window 1' | tr -d ' '); IFS=, read -r x y <<< "$pos"; cliclick "c:$((x + $2)),$((y + $3))"; }
 key() { osascript -e "tell application \"System Events\" to key code $1"; }
 db() { sqlite3 "$1/module_data/logos_forum/forum.db" "$2" 2> /dev/null || true; }
@@ -111,7 +115,7 @@ new_topic() {  # new_topic <pid> <title> <body> <mode> [alias]
   sleep 0.5; click_ax "$1" 'button "Post" of group 1 of window 1' || fail "no Post button"; sleep 2
 }
 reply_top() {  # reply_top <pid> <body> <mode> [alias]: reply to the most recently active topic
-  click_in_window "$1" 200 250; sleep 1.5
+  open_first_topic "$1"; sleep 1.5
   ui "$1" "set value of text field -1 of group 1 of window 1 to \"$2\"" > /dev/null
   pick_mode "$1" "$3"
   [ "$3" = 1 ] && ui "$1" "set value of text field -1 of group 1 of window 1 to \"$4\"" > /dev/null
@@ -121,7 +125,8 @@ new_account() {  # new_account <pid> <label> <user dir>: created and selected, c
   local i
   for i in 1 2 3; do
     open_dialog "$1" "Accounts…" 'button "Create"'
-    ui "$1" "set value of text field -1 of group 1 of window 1 to \"$2\"" > /dev/null; sleep 0.3
+    # By its name: the dialog also holds the passphrase and restore fields.
+    ui "$1" "set value of (first text field of group 1 of window 1 whose description is \"new account name\") to \"$2\"" > /dev/null; sleep 0.3
     click_ax "$1" 'button "Create" of group 1 of window 1' || fail "no Create button"; sleep 1.5
     click_ax "$1" 'button "Close" of group 1 of window 1'; sleep 0.6
     [ "$(db "$3" "select count(*) from accounts where label='$2' and selected=1")" = 1 ] && return 0
