@@ -4,6 +4,7 @@
 #include "forum/engine.h"
 #include "forum/identity.h"
 #include "forum/intake.h"
+#include "forum/moderation.h"
 #include "forum/store.h"
 #include "forum/post.h"
 #include "forum/rln.h"
@@ -1158,6 +1159,7 @@ TEST(a_deeply_nested_or_oversized_message_is_dropped_without_harm) {
 }
 
 #include "intake_tests.inc"
+#include "moderation_tests.inc"
 
 int main() {
     for (auto& t : all()) {

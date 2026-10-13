@@ -108,6 +108,10 @@ public:
     // does not linger in it (deleted content is zeroed: secure_delete is on).
     void scrub();
 
+    // The open database, for the parts of the core that keep tables of their
+    // own in the same file (moderation, groups).
+    sqlite3* handle() const { return db_; }
+
 private:
     sqlite3* db_ = nullptr;
     void exec(const char* sql);
