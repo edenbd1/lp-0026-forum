@@ -197,14 +197,16 @@ TEST(titles_aliases_and_bodies_over_their_caps_are_refused_on_receipt) {
 }
 
 TEST(a_clock_stepping_back_does_not_widen_the_budget) {
-    // Ten topics now, the clock steps back an hour, ten more, the clock comes
-    // back: the ten from the "past" were charged now, so none is left.
+    // The clock reads now, steps back an hour, alice posts twenty topics,
+    // the clock comes back: those twenty were charged now, not an hour ago,
+    // so the window is still full.
     using namespace intake_tests;
-    Node n; Account alice{"alice", Keypair::generate()}; make_known(n.store, alice);
+    Node n; Account alice{"alice", Keypair::generate()}, bob{"bob", Keypair::generate()};
+    make_known(n.store, alice); make_known(n.store, bob);
+    CHECK(n.live(author_as(bob, topic_at("now", kNow)), kNow));
     int stored = 0;
-    for (int i = 0; i < 10; ++i) stored += n.live(author_as(alice, topic_at("a" + std::to_string(i), kNow)), kNow);
-    for (int i = 0; i < 10; ++i) stored += n.live(author_as(alice, topic_at("b" + std::to_string(i), kNow)), kNow - kHour + 1);
-    for (int i = 0; i < 10; ++i) stored += n.live(author_as(alice, topic_at("c" + std::to_string(i), kNow)), kNow + 1);
+    for (int i = 0; i < 20; ++i) stored += n.live(author_as(alice, topic_at("b" + std::to_string(i), kNow)), kNow - kHour);
+    for (int i = 0; i < 20; ++i) stored += n.live(author_as(alice, topic_at("c" + std::to_string(i), kNow)), kNow + 1);
     CHECK(stored == 20);
 }
 
@@ -230,4 +232,18 @@ TEST(a_page_cut_short_by_the_budget_resumes_above_its_first_refused_post) {
     const auto want = nlohmann::json::parse(bus.log.back());
     CHECK(want.value("until", uint64_t{0}) == posts[4].ts_ms);
     CHECK(want.value("until_id", std::string()) == posts[4].id());
+    // A refused post newer than kept ones (too big for the bytes left): the
+    // next page starts above it, so it is asked for again.
+    Bus bus2; FakeNet c(bus2); Store sc(":memory:"); Engine ec(sc, c, "Logos Forum"); c.engine = &ec;
+    IntakeLimits lb; lb.history_bytes = 5000; ec.set_intake_limits(lb);
+    const std::string re2 = ec.request_history(1'000'000, true);
+    for (int i = 0; i < 10; ++i) { posts[i].body = i == 2 ? std::string(4800, 'x') : "small"; sign(posts[i], alice.key.sk); }
+    doc["re"] = re2; doc["posts"] = nlohmann::json::array();
+    for (const auto& p : posts) doc["posts"].push_back(encode(p));
+    ec.receive(doc.dump(), 1'000'100);
+    CHECK(sc.count() == 9);
+    ec.tick(1'000'100 + 70'000);
+    const auto want2 = nlohmann::json::parse(bus2.log.back());
+    CHECK(want2.value("until", uint64_t{0}) == posts[1].ts_ms);
+    CHECK(want2.value("until_id", std::string()) == posts[1].id());
 }
