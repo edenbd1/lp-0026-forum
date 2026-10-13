@@ -376,6 +376,7 @@ bool Engine::accept(const Post& p, uint64_t now_ms) {
     // A reply to a topic we do not have yet is still kept: the topic may arrive
     // later, from another peer or from history, and the reply attaches then.
     if (!store_.put(p, now_ms)) return false;
+    ++posts_received_;
     counted_ = false;
     if (on_post) on_post(p, p.id());
     return true;

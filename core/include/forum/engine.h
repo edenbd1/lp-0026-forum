@@ -138,6 +138,9 @@ public:
     // per kLookupEveryMs, however many requests arrive.
     static constexpr uint64_t kLookupEveryMs = 1000;
     uint64_t history_lookups() const { return history_lookups_; }
+    // How many new posts receive() and import_snapshot() have stored, so an
+    // embedder learns what a message added without counting the store.
+    uint64_t posts_received() const { return posts_received_; }
 
     // Pull history from the network and merge it. Returns how many new posts.
     int catch_up(uint64_t now_ms);
@@ -282,6 +285,7 @@ private:
     std::vector<std::string> provider_addrs_;
     bool answered_[2] = {false, false};
     uint64_t history_lookups_ = 0;
+    uint64_t posts_received_ = 0;
     bool counted_ = false;
     uint64_t counted_ms_ = 0;
     size_t ours_ = 0;

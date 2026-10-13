@@ -1116,6 +1116,27 @@ TEST(an_alias_cannot_hide_or_reorder_what_is_shown_next_to_it) {
     CHECK(display_alias("\xF3\xA0\x80\x81tag") == "tag");                         // U+E0001 language tag
 }
 
+TEST(what_a_message_added_is_known_without_counting_the_store) {
+    // The plugin reports what each message added. Counting the store before
+    // and after would cost two queries per message, for any message a
+    // stranger sends; the engine keeps the number instead.
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    Account alice{"alice", Keypair::generate()};
+    const std::string one = encode(author_as(alice, topic("one")));
+    CHECK(ea.posts_received() == 0);
+    ea.receive(one, 1);
+    ea.receive(one, 2);                                         // a duplicate adds nothing
+    ea.receive(R"({"logos-forum-want":1,"forum":"Logos Forum","have":0,"id":"w"})", 3);
+    CHECK(ea.posts_received() == 1);
+    nlohmann::json doc{{"logos-forum-snapshot", 1}, {"forum", "Logos Forum"}, {"posts", {one}}};
+    for (int i = 0; i < 3; ++i) doc["posts"].push_back(encode(author_as(alice, topic("b" + std::to_string(i)))));
+    ea.receive(doc.dump(), 4);
+    CHECK(ea.posts_received() == 4 && sa.count() == 4);
+    ea.post_topic(&alice, "mine", "b", "", 5);                  // our own posts are not received
+    CHECK(ea.posts_received() == 4);
+}
+
 int main() {
     for (auto& t : all()) {
         const int before = failures;

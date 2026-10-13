@@ -398,9 +398,11 @@ void LogosForumBackend::wireDelivery() {
         if (data.at(1).toString() != contentTopic()) return;  // another app's traffic
         guarded("received message", [&]() {
             const std::string payload = data.at(2).toByteArray().toStdString();
-            const size_t before = store_->count();
+            // What it added, from the engine: counting the store before and
+            // after would cost two queries for any message anyone sends.
+            const uint64_t before = engine_->posts_received();
             engine_->receive(payload, now_ms());
-            const size_t added = store_->count() - before;
+            const size_t added = static_cast<size_t>(engine_->posts_received() - before);
             countActivity(payload, added > 0 && payload.find("\"logos-forum-snapshot\"") == std::string::npos);
             if (payload.find("\"logos-forum-snapshot\"") != std::string::npos) {
                 log("received a history bundle: " + std::to_string(added) + " new");
