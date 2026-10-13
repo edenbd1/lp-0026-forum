@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Accounts: keys at rest, backup and restore, replies to you. Included by
 // tests.cpp, whose TEST/CHECK, topic(), Bus and FakeNet these use.
+#include "forum/group.h"
 #include "forum/inbox.h"
+#include "forum/moderation.h"
 #include "forum/keystore.h"
 #include "forum/recovery.h"
 
@@ -560,4 +562,78 @@ TEST(the_inbox_read_mark_survives_a_restart_and_goes_with_its_account) {
     CHECK(s.inbox_read("a") == 777 && s.inbox_read("b") == 0);
     s.remove_account("a");
     CHECK(s.inbox_read("a") == 0);
+}
+
+// ─── With private forums and moderation ──────────────────────────────────────
+
+TEST(a_passphrase_seals_every_private_forums_secret_too) {
+    TempDir dir;
+    Group g = *Group::create("Core contributors");
+    {
+        Store s(dir.db()); Keystore keys(s); Groups groups(s, &keys);
+        keys.save(Account{"me", Keypair::generate(), 1}, true);
+        CHECK(groups.save(g, 1));
+        CHECK(on_disk(dir.db(), g.secret.data(), g.secret.size()));   // the control: plain until a passphrase is set
+        CHECK(keys.protect("passphrase", KdfParams::fastest()));
+        CHECK(groups.all().size() == 1 && groups.all()[0].secret == g.secret);   // still open this session
+    }
+    CHECK(!on_disk(dir.db(), g.secret.data(), g.secret.size()));
+    Store s(dir.db()); Keystore keys(s); Groups groups(s, &keys);
+    CHECK(groups.all().empty());                                     // locked: no private forum opens
+    CHECK(!groups.save(*Group::create("another"), 2));               // nor can one be joined in plain text
+    CHECK(keys.unlock("passphrase") == Unlock::Ok);
+    const auto open = groups.all();
+    CHECK(open.size() == 1 && open[0].secret == g.secret && open[0].forum_id() == g.forum_id());
+    Group h = *Group::create("second");
+    CHECK(groups.save(h, 3));
+    CHECK(!on_disk(dir.db(), h.secret.data(), h.secret.size()));    // joined while unlocked: sealed at once
+    CHECK(keys.unprotect("passphrase") && groups.all().size() == 2);
+}
+
+TEST(a_sealed_private_forum_secret_cannot_be_moved_to_another_forum) {
+    Store s(":memory:"); Keystore keys(s); Groups groups(s, &keys);
+    keys.save(Account{"me", Keypair::generate(), 1}, true);
+    Group a = *Group::create("a"), b = *Group::create("b");
+    groups.save(a, 1); groups.save(b, 2);
+    CHECK(keys.protect("pass", KdfParams::fastest()));
+    // Swap the two sealed secrets between the rows: neither opens any more.
+    for (const char* sql : {"CREATE TEMP TABLE swap AS SELECT forum, secret FROM forum_groups",
+                            "UPDATE forum_groups SET secret = (SELECT secret FROM swap WHERE swap.forum <> forum_groups.forum)"})
+        CHECK(sqlite3_exec(s.handle(), sql, nullptr, nullptr, nullptr) == SQLITE_OK);
+    CHECK(s.account_rows().size() == 1);
+    CHECK(groups.all().empty());
+}
+
+TEST(a_plain_private_forum_secret_moved_to_another_row_is_not_opened_as_that_forum) {
+    Store s(":memory:"); Keystore keys(s); Groups groups(s, &keys);
+    Group a = *Group::create("a"), b = *Group::create("b");
+    groups.save(a, 1); groups.save(b, 2);
+    CHECK(groups.all().size() == 2);   // the control: no passphrase, both open
+    // Without a passphrase nothing binds a secret to its row: copy a's secret
+    // onto b's row, and b's row must not open as forum b with a's key.
+    CHECK(sqlite3_exec(s.handle(),
+                       "UPDATE forum_groups SET secret = (SELECT secret FROM forum_groups WHERE name = 'a') WHERE name = 'b'",
+                       nullptr, nullptr, nullptr) == SQLITE_OK);
+    const auto left = groups.all();
+    CHECK(left.size() == 1 && left[0].forum_id() == a.forum_id());
+}
+
+TEST(muted_keys_and_hidden_posts_never_reach_the_inbox) {
+    Store s(":memory:"); Moderation mod(s);
+    Account me{"me", Keypair::generate(), 1}, troll{"troll", Keypair::generate(), 1}, bob{"bob", Keypair::generate(), 1};
+    const Post mine = author_as(me, topic("mine")); s.put(mine, 1);
+    const Post other = author_as(bob, topic("bob's")); s.put(other, 2);
+    s.put(author_as(troll, reply_to(mine.id(), "noise", 1790000000100)), 10);
+    s.put(author_as(troll, topic("hey", "@" + mention_handle(me.key.pk))), 11);
+    const Post fine = author_as(bob, reply_to(mine.id(), "useful", 1790000000200)); s.put(fine, 12);
+    s.put(author_as(bob, reply_to(other.id(), "@" + mention_handle(me.key.pk), 1790000000300)), 13);
+    mod.mute("me", troll.key.pk, 20);
+    mod.hide("me", other.id(), 21);
+    std::set<PublicKey> muted;
+    for (const auto& m : mod.muted("me")) muted.insert(m.key);
+    std::set<std::string> skip;
+    for (const auto& h : mod.hidden("me")) skip.insert(h.id);
+    const auto v = inbox(s, "Logos Forum", me.key.pk, 0, skip, 200, muted);
+    CHECK(v.items.size() == 1 && v.items[0].post.id == fine.id() && v.unread == 1);
+    CHECK(inbox(s, "Logos Forum", me.key.pk, 0).items.size() == 4);   // the control: without them, all four
 }

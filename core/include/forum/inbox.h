@@ -52,9 +52,10 @@ struct InboxView {
 
 // What reached `me` in a forum: posts by other keys, received after
 // `read_upto` counted as unread. `skip` holds post ids not to list (the
-// embedder's anonymous posts of this session, kept in memory only).
+// embedder's anonymous posts of this session, kept in memory only, and the
+// posts the account hid); `muted`, keys whose posts never reach it.
 InboxView inbox(const Store& store, const std::string& forum, const PublicKey& me, uint64_t read_upto,
-                const std::set<std::string>& skip = {}, size_t limit = 200);
+                const std::set<std::string>& skip = {}, size_t limit = 200, const std::set<PublicKey>& muted = {});
 
 // Posts signed by `me` (as the account or under an alias), newest first.
 std::vector<Stored> my_posts(const Store& store, const std::string& forum, const PublicKey& me, size_t limit = 200);

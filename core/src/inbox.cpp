@@ -36,7 +36,7 @@ bool mentions(const std::string& text, const PublicKey& pk) {
 }
 
 InboxView inbox(const Store& store, const std::string& forum, const PublicKey& me, uint64_t read_upto,
-                const std::set<std::string>& skip, size_t limit) {
+                const std::set<std::string>& skip, size_t limit, const std::set<PublicKey>& muted) {
     std::set<std::string> my_topics;
     std::map<std::string, uint64_t> first_reply;  // topic id -> date of my first reply in it
     for (const auto& s : store.by_author(forum, me, kOwnPostsScanned)) {
@@ -48,7 +48,9 @@ InboxView inbox(const Store& store, const std::string& forum, const PublicKey& m
     }
     InboxView v;
     for (auto& s : store.inbox_candidates(forum, me, "@" + mention_handle(me), limit)) {
-        if (s.post.author == me || skip.count(s.id)) continue;
+        if (s.post.author == me || skip.count(s.id) || muted.count(s.post.author)) continue;
+        // A reply in a topic the account hid is hidden with it.
+        if (s.post.kind == Kind::Reply && skip.count(s.post.topic_id)) continue;
         InboxItem item;
         const bool reply = s.post.kind == Kind::Reply;
         const auto fr = reply ? first_reply.find(s.post.topic_id) : first_reply.end();

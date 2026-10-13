@@ -99,13 +99,25 @@ void LogosForumBackend::publishKeys() {
                                                {"unlocked", keys_ && keys_->is_unlocked()}})));
 }
 
+// What reached the account: without this session's anonymous posts, the
+// posts it hid and anything by a key it muted.
+forum::InboxView LogosForumBackend::inboxView(const forum::Account& sel) const {
+    std::set<std::string> skip(anonThisSession_.begin(), anonThisSession_.end());
+    std::set<forum::PublicKey> muted;
+    if (moderation_) {
+        for (const auto& h : moderation_->hidden(sel.label)) skip.insert(h.id);
+        for (const auto& m : moderation_->muted(sel.label)) muted.insert(m.key);
+    }
+    return forum::inbox(*store_, s(forumName()), sel.key.pk, store_->inbox_read(sel.label), skip, 200, muted);
+}
+
 void LogosForumBackend::publishInbox() {
     const Account* sel = store_ ? selected() : nullptr;
     if (!sel) {
         setInboxUnread(0);
         return;
     }
-    const auto v = forum::inbox(*store_, s(forumName()), sel->key.pk, store_->inbox_read(sel->label), anonThisSession_);
+    const auto v = inboxView(*sel);
     setInboxUnread(static_cast<int>(v.unread));
 }
 
@@ -121,6 +133,7 @@ QString LogosForumBackend::unlock(QString passphrase) {
     case forum::Unlock::Damaged: return QStringLiteral("the key settings in forum.db are damaged");
     }
     reloadAccounts();
+    openGroups();   // private forums sealed under the passphrase open now
     forumLog("account keys unlocked");
     return QString();
 }
@@ -214,7 +227,7 @@ QString LogosForumBackend::inbox() {
     const Account* sel = store_ ? selected() : nullptr;
     if (!sel) return QStringLiteral("{\"items\":[],\"unread\":0}");
     const auto me = selectedView();
-    const auto v = forum::inbox(*store_, s(forumName()), sel->key.pk, store_->inbox_read(sel->label), anonThisSession_);
+    const auto v = inboxView(*sel);
     std::map<std::string, QString> titles;
     QJsonArray items;
     for (const auto& i : v.items) {

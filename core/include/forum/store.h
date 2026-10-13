@@ -72,6 +72,8 @@ public:
     // True if the post was new; false if its id was already stored.
     bool put(const Post& p, uint64_t received_ms);
     bool has(const std::string& id) const;
+    // Whether the store holds a post of `forum` signed by `author`.
+    bool has_author(const std::string& forum, const PublicKey& author) const;
     std::optional<Post> get(const std::string& id) const;
 
     // Topics of a forum, most recently active first.
@@ -178,6 +180,9 @@ public:
     // How far an account has read its inbox (received time), by label.
     uint64_t inbox_read(const std::string& label) const;
     void set_inbox_read(const std::string& label, uint64_t received_ms);
+    // The open database, for the parts of the core that keep tables of their
+    // own in the same file (moderation, groups).
+    sqlite3* handle() const { return db_; }
 
 private:
     sqlite3* db_ = nullptr;

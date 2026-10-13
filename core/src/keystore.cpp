@@ -3,6 +3,8 @@
 
 #include <sodium.h>
 
+#include <sqlite3.h>
+
 #include <cstring>
 
 namespace forum {
@@ -17,6 +19,8 @@ constexpr size_t kSealedKeyBytes = 1 + kNonceBytes + 64 + kTagBytes;
 constexpr size_t kKdfBytes = 1 + 1 + 8 + 8 + kSaltBytes;
 constexpr char kKeyAd[] = "logos-forum:key:v1";
 constexpr char kCheckAd[] = "logos-forum:check:v1";
+constexpr char kSecretAd[] = "logos-forum:secret:v1:";
+constexpr size_t kGroupSecretBytes = 32;
 // What the check value seals: any constant does, its tag is what is checked.
 constexpr uint8_t kCheckPlain[32] = {'l', 'o', 'g', 'o', 's', '-', 'f', 'o', 'r', 'u', 'm', ' ', 'k', 'e', 'y', 's'};
 
@@ -94,6 +98,42 @@ SecretBytes key_ad(const PublicKey& pk) {
     SecretBytes ad(kKeyAd, kKeyAd + sizeof kKeyAd - 1);
     ad.insert(ad.end(), pk.begin(), pk.end());
     return ad;
+}
+
+SecretBytes secret_ad(const std::string& context) {
+    SecretBytes ad(kSecretAd, kSecretAd + sizeof kSecretAd - 1);
+    ad.insert(ad.end(), context.begin(), context.end());
+    return ad;
+}
+
+// The private forums' secrets, by forum id; nothing if there is no such table.
+struct GroupRow {
+    std::string forum;
+    SecretBytes secret;
+};
+std::vector<GroupRow> group_rows(const Store& s) {
+    std::vector<GroupRow> out;
+    sqlite3_stmt* q = nullptr;
+    if (sqlite3_prepare_v2(s.handle(), "SELECT forum, secret FROM forum_groups", -1, &q, nullptr) != SQLITE_OK) return out;
+    while (sqlite3_step(q) == SQLITE_ROW) {
+        GroupRow r;
+        const auto* t = sqlite3_column_text(q, 0);
+        r.forum = t ? reinterpret_cast<const char*>(t) : "";
+        const auto* b = static_cast<const uint8_t*>(sqlite3_column_blob(q, 1));
+        if (b) r.secret.assign(b, b + sqlite3_column_bytes(q, 1));
+        out.push_back(std::move(r));
+    }
+    sqlite3_finalize(q);
+    return out;
+}
+bool put_group_secret(Store& s, const std::string& forum, const SecretBytes& secret) {
+    sqlite3_stmt* q = nullptr;
+    if (sqlite3_prepare_v2(s.handle(), "UPDATE forum_groups SET secret=? WHERE forum=?", -1, &q, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_blob(q, 1, secret.data(), static_cast<int>(secret.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(q, 2, forum.data(), static_cast<int>(forum.size()), SQLITE_TRANSIENT);
+    const bool ok = sqlite3_step(q) == SQLITE_DONE;
+    sqlite3_finalize(q);
+    return ok;
 }
 
 bool check_value_opens(const Store& s, const uint8_t* key) {
@@ -205,6 +245,29 @@ bool Keystore::save(const Account& a, bool selected) {
     return store_.put_account_row(r);
 }
 
+bool Keystore::seal_secret(const std::string& context, const uint8_t* plain, size_t n, SecretBytes& out) const {
+    if (!is_protected()) {
+        out.assign(plain, plain + n);
+        return true;
+    }
+    if (!key_) return false;
+    const SecretBytes ad = secret_ad(context);
+    out = seal_bytes(key_, plain, n, ad.data(), ad.size());
+    return true;
+}
+
+bool Keystore::open_secret(const std::string& context, const SecretBytes& stored, uint8_t* plain, size_t n) const {
+    if (stored.size() == n) {   // in plain text: no passphrase, or from before one was set
+        std::memcpy(plain, stored.data(), n);
+        return true;
+    }
+    if (!key_) return false;
+    const SecretBytes ad = secret_ad(context);
+    if (open_bytes(key_, stored, plain, n, ad.data(), ad.size())) return true;
+    sodium_memzero(plain, n);
+    return false;
+}
+
 bool Keystore::protect(const std::string& passphrase, KdfParams params) {
     if (passphrase.empty()) return false;
     if (is_protected() && !key_) return false;
@@ -216,6 +279,15 @@ bool Keystore::protect(const std::string& passphrase, KdfParams params) {
     std::vector<Account> all = accounts();
     for (const auto& a : all)
         if (!matches(a.key.sk, a.key.pk)) return false;
+
+    // And every private forum's secret, in plain text or under the old key.
+    std::vector<GroupRow> groups = group_rows(store_);
+    std::vector<SecretBytes> group_plain;
+    for (const auto& g : groups) {
+        SecretBytes p(kGroupSecretBytes);
+        if (!open_secret(g.forum, g.secret, p.data(), p.size())) return false;
+        group_plain.push_back(std::move(p));
+    }
 
     Kdf kdf;
     kdf.params = params;
@@ -240,6 +312,11 @@ bool Keystore::protect(const std::string& passphrase, KdfParams params) {
             r.backed_up = all[i].backed_up;
             ok = seal(all[i], r.secret) && store_.put_account_row(r);
         }
+        for (size_t i = 0; ok && i < groups.size(); ++i) {
+            SecretBytes sealed;
+            ok = seal_secret(groups[i].forum, group_plain[i].data(), group_plain[i].size(), sealed) &&
+                 put_group_secret(store_, groups[i].forum, sealed);
+        }
         ok = ok && txn.commit();
     }
     if (!ok) {
@@ -259,11 +336,18 @@ bool Keystore::unprotect(const std::string& passphrase) {
     std::vector<Account> all = accounts();
     for (const auto& a : all)
         if (!matches(a.key.sk, a.key.pk)) return false;  // a key that does not open would be lost
+    std::vector<GroupRow> groups = group_rows(store_);
+    for (auto& g : groups) {
+        SecretBytes p(kGroupSecretBytes);
+        if (!open_secret(g.forum, g.secret, p.data(), p.size())) return false;
+        g.secret = std::move(p);
+    }
     bool ok = true;
     {
         Store::Txn txn(store_);
         ok = store_.erase_meta("kdf") && store_.erase_meta("check");
         for (size_t i = 0; ok && i < all.size(); ++i) ok = store_.save_account(all[i], rows[i].selected);
+        for (size_t i = 0; ok && i < groups.size(); ++i) ok = put_group_secret(store_, groups[i].forum, groups[i].secret);
         ok = ok && txn.commit();
     }
     if (!ok) return false;

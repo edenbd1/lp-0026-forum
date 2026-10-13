@@ -13,6 +13,8 @@
 // value ("check") that tells a wrong passphrase from a damaged file, and per
 // account a blob 0x01 | nonce (24) | sealed secret key (64 + 16), bound to
 // the account's public key so blobs cannot be swapped between accounts.
+// The secret of every private forum joined (forum_groups.secret) is sealed
+// the same way, bound to the forum's id.
 //
 // Turning a passphrase on seals keys that were in plain text and rewrites the
 // file (secure_delete, VACUUM, WAL checkpoint), so the plain copies are gone
@@ -73,6 +75,12 @@ public:
     // Write an account. While locked only what is not secret can change (post
     // count, selection), for an account that exists with this key.
     bool save(const Account& a, bool selected);
+
+    // Other secrets kept in forum.db (a private forum's 32-byte secret),
+    // sealed the same way and bound to `context` (what they belong to).
+    // Without a passphrase both copy as is; locked, a sealed one fails.
+    bool seal_secret(const std::string& context, const uint8_t* plain, size_t n, SecretBytes& out) const;
+    bool open_secret(const std::string& context, const SecretBytes& stored, uint8_t* plain, size_t n) const;
 
 private:
     Store& store_;

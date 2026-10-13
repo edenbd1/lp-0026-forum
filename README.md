@@ -16,7 +16,7 @@ and every post is checked by the app itself on arrival.
   <img alt="Logos Basecamp 0.3.0" src="https://img.shields.io/badge/Logos%20Basecamp-0.3.0-2f6b4f">
   <img alt="Logos Messaging (delivery_module) 0.3.0" src="https://img.shields.io/badge/Logos%20Messaging-0.3.0-2f6b4f">
   <img alt="network logos.dev" src="https://img.shields.io/badge/network-logos.dev-2f6b4f">
-  <a href="https://github.com/edenbd1/logos-forum-catalog"><img alt="catalog 0.3.5" src="https://img.shields.io/badge/catalog-0.3.5-e2552b"></a>
+  <a href="https://github.com/edenbd1/logos-forum-catalog"><img alt="catalog 0.3.6" src="https://img.shields.io/badge/catalog-0.3.6-e2552b"></a>
   <img alt="licence MIT / Apache-2.0" src="https://img.shields.io/badge/licence-MIT%20%2F%20Apache--2.0-7a9a3a">
 </p>
 
@@ -27,7 +27,7 @@ and every post is checked by the app itself on arrival.
 > **Status:** the forum runs in **Logos Basecamp 0.3.0** (macOS and Linux) and is
 > installable from its [catalog](#install-in-basecamp). It has been tested end to
 > end on five real nodes, 24 checks, on logos.test and again on logos.dev
-> ([`docs/e2e.md`](docs/e2e.md)); the core has 63 tests of its own; CI is green
+> ([`docs/e2e.md`](docs/e2e.md)); the core has 114 tests of its own; CI is green
 > on Linux and macOS, and builds the Windows x86_64 package (a mingw cross
 > build, not yet run in Basecamp on Windows; the official catalog has no Windows
 > build of `liblogos_lez_rln_module` or `libp2p_module`, so `logos.test` with RLN
@@ -68,8 +68,40 @@ and every post is checked by the app itself on arrival.
   them on testnet v0.2 ([`docs/e2e.md`](docs/e2e.md)). A node can also opt in to
   fetching a peer's full snapshot from **Logos Storage**. Duplicates are
   impossible because ids are content.
-- **It does not flood the network.** Sends are paced by a token bucket, and
-  history answers are capped and paced too.
+- **It does not flood the network, and the network cannot flood it.** Sends
+  are paced by a token bucket, and history answers are capped and paced too.
+  What a node stores from others is budgeted per hour of *arrival*: per author
+  key, one shared budget for keys it has never seen (anonymous posts use a
+  fresh key each), a total for everything live, and a separate budget for
+  history, so a real backlog still catches up. A post's own date plays no part,
+  so back-dating it changes nothing ([what this does and does not
+  stop](docs/security.md#what-a-node-accepts-from-the-network)).
+- **Private forums from an invite.** *Create private forum* gives an invite,
+  `logosforum://join/…`, that carries a random 32-byte secret and the forum's
+  name. Members' posts are the same signed posts, sealed with
+  XChaCha20-Poly1305 before they leave the device, on a topic of their own
+  that public forum nodes never subscribe to. History comes the same two ways,
+  sealed. The public forum's topic and wire format are unchanged
+  ([what is and is not protected](docs/security.md#private-forums)).
+- **Mute and hide, for you only.** Mute an author by key (never by name: an
+  alias is anyone's to type) or hide a topic or reply. It is kept on this
+  device for the selected account, and never sent.
+- **Keys sealed with a passphrase, and written down as 24 words.** With a
+  passphrase, every account key and every private forum's secret is sealed in
+  `forum.db` (Argon2id, then XChaCha20-Poly1305) and unlocked once per
+  session; reading and posting anonymously work while locked. An account can
+  be shown as 24 words (the BIP-39 English list, with a checksum) and restored
+  to the same key on a fresh install. Anonymous keys are never derived from
+  an account, so no phrase brings one back
+  ([keys at rest](docs/security.md#keys-at-rest-and-backups)).
+- **Replies to you, by key.** The *Replies to you* view lists replies to your topics,
+  replies after yours and `@` mentions of your key's first 16 hex digits, for
+  the selected account only, never matched by a name anyone can type. Muted
+  authors and hidden posts do not reach it.
+- **Formatting without HTML.** Bodies render a small Markdown subset (bold,
+  italic, code, quotes, lists, https links) through the module's own parser,
+  which escapes everything the author typed: no tag, image or entity from a
+  post ever reaches the view.
 - **Unsigned traffic cannot steer it.** Titles and names from other people are
   shown as plain text, what a stranger's request can make a node send is
   capped per hour, nothing makes the forum connect to an address a stranger
@@ -87,7 +119,7 @@ and every post is checked by the app itself on arrival.
 | No centralised server or service | Logos Delivery for posts and history (store nodes and peers' bundles), Logos Storage snapshots when opted in, SQLite on the device |
 | If offline when a message arrived, obtain past messages | store query, then `Engine::request_history` → peers' bundles over Delivery, or (opt-in) a peer's snapshot on Logos Storage (`import_snapshot`); tested on five nodes |
 | If a send fails, the text stays locally to retry | the outbox, `Store::failed` + `backoff_ms` |
-| Does not flood the network | `RateLimiter` |
+| Does not flood the network | `RateLimiter` for what a node sends; `Intake` (`core/include/forum/intake.h`) for what it stores from others, per hour of arrival |
 | Basecamp app, loadable, in a module catalog | loads in Basecamp 0.3.0; served by [`logos-forum-catalog`](https://github.com/edenbd1/logos-forum-catalog), installed from it on a blank Basecamp |
 | Video demo, FURPS self-assessment | [video](https://youtu.be/xNY5EzhCtuI), [solution file](submission/LP-0026.md) |
 
@@ -312,6 +344,27 @@ on demand. Snapshots on Logos Storage are off by default (`"fetchSnapshots":
 true` in `settings.json` turns them on); *Save snapshot to Logos Storage*
 publishes yours for others.
 
+**Private forums.** The switcher under the header lists *Logos Forum* and
+the private forums you joined (on a phone, *Forums…* holds the actions).
+*Create private forum* asks for a name and shows the invite; *Copy invite*
+shows it again for the forum you are in; *Join with invite* takes one pasted
+from someone else; *Leave* deletes the forum's invite and posts from this
+device. Inside, everything works as in the public forum: accounts, aliases,
+anonymous posts, the outbox, history. Whoever holds the invite can read and
+post, and nobody can be removed: to drop someone, create a new forum and
+invite the others again.
+
+![A private forum, with the switcher under the header](docs/screens/14-private-forum.png)
+
+<p><img src="docs/screens/15-private-forum-invite.png" width="49%" alt="The invite of a private forum"> <img src="docs/screens/16-muted-and-hidden.png" width="49%" alt="Muted keys and hidden posts"></p>
+
+**Mute and hide.** Next to someone else's post, *hide* hides it (a topic with
+its thread) and *mute author* hides every post signed by that key, in every
+forum. On an anonymous post the key signs that post only, so it reads *mute
+this key*. *Muted…* lists both, with *Unmute* and *Show again*. This is per
+account and stays on this device: it is never sent, and the posts are still
+kept and passed on to others.
+
 **Errors** are shown in one line under the header: a refused post (too long,
 no title), a send the network gave up on (it is retried), a storage node that
 is not ready.
@@ -322,7 +375,8 @@ The view adapts instead of clipping. Below 720 px it shows one pane at a time
 (the topic list, or the open topic with a way back), the header stacks, the
 "Post as" explanation gets its own line, and long titles, keys and URLs wrap.
 `scripts/responsive-shots.sh` renders the real view against a stand-in backend
-(`tests/qml/Harness.qml`) in nine states at seven widths, from 360 px to 1600 px.
+(`tests/qml/Harness.qml`) in fifteen states at seven widths, from 360 px to
+1600 px, private forums and their dialogs included.
 
 ![The forum at 360, 414, 700 and 1280 px](docs/responsive/widths.png)
 
