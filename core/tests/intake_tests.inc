@@ -205,7 +205,7 @@ TEST(a_clock_stepping_back_does_not_widen_the_budget) {
     make_known(n.store, alice); make_known(n.store, bob);
     CHECK(n.live(author_as(bob, topic_at("now", kNow)), kNow));
     int stored = 0;
-    for (int i = 0; i < 20; ++i) stored += n.live(author_as(alice, topic_at("b" + std::to_string(i), kNow)), kNow - kHour);
+    for (int i = 0; i < 20; ++i) stored += n.live(author_as(alice, topic_at("b" + std::to_string(i), kNow - 2 * kHour)), kNow - kHour);
     for (int i = 0; i < 20; ++i) stored += n.live(author_as(alice, topic_at("c" + std::to_string(i), kNow)), kNow + 1);
     CHECK(stored == 20);
 }
