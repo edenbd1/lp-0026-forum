@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Two real Basecamp nodes on the logos.test network, driven through the forum's
+# Two real Basecamp nodes on the forum's network (logos.dev by default), driven through the forum's
 # own interface, checked in each node's own store.
 #
 #   1. A posts a topic                      -> B receives it live, signature verified
@@ -13,8 +13,8 @@
 #   scripts/e2e-two-nodes.sh <logos_forum.lgx> <delivery_module.lgx> <storage_module.lgx> \
 #       <liblogos_rln_module.lgx> <liblogos_lez_rln_module.lgx> <libp2p_module.lgx> <rln_gifter_module.lgx>
 #
-# On logos.test (the default) each posting node gets an RLN membership from the
-# forum's sponsor by itself: see scripts/e2e-rln.sh (E2E_RLN_HOME, E2E_GIFTER_ACCOUNT).
+# On logos.test (opt-in, LOGOS_FORUM_PRESET=logos.test) each posting node needs an RLN membership from the
+# forum's sponsor, asked for by itself: see scripts/e2e-rln.sh (E2E_RLN_HOME, E2E_GIFTER_ACCOUNT).
 set -euo pipefail
 # Every node runs on this machine, so they may name and dial local addresses
 # (LOGOS_FORUM_LOCAL_PEERS); on the real network only public ones are used.

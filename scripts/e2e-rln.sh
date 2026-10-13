@@ -1,5 +1,5 @@
-# Sourced by the e2e scripts: RLN memberships for nodes on logos.test, the
-# default network (LOGOS_FORUM_PRESET=logos.dev runs without RLN).
+# Sourced by the e2e scripts: RLN memberships for nodes on logos.test, an opt-in
+# network (LOGOS_FORUM_PRESET=logos.test); on logos.dev, the default, nothing to do.
 #
 # A node that posts needs an active RLN membership. The forum asks its sponsor
 # (gifter/, an open rln_gifter_module) for one by itself: a fresh node with no

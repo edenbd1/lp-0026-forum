@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The full scenario, on real Basecamp nodes joined to logos.test, driven through
+# The full scenario, on real Basecamp nodes joined to the forum's network (logos.dev by default), driven through
 # the forum's own interface and checked in every node's own store.
 #
 #   A · Alice      topic as her account            → B, C, D store it, same author key
@@ -15,7 +15,7 @@
 #   scripts/e2e-full.sh <logos_forum.lgx> <delivery_module.lgx> <storage_module.lgx> \
 #       <liblogos_rln_module.lgx> <liblogos_lez_rln_module.lgx> <libp2p_module.lgx> <rln_gifter_module.lgx>
 #
-# On logos.test (the default) each posting node gets an RLN membership from the
+# On logos.test (opt-in, LOGOS_FORUM_PRESET=logos.test) each posting node needs an RLN membership from the
 # forum's sponsor by itself: see scripts/e2e-rln.sh (E2E_RLN_HOME, E2E_GIFTER_ACCOUNT).
 set -euo pipefail
 # Every node runs on this machine, so they may name and dial local addresses
