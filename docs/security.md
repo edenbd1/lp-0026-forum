@@ -46,9 +46,132 @@ request this node has open, and only public IP addresses are dialled.
 | Any history request, before deciding to answer | At most one post count a second, reused for every request in between (a new post resets it). 5,000 requests in a second cost one count, in the engine and in the plugin, which learns what a message added from the engine instead of counting the store | `a_flood_of_unsigned_wants_costs_one_count_per_window`, `what_a_message_added_is_known_without_counting_the_store` |
 | A request for a range that holds nothing, or a narrow one | One request waits at a time; a wider one (from the top, then reaching further back) takes the place of a narrower one. An answer that sends nothing starts no cooldown, and a Delivery request that arrives during the cooldown is kept and answered when it ends. So no request a stranger makes can make a node drop a newcomer's | `a_request_for_nothing_does_not_silence_a_node`, `unsigned_requests_cannot_keep_a_newcomer_from_being_answered`, `a_request_during_the_cooldown_is_answered_when_it_ends` |
 | A history request, Storage opted in | One snapshot upload every ten minutes, and requests in between are not answered | engine rate limit |
-| A bundle of posts | Its valid posts are stored, like live ones. Comparing it with a pending answer costs about what reading it costs (`checking_a_bundle_against_a_pending_answer_costs_linear_work`). It stands the other answerers of the same request down only if it carries everything their own first page would have (which makes it the real answer); an empty, forged or partial replay does not, and neither does an announcement. Its `"more"` marks a next page, whose start is computed from its verified posts, never from its fields | `an_empty_or_forged_bundle_does_not_silence_the_answerers`, `a_replayed_partial_bundle_does_not_silence_the_answerers`, `a_replay_of_the_newest_posts_does_not_silence_the_answerers`, `a_forged_page_marker_cannot_derail_the_paging` |
+| A bundle of posts | Its valid posts are stored within the intake budgets (below): the history budget only if it answers an open request of this node's, the live budgets otherwise. Comparing it with a pending answer costs about what reading it costs (`checking_a_bundle_against_a_pending_answer_costs_linear_work`). It stands the other answerers of the same request down only if it carries everything their own first page would have (which makes it the real answer); an empty, forged or partial replay does not, and neither does an announcement. Its `"more"` marks a next page, whose start is computed from its verified posts, never from its fields | `an_empty_or_forged_bundle_does_not_silence_the_answerers`, `a_replayed_partial_bundle_does_not_silence_the_answerers`, `a_replay_of_the_newest_posts_does_not_silence_the_answerers`, `a_forged_page_marker_cannot_derail_the_paging` |
 | An announcement | Nothing, unless snapshot fetching is on and it answers our own open request (then one fetch, public addresses only) | `an_unsolicited_announcement_makes_nobody_fetch_anything`, `announced_addresses_must_be_public` |
 | Anything inside a snapshot or bundle other than posts | Nothing | `a_snapshot_carries_posts_and_nothing_else` |
+
+## What a node accepts from the network
+
+Every post that arrives is parsed and its signature checked; that much is the
+cost of listening, bounded by the network's 150 KiB message size (a payload
+over 160 KiB is dropped before it is parsed:
+`an_oversized_payload_is_dropped_before_it_is_parsed`), and titles over 200
+bytes, aliases over 40 and bodies over 20,000 are refused before any budget
+(`titles_aliases_and_bodies_over_their_caps_are_refused_on_receipt`). What
+follows decides whether a valid, new post is **stored**, which is what costs
+disk, a row in the topic list and a place in this node's history answers.
+
+Every window is a sliding hour of **arrival time**: this node's clock when the
+post reached it. The date inside a post is its author's choice and is never
+used, so dating posts a year back, in reverse order or an hour apart changes
+nothing; a clock that steps back does not reopen a window either. A copy of a
+post already stored costs nothing, and a refused post is not remembered, so it
+can be stored later (from history, when there is room).
+
+| Budget, per hour of arrival | Default | Checked by |
+|---|---|---|
+| Topics per author key (live) | 20 | `an_author_key_gets_a_bounded_number_of_topics_an_hour` |
+| Replies per author key (live), counted apart from topics | 120 | `topics_and_replies_are_counted_apart_per_key` |
+| Posts from keys this node holds no post from, all together (live) | 60 | `brand_new_keys_share_one_budget` |
+| Everything live, whatever the number of keys | 1,000 | `everything_live_has_an_hourly_total_whatever_the_number_of_keys` |
+| History: store nodes' archive, answers to our own open request, a snapshot | 5,000 posts and 16 MiB | `history_is_bounded_too`, `history_has_its_own_budget_so_a_backlog_still_arrives` |
+| Dates chosen by the author, a clock stepping back | no effect | `back_dated_or_reordered_posts_cannot_escape_the_budget`, `a_clock_stepping_back_does_not_widen_the_budget` |
+| A copy of a stored post | free | `a_copy_of_a_stored_post_costs_no_budget` |
+| A bundle that answers no open request of ours | charged as live posts | `a_bundle_nobody_asked_for_is_charged_like_live_posts` |
+
+Where a post came from is decided by this node, never by the message: Logos
+Delivery marks what its store catch-up recovered (`source: "history"`), the
+forum's own store queries are history, and a bundle is history only if its
+`re` names one of this node's requests that is still open.
+
+**History catches up a real backlog.** The history budget is separate, so a
+flood that spent the live budgets does not stop a returning node from loading
+1,500 posts of one author from the store nodes. Pages a peer sends are cut by
+the budget like anything else, and the paging does not skip what was refused:
+the next page starts above the first refused post (newest first, ties by id),
+the request waits while there is no room, and resumes when there is
+(`a_page_cut_short_by_the_budget_resumes_above_its_first_refused_post`,
+`posts_the_history_budget_refused_are_not_paged_past`).
+
+**What the shared budget for new keys does, and what it does not.** A per-key
+limit alone stops nobody: an anonymous post is signed by a key made for it,
+and anyone can make a key per post. The shared budget is the part that holds:
+all posts from keys this node has never stored a post from share 60 an hour,
+however many keys there are. So a stranger with fresh keys gets at most 60
+posts an hour into this node's store and topic list, and every anonymous
+post, honest ones included, competes for the same 60. It does not stop a
+patient attacker: a key with one stored post is "known", and gets its own 20
+topics and 120 replies; making keys known costs one slot each of the 60. The
+live total caps the sum at 1,000 posts an hour whatever the number of keys,
+and the history budget at 5,000 more, so the store grows by a bounded amount
+an hour. Under such a flood, honest posts can be refused live once a budget
+is spent; they are not lost to the network, and come back through the store
+nodes' archive, under the history budget, at the next catch-up.
+
+The budgets live in memory: a restart opens fresh windows. That is the
+user's own action, not something a peer can cause.
+
+## Private forums
+
+A private forum is a random 32-byte secret and a name, carried by its invite
+(`logosforum://join/<base64url(1 | secret | name)>`). From the secret,
+libsodium's `crypto_kdf` (BLAKE2b, context `LFgroup1`) derives three separate
+subkeys: one names the forum's Delivery topic
+(`/logos-forum/1/g-<hex>/sealed`), one is the sealing key, one the forum id
+signed into its posts (`g:<hex>`). Inside, a private forum is an ordinary
+forum: the same signed posts, history requests and bundles, run by the same
+engine. Every message is sealed before it reaches Delivery: XChaCha20-Poly1305
+with a fresh random nonce, the topic bound in as associated data, the
+plaintext padded to a multiple of 1 KiB. The public forum's topic and wire
+format do not change, and public forum nodes never subscribe to a private
+forum's topic (it shares the public forum's shard, so its traffic mixes with
+the forum's on the relays). History is the store nodes' archive of the topic
+(sealed, opened on arrival) and members' bundles (sealed). No Storage
+snapshots are made of a private forum.
+
+| Guarantee | Checked by |
+|---|---|
+| A sealed message opens to exactly what was sealed | `a_sealed_message_round_trips` |
+| Another group's key cannot open it, and it does not open on another topic | `a_wrong_key_cannot_read_a_sealed_message` |
+| A changed byte, a truncation or junk is refused | `a_tampered_sealed_message_is_rejected` |
+| The public topic never carries a group post, though both forums share one store and one outbox | `the_public_topic_never_carries_a_group_post` |
+| On the wire, a group's posts (in every mode), history requests and bundles carry no title, body, alias, forum name, forum id, author key or message tag, and nothing parses as JSON; a public-only node stores nothing | `nothing_of_a_group_is_in_plaintext_on_the_wire` |
+| Sizes on the wire are padded | `sealed_sizes_say_little_about_the_post` |
+| A member catches up from the store nodes and from members; an outsider reads nothing | `a_member_catches_up_from_store_nodes_and_from_members_and_an_outsider_reads_nothing` |
+| Topic, key and forum id are independent subkeys; invites parse strictly | `the_topic_the_key_and_the_forum_id_are_separate_subkeys`, `an_invite_carries_the_secret_and_the_name_and_nothing_else_parses` |
+| Leaving deletes the secret and the forum's posts from the device | `leaving_a_group_deletes_its_secret_and_posts_from_the_device` |
+
+**What is protected:** the content of a private forum (titles, bodies,
+aliases, author keys, the forum's name) and who its members are, from anyone
+who does not hold the invite, the relays and store nodes included.
+
+**What is not:**
+
+- **Members.** Anyone holding the invite reads everything and can post; a
+  member can pass on posts, or the invite itself.
+- **No removal.** The secret cannot be revoked. To drop someone, create a new
+  forum and invite the others again.
+- **Delivery metadata.** The network sees that sealed messages go to a given
+  group topic, when, through which relay peers, and their padded size, so it
+  can count a group's traffic and link messages of one group to each other.
+  The topic name says it is a Logos Forum group, not which one.
+- **On disk,** a private forum's posts are stored in `forum.db` like the
+  public forum's, and its secret like account keys: unencrypted, protected by
+  the file's `0600` permissions.
+- **The intake budgets** apply inside a private forum too, per forum.
+
+## Muting and hiding
+
+A reader can mute an author by **key** (never by display name: an alias is
+anyone's to type) and hide a topic or a reply by id. It is stored in
+`forum.db` for the selected account, deleted with that account, and never
+sent: muting has no network access at all, and what the node stores and
+serves to others is unchanged (`muting_and_hiding_are_never_sent_or_shared`).
+An anonymous post's key signs that one post, so muting it hides only it.
+Tests: `muting_is_by_key_so_a_shared_alias_hides_only_the_muted_author`,
+`hiding_a_topic_or_a_reply_hides_only_it`,
+`the_muted_list_shows_keys_and_unmute_brings_posts_back`,
+`moderation_is_per_account_and_kept_across_a_restart`.
 
 ## The review, point by point
 
@@ -179,16 +302,21 @@ left as text, trailing punctuation, `<img src=x>https://a`,
   keep answering with the same page, and newcomers then wait longer. No post
   can be forged, altered or hidden that way: every post is checked, and nothing
   a stranger sends moves the paging past posts not yet received.
-- **Signed posts are not rate-limited on arrival.** The forum paces what it
-  sends, not what it receives. Every post that arrives is verified (one
-  Ed25519 check) and, if new and valid, stored for good. Keys for anonymous
-  posts are free, so a limit per key would stop nobody. On logos.dev, which
-  runs no RLN, a stranger can therefore fill the topic, the store and the
-  topic list with valid posts; on logos.test, RLN limits each membership to
-  100 messages per 10 minutes. A limit that cannot be dodged with fresh keys
-  needs something the post carries (a proof of work, or RLN on every network),
-  which would change what a post is; 0.3.x peers would refuse it, so it is a
-  proposal, not part of this version.
+- **Fresh keys are free, so arrival limits bound, not stop, a flood.** What
+  a node stores from the network is budgeted per hour of arrival (see [What a
+  node accepts from the network](#what-a-node-accepts-from-the-network)). A
+  limit per key alone would stop nobody, since anonymous posts use a key each;
+  the shared budget for unseen keys and the live total are what hold, and they
+  hold for everyone: on logos.dev, which runs no RLN, a stranger with fresh
+  keys can still take the 60 posts an hour that new keys share, and so crowd
+  out honest anonymous posts for that hour, or fill the live total with keys
+  made "known" one slot at a time. They cannot make the store grow faster than
+  the budgets allow, and refused honest posts come back from the store nodes'
+  archive. On logos.test, RLN also limits each membership to 100 messages per
+  10 minutes. Stopping fresh-key floods outright needs something every post
+  carries (a proof of work, or RLN on every network), which 0.3.x peers would
+  refuse; it is a proposal, not part of this version. Every arriving message
+  is still parsed and its signature checked, up to the network's message size.
 - **Your own device knows what it sent.** A post waits in the outbox, in
   `forum.db`, until the network confirms it, so an anonymous post not yet sent
   can be told apart there. Once sent, a post written here is stored like one
