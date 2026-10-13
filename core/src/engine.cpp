@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <tuple>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -257,12 +258,15 @@ bool Engine::receive(const std::string& payload, uint64_t now_ms) {
             // its storage address to itself), is answered over Delivery instead.
             const int path = str_at(a, "via") == "delivery" || !on_history_wanted ? 1 : 0;
             const uint64_t every = path == 1 ? kDeliveryAnswerEveryMs : kAnswerEveryMs;
-            const bool quiet = !answered_[path] || now_ms >= last_answer_ms_[path] + every;
+            const bool cooling = answered_[path] && now_ms < last_answer_ms_[path] + every;
+            // A Storage answer is a snapshot upload: none during its cooldown.
+            // A Delivery request that arrives during the cooldown is kept and
+            // answered when it ends, so a stranger's requests cannot make a
+            // node drop a newcomer's.
+            if ((cooling && path == 0) || (pending_ && pending_->via_delivery != (path == 1)) || theirs < 0) return false;
             // Anyone can send a want, unsigned and for free, so the store is
-            // only asked when an answer could actually be scheduled, and then
-            // at most once per kLookupEveryMs: a flood reuses the last count
-            // instead of costing a query per message.
-            if (!quiet || pending_ || theirs < 0) return false;
+            // asked at most once per kLookupEveryMs: a flood reuses the last
+            // count instead of costing a query per message.
             if (!counted_ || now_ms >= counted_ms_ + kLookupEveryMs) {
                 ours_ = store_.count(forum_);
                 counted_ = true;
@@ -278,8 +282,17 @@ bool Engine::receive(const std::string& payload, uint64_t now_ms) {
                 r.since_ms = since > 0 ? static_cast<uint64_t>(since) : 0;
                 r.until_ms = until > 0 ? static_cast<uint64_t>(until) : 0;
                 r.until_id = str_at(a, "until_id").substr(0, 64);
+                // One request waits at a time. A wider one (from the top
+                // rather than a page further down, then reaching further back)
+                // takes the place of a narrower one, keeping its schedule: a
+                // stranger's narrow request cannot hold the slot against a
+                // newcomer's, and one as wide carries the newcomer's posts.
+                auto key = [](const HistoryRequest& h) { return std::make_tuple(h.until_ms != 0, h.since_ms, h.have); };
+                if (pending_ && !(key(r) < key(*pending_))) return false;
+                if (!pending_)
+                    pending_due_ms_ = (cooling ? last_answer_ms_[path] + every : now_ms) +
+                                      (jitter ? jitter() : randombytes_uniform(kAnswerJitterMs));
                 pending_ = r;
-                pending_due_ms_ = now_ms + (jitter ? jitter() : randombytes_uniform(kAnswerJitterMs));
             }
             return false;
         }
@@ -467,8 +480,6 @@ void Engine::tick(uint64_t now_ms) {
     if (!pending_ || now_ms < pending_due_ms_) return;
     const HistoryRequest r = *pending_;
     pending_.reset();
-    answered_[r.via_delivery] = true;
-    last_answer_ms_[r.via_delivery] = now_ms;
     if (r.via_delivery) {
         // Capped per answer and per hour whatever was asked, and paced by
         // pump() like any other send.
@@ -488,6 +499,12 @@ void Engine::tick(uint64_t now_ms) {
             ++sent;
         }
         budget_used_ += bytes;
+        // Only an answer that put something on the network starts the
+        // cooldown: a request for a range holding nothing costs nothing.
+        if (sent > 0) {
+            answered_[1] = true;
+            last_answer_ms_[1] = now_ms;
+        }
         // Cut short: say so, so the asker can ask for the page below.
         if (sent > 0 && sent < all.size()) {
             json last = json::parse(answers_.back(), nullptr, false);
@@ -496,6 +513,8 @@ void Engine::tick(uint64_t now_ms) {
             answers_.back() = last.dump();
         }
     } else if (on_history_wanted) {
+        answered_[0] = true;
+        last_answer_ms_[0] = now_ms;
         on_history_wanted(r);
     }
 }

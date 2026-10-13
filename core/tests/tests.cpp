@@ -985,6 +985,74 @@ TEST(the_store_file_is_readable_by_its_owner_only) {
 }
 #endif
 
+static std::string want(const std::string& id, uint64_t since, uint64_t until = 0) {
+    nlohmann::json w{{"logos-forum-want", 1}, {"forum", "Logos Forum"}, {"have", 0}, {"via", "delivery"}, {"since", since}, {"id", id}};
+    if (until) { w["until"] = until; w["until_id"] = ""; }
+    return w.dump();
+}
+
+TEST(a_request_for_nothing_does_not_silence_a_node) {
+    // An unsigned request for a range that holds nothing (dated in the far
+    // future, or below the oldest post) is answered with nothing, and must not
+    // cost the cooldown: one such request a minute would otherwise keep every
+    // node from answering anyone.
+    Bus bus; FakeNet a(bus), b(bus), x(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
+    ea.jitter = [] { return uint64_t{0}; };
+    Account alice{"alice", Keypair::generate()};
+    for (int i = 0; i < 20; ++i) { Post p = topic("t" + std::to_string(i)); p.ts_ms = 1'000'000 + i; sa.put(author_as(alice, p), 1); }
+    const uint64_t t = 10'000'000;
+    a.now = b.now = x.now = t;
+    x.send("", want("e1", 4'000'000'000'000'000ull));
+    x.send("", want("e2", 0, 1));
+    ea.tick(t); ea.pump(t);
+    a.now = b.now = t + 5000;
+    eb.request_history(t + 5000, true);
+    ea.tick(t + 5000); ea.pump(t + 5000);
+    CHECK(sb.count() == 20);
+}
+
+TEST(unsigned_requests_cannot_keep_a_newcomer_from_being_answered) {
+    // A stranger sends a narrow request (the newest post only) just before
+    // each of B's: it must neither hold the slot against B's wider request nor,
+    // once answered, make A drop B's request during the cooldown.
+    Bus bus; FakeNet a(bus), b(bus), x(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
+    ea.jitter = [] { return uint64_t{2000}; };
+    eb.jitter = [] { return uint64_t{2000}; };
+    Account alice{"alice", Keypair::generate()};
+    for (int i = 0; i < 40; ++i) { Post p = topic("t" + std::to_string(i)); p.ts_ms = 1'000'000 + i * 1000; sa.put(author_as(alice, p), 1); }
+    const uint64_t t0 = 10'000'000;
+    int n = 0;
+    for (uint64_t t = t0; t < t0 + 1800000; t += 5000) {
+        a.now = b.now = x.now = t;
+        x.send("", want("x" + std::to_string(n++), 1'000'000 + 39 * 1000));
+        if ((t - t0) % 300000 == 0) eb.request_history(t, true);
+        ea.tick(t); ea.pump(t); eb.tick(t); eb.pump(t);
+    }
+    CHECK(sb.count() == 40);
+}
+
+TEST(a_request_during_the_cooldown_is_answered_when_it_ends) {
+    // A stranger's narrow request is answered first; B asks ten seconds
+    // later, while A is cooling down. A keeps B's request and answers it once
+    // the minute is over, instead of dropping it until B asks again.
+    Bus bus; FakeNet a(bus), b(bus), x(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
+    ea.jitter = [] { return uint64_t{0}; };
+    Account alice{"alice", Keypair::generate()};
+    for (int i = 0; i < 40; ++i) { Post p = topic("t" + std::to_string(i)); p.ts_ms = 1'000'000 + i * 1000; sa.put(author_as(alice, p), 1); }
+    const uint64_t t = 10'000'000;
+    a.now = b.now = x.now = t;
+    x.send("", want("x1", 1'000'000 + 39 * 1000));             // the newest post only
+    ea.tick(t); ea.pump(t);
+    CHECK(sb.count() == 1);
+    a.now = b.now = t + 10000;
+    eb.request_history(t + 10000, true);
+    for (uint64_t u = t + 10000; u <= t + 65000; u += 5000) { a.now = b.now = u; ea.tick(u); ea.pump(u); }
+    CHECK(sb.count() == 40);
+}
+
 int main() {
     for (auto& t : all()) {
         const int before = failures;
