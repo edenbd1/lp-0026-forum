@@ -30,8 +30,10 @@
 #include "media_backend.h"
 #include "forum/engine.h"
 #include "forum/group.h"
+#include "forum/inbox.h"
 #include "forum/moderation.h"
 #include "forum/identity.h"
+#include "forum/keystore.h"
 #include "forum/store.h"
 #include "logos_ui_plugin_context.h"
 #include "rep_logos_forum_source.h"
@@ -68,6 +70,14 @@ public:
     QString fullImage(QString postId, int index) override;
     QString react(QString postId, int emoji) override;
     QString search(QString query) override;
+    QString unlock(QString passphrase) override;
+    QString lockKeys() override;
+    QString setPassphrase(QString current, QString next) override;
+    QString recoveryPhrase(QString label, QString passphrase) override;
+    QString restoreAccount(QString label, QString words) override;
+    QString inbox() override;
+    QString myPosts() override;
+    QString markInboxRead() override;
     // Private forums and moderation (forum_groups.cpp).
     QString selectForum(QString id) override;
     QString createGroup(QString name) override;
@@ -143,6 +153,8 @@ private:
         std::unique_ptr<forum::Engine> engine;
     };
     void initGroups();
+    void openGroups();
+    forum::InboxView inboxView(const forum::Account& sel) const;
     Joined* attachGroup(const forum::Group& g);
     Joined* joinedById(const std::string& forumId);
     forum::Engine* currentEngine();
@@ -163,6 +175,16 @@ private:
     std::unique_ptr<DeliveryTransport> net_;
     std::unique_ptr<forum::Engine> engine_;
     std::vector<forum::Account> accounts_;
+    // Keys at rest (sealed with a passphrase, or not), and for this session
+    // only, the anonymous posts written here: never saved, so nothing on disk
+    // says which anonymous posts were ours; used to keep them out of the inbox.
+    std::unique_ptr<forum::Keystore> keys_;
+    std::set<std::string> anonThisSession_;
+    void publishKeys();
+    void publishInbox();
+    void reloadAccounts();
+    QString keysLocked() const;   // why an account cannot sign now, or ""
+    std::vector<forum::Account> selectedView();   // the selected account's key and label only
     QString selectedLabel_;
     forum::RotationPolicy rotation_;
     QHash<QString, double> readUpTo_;  // topic id -> last activity the user has seen

@@ -155,7 +155,7 @@ std::vector<std::string> SealedTransport::history(const std::string&) {
 
 // ─── Joined groups, in forum.db ─────────────────────────────────────────────
 
-Groups::Groups(Store& store) : store_(store) {
+Groups::Groups(Store& store, const Keystore* keys) : store_(store), keys_(keys) {
     sqlite3_exec(store_.handle(),
                  "CREATE TABLE IF NOT EXISTS forum_groups (forum TEXT PRIMARY KEY, name TEXT NOT NULL, secret BLOB NOT NULL,"
                  " joined INTEGER NOT NULL)",
@@ -166,9 +166,14 @@ bool Groups::save(const Group& g, uint64_t now_ms) {
     sqlite3_stmt* q = nullptr;
     if (sqlite3_prepare_v2(store_.handle(), "INSERT OR IGNORE INTO forum_groups VALUES (?,?,?,?)", -1, &q, nullptr) != SQLITE_OK) return false;
     const std::string id = g.forum_id();
+    SecretBytes stored(g.secret.begin(), g.secret.end());
+    if (keys_ && !keys_->seal_secret(id, g.secret.data(), g.secret.size(), stored)) {
+        sqlite3_finalize(q);
+        return false;   // sealed keys, locked: not written in plain text
+    }
     sqlite3_bind_text(q, 1, id.data(), static_cast<int>(id.size()), SQLITE_TRANSIENT);
     sqlite3_bind_text(q, 2, g.name.data(), static_cast<int>(g.name.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_blob(q, 3, g.secret.data(), 32, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(q, 3, stored.data(), static_cast<int>(stored.size()), SQLITE_TRANSIENT);
     sqlite3_bind_int64(q, 4, static_cast<int64_t>(now_ms));
     const bool ok = sqlite3_step(q) == SQLITE_DONE && sqlite3_changes(store_.handle()) == 1;
     sqlite3_finalize(q);
@@ -178,13 +183,24 @@ bool Groups::save(const Group& g, uint64_t now_ms) {
 std::vector<Group> Groups::all() const {
     std::vector<Group> out;
     sqlite3_stmt* q = nullptr;
-    if (sqlite3_prepare_v2(store_.handle(), "SELECT name, secret FROM forum_groups ORDER BY joined, forum", -1, &q, nullptr) != SQLITE_OK) return out;
+    if (sqlite3_prepare_v2(store_.handle(), "SELECT name, secret, forum FROM forum_groups ORDER BY joined, forum", -1, &q, nullptr) != SQLITE_OK) return out;
     while (sqlite3_step(q) == SQLITE_ROW) {
-        if (sqlite3_column_bytes(q, 1) != 32) continue;
         Group g;
         const auto* t = sqlite3_column_text(q, 0);
         g.name = t ? reinterpret_cast<const char*>(t) : "";
-        std::memcpy(g.secret.data(), sqlite3_column_blob(q, 1), 32);
+        const auto* b = static_cast<const uint8_t*>(sqlite3_column_blob(q, 1));
+        SecretBytes stored;
+        if (b) stored.assign(b, b + sqlite3_column_bytes(q, 1));
+        const auto* f = sqlite3_column_text(q, 2);
+        const std::string forum = f ? reinterpret_cast<const char*>(f) : "";
+        // Sealed and locked (or damaged): that group stays closed.
+        if (keys_) {
+            if (!keys_->open_secret(forum, stored, g.secret.data(), g.secret.size())) continue;
+        } else {
+            if (stored.size() != g.secret.size()) continue;
+            std::memcpy(g.secret.data(), stored.data(), g.secret.size());
+        }
+        if (g.forum_id() != forum) continue;   // a secret moved to another row
         out.push_back(std::move(g));
     }
     sqlite3_finalize(q);

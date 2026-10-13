@@ -16,7 +16,7 @@ and every post is checked by the app itself on arrival.
   <img alt="Logos Basecamp 0.3.0" src="https://img.shields.io/badge/Logos%20Basecamp-0.3.0-2f6b4f">
   <img alt="Logos Messaging (delivery_module) 0.3.0" src="https://img.shields.io/badge/Logos%20Messaging-0.3.0-2f6b4f">
   <img alt="network logos.dev" src="https://img.shields.io/badge/network-logos.dev-2f6b4f">
-  <a href="https://github.com/edenbd1/logos-forum-catalog"><img alt="catalog 0.3.5" src="https://img.shields.io/badge/catalog-0.3.5-e2552b"></a>
+  <a href="https://github.com/edenbd1/logos-forum-catalog"><img alt="catalog 0.3.6" src="https://img.shields.io/badge/catalog-0.3.6-e2552b"></a>
   <img alt="licence MIT / Apache-2.0" src="https://img.shields.io/badge/licence-MIT%20%2F%20Apache--2.0-7a9a3a">
 </p>
 
@@ -27,7 +27,7 @@ and every post is checked by the app itself on arrival.
 > **Status:** the forum runs in **Logos Basecamp 0.3.0** (macOS and Linux) and is
 > installable from its [catalog](#install-in-basecamp). It has been tested end to
 > end on five real nodes, 24 checks, on logos.test and again on logos.dev
-> ([`docs/e2e.md`](docs/e2e.md)); the core has 92 tests of its own; CI is green
+> ([`docs/e2e.md`](docs/e2e.md)); the core has 134 tests of its own; CI is green
 > on Linux and macOS, and builds the Windows x86_64 package (a mingw cross
 > build, not yet run in Basecamp on Windows; the official catalog has no Windows
 > build of `liblogos_lez_rln_module` or `libp2p_module`, so `logos.test` with RLN
@@ -86,6 +86,36 @@ and every post is checked by the app itself on arrival.
 - **Mute and hide, for you only.** Mute an author by key (never by name: an
   alias is anyone's to type) or hide a topic or reply. It is kept on this
   device for the selected account, and never sent.
+- **Keys sealed with a passphrase, and written down as 24 words.** With a
+  passphrase, every account key and every private forum's secret is sealed in
+  `forum.db` (Argon2id, then XChaCha20-Poly1305) and unlocked once per
+  session; reading and posting anonymously work while locked. An account can
+  be shown as 24 words (the BIP-39 English list, with a checksum) and restored
+  to the same key on a fresh install. Anonymous keys are never derived from
+  an account, so no phrase brings one back
+  ([keys at rest](docs/security.md#keys-at-rest-and-backups)).
+- **Replies to you, by key.** The *Replies to you* view lists replies to your topics,
+  replies after yours and `@` mentions of your key's first 16 hex digits, for
+  the selected account only, never matched by a name anyone can type. Muted
+  authors and hidden posts do not reach it.
+- **Formatting without HTML.** Bodies render a small Markdown subset (bold,
+  italic, code, quotes, lists, https links) through the module's own parser,
+  which escapes everything the author typed: no tag, image or entity from a
+  post ever reaches the view.
+- **Images on Logos Storage, checked and cleaned.** A post can carry up to
+  four images. Each is decoded under size and pixel caps, rebuilt from its
+  pixels and re-encoded, so no GPS, EXIF, XMP, comment or ICC profile leaves
+  the machine. The post's signed body commits to the SHA-256 of every image;
+  a full image is fetched from Logos Storage only when the reader clicks, and
+  shown only if it hashes to the signed value. In a private forum the image is
+  sealed with the forum's key before it is stored. Images are not offered for
+  anonymous posts, because the poster's own Storage node serves them. A 0.3.x
+  peer still verifies such a post and shows a line saying it has images.
+- **Reactions and search.** Five signed reactions (👍 ❤️ 🎉 👀 ✅), one state per
+  key, post and emoji, limited on arrival before and after the signature.
+  Search is local (SQLite FTS5) over verified posts only; what you type is
+  never query syntax, and muted authors and hidden posts are left out
+  ([images, reactions and search](docs/security.md#images-reactions-and-search)).
 - **Unsigned traffic cannot steer it.** Titles and names from other people are
   shown as plain text, what a stranger's request can make a node send is
   capped per hour, nothing makes the forum connect to an address a stranger

@@ -468,7 +468,7 @@ QString ForumMedia::search(const QString& query) {
         }
         QString author = p->mode == forum::Mode::Alias ? q(forum::display_alias(p->alias)) : QString();
         bool mine = false;
-        for (const auto& a : b_.accounts_)
+        for (const auto& a : b_.selectedView())   // the account in use only, as everywhere
             if (a.key.pk == p->author) {
                 mine = true;
                 if (p->mode == forum::Mode::Identity) author = q(a.label);

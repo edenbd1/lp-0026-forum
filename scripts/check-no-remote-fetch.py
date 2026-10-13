@@ -7,7 +7,10 @@ alias, a body, the node status, the history status and the error line all carry
 connection (an HTTP request, or a TLS handshake an https URL would start). The
 title and the bodies also carry https links to that server, some of them
 written to break out of the link (a quote, a >, an <img> or an <a> next to the
-URL), plain http URLs, and javascript:, file: and data: URLs. Then:
+URL), plain http URLs, and javascript:, file: and data: URLs; one body is
+Markdown written to load something (image syntax, a backslash before a tag,
+tags inside emphasis, code, a quote, a list and a fence, a link target that
+leaves its href, numeric entities). Then:
 
 - the https URLs must be rendered as links (the harness lists every href), and
   only https ones: a plain http URL is not a link;
@@ -58,6 +61,10 @@ for w, h in ((1200, 800), (400, 800)):
     bad = [x for x in hrefs if not x.startswith('href="https://')]
     if bad:
         print(f"FAIL: at {w}x{h} something other than an https URL became a link: {bad}"); sys.exit(1)
+    if 'href="https://127.0.0.1:8977/md-link"' not in hrefs:
+        print(f"FAIL: at {w}x{h} the Markdown post was not rendered (no [d](…) link), so it was not tested"); sys.exit(1)
+    if any("md-attr" in x or "md-http" in x for x in hrefs):
+        print(f"FAIL: at {w}x{h} a Markdown link target that leaves the href or is plain http became a link"); sys.exit(1)
     if any("/plain-http" in x or x.endswith('/http"') for x in hrefs):
         print(f"FAIL: at {w}x{h} a plain http URL became a link"); sys.exit(1)
     clicks = [l.split("click opens ", 1)[1] for l in out if "click opens " in l]

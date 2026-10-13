@@ -1699,6 +1699,7 @@ TEST(search_skips_the_image_line_muted_authors_and_hidden_posts) {
     CHECK(s.find("Logos Forum", "cat", 50).size() == 3);         // another account's reader sees them all
 }
 
+#include "accounts_tests.inc"
 #include "intake_tests.inc"
 #include "moderation_tests.inc"
 #include "group_tests.inc"

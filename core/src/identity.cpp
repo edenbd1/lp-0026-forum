@@ -11,6 +11,8 @@ Keypair Keypair::generate() {
     return k;
 }
 
+Keypair::~Keypair() { sodium_memzero(sk.data(), sk.size()); }
+
 bool RotationPolicy::due(const Account& a, uint64_t now_ms) const {
     if (max_posts && a.posts >= max_posts) return true;
     if (max_age_ms && now_ms >= a.created_ms && now_ms - a.created_ms >= max_age_ms) return true;
@@ -42,6 +44,7 @@ PublicKey rotate(Account& a, uint64_t now_ms) {
     a.key = Keypair::generate();
     a.created_ms = now_ms;
     a.posts = 0;
+    a.backed_up = false;
     return old;
 }
 

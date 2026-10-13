@@ -156,8 +156,12 @@ who does not hold the invite, the relays and store nodes included.
   can count a group's traffic and link messages of one group to each other.
   The topic name says it is a Logos Forum group, not which one.
 - **On disk,** a private forum's posts are stored in `forum.db` like the
-  public forum's, and its secret like account keys: unencrypted, protected by
-  the file's `0600` permissions.
+  public forum's, unencrypted, protected by the file's `0600` permissions. Its
+  secret is kept like the account keys: sealed under the passphrase when there
+  is one ([below](#keys-at-rest-and-backups)), otherwise owner-only. Locked, a
+  sealed forum is not opened and none can be joined. Once unlocked, a joined
+  forum's secret stays in memory until the forum closes: locking again does
+  not close forums already open.
 - **The intake budgets** apply inside a private forum too, per forum.
 
 ## Muting and hiding
@@ -172,6 +176,137 @@ Tests: `muting_is_by_key_so_a_shared_alias_hides_only_the_muted_author`,
 `hiding_a_topic_or_a_reply_hides_only_it`,
 `the_muted_list_shows_keys_and_unmute_brings_posts_back`,
 `moderation_is_per_account_and_kept_across_a_restart`.
+
+## Keys at rest and backups
+
+**Without a passphrase**, keys are kept as before, in `forum.db`, readable by
+its owner only (`0600` in a `0700` directory, its log and shared memory too).
+
+**With a passphrase** (at least 8 characters), every account's secret key is
+sealed with XChaCha20-Poly1305 under a key derived by Argon2id
+(`crypto_pwhash`, libsodium's MODERATE limits: about a second, once per
+session). Each sealed key is bound to its account's public key, and each
+private forum's secret to that forum's id, as associated data, so a blob moved
+to another row does not open. A sealed check value tells a wrong passphrase
+from a damaged file. Setting a passphrase seals the plain keys and rewrites
+the file (`secure_delete`, `VACUUM`, WAL checkpoint) so the plain copies leave
+`forum.db` and its log; a copy of the file taken earlier still has them.
+Reading and posting anonymously work while locked; posting as an account
+needs the keys unlocked. Secret keys are wiped from memory when they go away.
+
+**A backup** is the account's 32-byte Ed25519 seed written as 24 words of the
+BIP-39 English list with an 8-bit checksum: a mistyped or swapped word is
+caught (all but 1 in 256), and restoring gives the same public key. The words
+are only an encoding: the seed is not stretched into a wallet seed, so they
+are not a wallet's. A phrase restores one account's current key. Anonymous
+keys are random and wiped after their one post, so no phrase restores them;
+a rotation draws a fresh key and marks the account as needing a new backup.
+
+**Replies to you** are matched by the selected account's key, never by a name:
+a reply to a topic that key started, a reply after one it wrote, or `@`
+followed by at least the first 16 hex digits of the key. Another account on
+the same install has its own view. Replies to anonymous posts do not reach
+the inbox, because nothing on disk records which anonymous posts this install
+wrote. Muted keys and hidden posts never reach it.
+
+| Guarantee | Checked by |
+|---|---|
+| Without a passphrase the store, its log and shared memory are owner-only | `without_a_passphrase_the_store_its_log_and_its_shared_memory_are_owner_only` |
+| A passphrase seals existing plain keys and leaves no plain copy in the file or its log | `a_passphrase_seals_existing_plain_keys_and_leaves_no_plain_copy_on_disk` |
+| A wrong passphrase fails cleanly and changes nothing | `a_wrong_passphrase_fails_cleanly_and_changes_nothing` |
+| No plain key can be written next to sealed ones | `a_plain_key_cannot_be_written_next_to_sealed_ones` |
+| A sealed key opens only for its own account | `a_sealed_key_opens_only_for_its_own_account` |
+| The passphrase can be changed and removed without losing a key | `the_passphrase_can_be_changed_and_removed_without_losing_a_key` |
+| Argon2id at desktop strength; a damaged setting is refused | `unlocking_costs_argon2id_at_desktop_strength_and_a_damaged_setting_is_refused` |
+| Private forums' secrets are sealed too, and bound to their forum | `a_passphrase_seals_every_private_forums_secret_too`, `a_sealed_private_forum_secret_cannot_be_moved_to_another_forum`, `a_plain_private_forum_secret_moved_to_another_row_is_not_opened_as_that_forum` |
+| Secret keys are wiped when they go away | `secret_keys_are_wiped_when_they_go_away` |
+| The words are the BIP-39 English list; a restore gives the same key; mistakes are caught | `recovery_words_are_the_bip39_english_list`, `a_restored_account_has_the_same_public_key_on_a_fresh_install`, `a_mistyped_missing_or_swapped_word_is_caught` |
+| Anonymous keys are never derived from an account nor restored | `restore_never_reuses_anonymous_keys_and_they_are_never_derived_from_the_account` |
+| A rotation marks the account as not backed up | `a_rotation_marks_the_account_as_not_backed_up_and_the_old_words_give_the_old_key` |
+| Nothing on disk links a sent anonymous post to this install | `nothing_on_disk_links_an_anonymous_post_to_this_install_once_it_is_sent` |
+| Replies and mentions reach an account by key, never by name, and only that account | `replies_and_mentions_reach_you_by_key_never_by_name`, `anonymous_posts_are_not_yours_in_the_inbox`, `a_second_account_sees_neither_the_first_accounts_posts_nor_its_replies` |
+| Muted keys and hidden posts never reach the inbox | `muted_keys_and_hidden_posts_never_reach_the_inbox` |
+
+**What it does not protect:** a passphrase protects a copy of `forum.db`
+taken while the forum is closed or locked, not a machine where malware runs
+while the keys are unlocked. The posts themselves (public, or a private
+forum's) are not encrypted on disk.
+
+## Formatting
+
+Post bodies render a Markdown subset (`src/qml/Markdown.js`): bold, italic,
+code, fenced code, quotes, lists and https links. Every character the author
+typed is escaped on output; the only tags are the parser's own (`<b> <i> <br>
+<pre> <a> <font>`), nested in order. There is no image syntax, and only https
+URLs with a host become links. The harness's `markdown` mode runs adversarial
+cases, and `scripts/check-no-remote-fetch.py` renders a body written to load
+something and checks that nothing is fetched without a click.
+
+## Images, reactions and search
+
+**Images.** A post with images ends its signed body with a line every version
+can show, "[Images on Logos Storage: n, manifest sha256:…]". Next to the body
+travels the manifest: per image its Logos Storage CID, the SHA-256 and size of
+the full image, and a small thumbnail (at most 160 px, 6 KiB). A reader keeps
+the manifest only if it hashes to the signed line, so only the author can
+change it. A 0.3.x peer verifies the post exactly as before and shows the line
+(checked against the released 0.3.6 code, vendored in `core/tests/compat`).
+At most 4 images, 2048 px and 2 MiB each after re-encoding.
+
+- *Posting:* the file is capped in bytes before it is read, recognised from its
+  content (PNG, JPEG, WebP only), its announced size checked before any pixel
+  is decoded, then turned upright, copied pixel by pixel into a new image and
+  re-encoded: no metadata of the original can follow (`tests/media`, run in CI, with the
+  [exiftool output](media/exiftool.out) before and after).
+- *Reading:* nothing is fetched until the reader clicks. The full image is
+  shown only if its bytes hash to the signed SHA-256, and a download larger
+  than the signed size is stopped. Thumbnails and full images are re-encoded
+  by the module before the view sees them, so the view's decoders only see
+  bytes the module wrote.
+- *Anonymous posts carry no images*, in the view and in the backend: the
+  poster's Storage node serves the image, which would link the post to it.
+- *In a private forum* the full image is sealed before it is stored
+  (XChaCha20-Poly1305, a key derived from the forum's sealing key, the forum's
+  id as associated data, padded to 4 KiB), because anyone who learns a CID can
+  fetch it. The manifest travels inside the sealed post.
+- *"Who has this CID"* requests, for when the DHT cannot find a provider, are
+  limited per topic on arrival, answered at most once per CID every 10
+  minutes, and a node follows only an answer to its own request.
+
+**Reactions** are their own signed messages (forum, post, emoji, on or off,
+date, key). The newest signed state per key, post and emoji wins. What
+arrives is charged to a topic budget before the signature is checked, then to
+the key's own; reactions in history are charged to an hourly history budget,
+before their signature too. A reaction counts only on a post the node holds,
+in the reaction's own forum, so a public reaction cannot name a private
+forum's post. A 0.3.x peer drops a reaction after the one JSON parse every
+message costs.
+
+**Search** is local, over the posts in the store (all verified), with SQLite
+FTS5 or a plain scan where FTS5 is missing. Each typed word becomes a quoted
+string passed as a bound parameter, so nothing typed is query syntax. Results
+are for the forum shown, without muted authors, hidden posts or replies in a
+hidden thread.
+
+| Guarantee | Checked by |
+|---|---|
+| A post with images is signed like any post; without images it encodes exactly as in 0.3 | `a_post_with_images_carries_a_signed_manifest`, `a_post_without_images_encodes_and_signs_exactly_as_in_0_3` |
+| A 0.3.6 peer verifies it and shows its line | `a_0_3_peer_verifies_a_post_with_images_and_shows_its_line` |
+| Only the signed manifest is kept, within its caps | `only_the_signed_manifest_is_kept`, `image_manifests_are_capped`, `history_carries_the_manifests` |
+| A downloaded image is shown only if it hashes to the signed SHA-256 | `a_downloaded_image_is_shown_only_if_it_hashes_to_the_signed_sha256` |
+| A private forum's image is stored sealed, bound to its forum | `an_image_in_a_private_group_is_stored_sealed` |
+| Who-has-CID requests cost a bounded amount; only our own request's answer is followed | `who_has_a_cid_costs_the_receiver_a_bounded_amount`, `only_an_answer_to_our_own_image_request_is_followed` |
+| Reactions are signed, counted once per key and withdrawable; forged or misdirected ones are dropped | `a_reaction_is_signed_counted_once_per_key_and_can_be_withdrawn`, `a_forged_or_misdirected_reaction_is_dropped` |
+| Reactions are limited on arrival, live and from history, and the per-key table stays bounded | `reactions_are_rate_limited_on_arrival_before_and_after_the_signature`, `reactions_from_history_have_an_hourly_budget`, `the_per_key_table_stays_bounded` |
+| A 0.3.x peer ignores reactions and image requests at no cost | `history_carries_reactions_and_a_0_3_peer_ignores_them`, `a_0_3_peer_drops_reactions_and_image_requests_without_cost` |
+| Search finds verified posts, never runs typed syntax, and leaves out muted and hidden posts | `search_finds_stored_posts_by_title_and_body`, `search_input_is_text_never_query_syntax`, `search_skips_the_image_line_muted_authors_and_hidden_posts` |
+| No metadata leaves the machine; decoding is capped; the view only sees re-encoded bytes | `tests/media` (9 tests) |
+
+**What it does not protect:** a public image is public: anyone with its CID
+can fetch it from Logos Storage. Fetching an image is a Storage download, so
+the nodes that serve it see this node ask for it; that is why nothing loads
+before a click. The author's own node serves the images it posted for as long
+as it runs.
 
 ## The review, point by point
 

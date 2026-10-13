@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import "sample-images.js" as Pics
+import "../../src/qml/Markdown.js" as Md
 
 // Renders the real Main.qml against a stand-in backend, at a given size and in
 // a given state, and saves a screenshot. Used to check the layout at every
@@ -20,6 +21,9 @@ import "sample-images.js" as Pics
 //   qml tests/qml/Harness.qml -- 800 600 authors   who the topic list names, exit 1 on any failure
 //   qml tests/qml/Harness.qml -- 800 600 scroll    auto-scroll behaviour of the thread, exit 1 on any failure
 //   qml tests/qml/Harness.qml -- 800 600 media     images and reactions: only backend data: URLs, nothing loaded without a click
+//   qml tests/qml/Harness.qml -- 800 600 markdown  adversarial cases for Markdown.js, exit 1 on any failure
+//   states locked | inbox | backup: keys sealed and locked; the inbox; an account's recovery phrase
+//   state markdown-shot: a thread whose posts use every Markdown feature, for screenshots
 Window {
     id: win
     readonly property var args: Qt.application.arguments.slice(Qt.application.arguments.indexOf("--") + 1)
@@ -48,8 +52,10 @@ Window {
         property string myLabel: "Alice"
         property string myKey: "8b0adc2e41f07a9d3c5e6b1a2f4d8c9e0b7a6f5e4d3c2b1a0f9e8d7c6b5a6747"
         property string accountsJson: JSON.stringify([
-            { label: "Alice", key: myKey, selected: true, posts: 12 },
-            { label: "Work", key: "43ca10be77f0e2d9a8b6c4e2f0a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e353a0", selected: false, posts: 3 }])
+            { label: "Alice", key: myKey, selected: true, posts: 12, backedUp: true, handle: myKey.substring(0, 16) },
+            { label: "Work", key: "43ca10be77f0e2d9a8b6c4e2f0a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e353a0", selected: false, posts: 3, backedUp: false, handle: "43ca10be77f0e2d9" }])
+        property string keysJson: JSON.stringify({ protected: win.state !== "list" && win.state !== "backup", unlocked: win.state !== "locked" })
+        property int inboxUnread: win.state === "list" ? 0 : 2
         property string rotationJson: JSON.stringify({ maxPosts: 0, maxDays: 30 })
         property int outboxCount: win.state === "offline" ? 1 : 0
         property string historyStatus: win.state === "offline" ? "History: no store node reachable, asking peers · Storage ready"
@@ -88,13 +94,26 @@ Window {
             post("r2", "Mallory", "43ca10be77f0e2d9a8b6c4e2f0a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e353a0", "identity", false, 2,
                  'https://127.0.0.1:8977/q"><img src="http://127.0.0.1:8977/quote.png">\nhttps://127.0.0.1:8977/a\'onmouseover=x <a href="https://127.0.0.1:8977/anchor">a</a>'),
             post("r3", "Mallory", "43ca10be77f0e2d9a8b6c4e2f0a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e353a0", "identity", false, 1,
-                 'javascript:alert(1) file:///etc/passwd data:text/html,<img src=http://127.0.0.1:8977/data.png> https://127.0.0.1:8977/tls http://127.0.0.1:8977/http')
+                 'javascript:alert(1) file:///etc/passwd data:text/html,<img src=http://127.0.0.1:8977/data.png> https://127.0.0.1:8977/tls http://127.0.0.1:8977/http'),
+            // Markdown, written to load something: image syntax, a backslash
+            // before a tag, a tag inside emphasis, code and a quote, and links
+            // whose target tries to leave the href.
+            post("r4", "Mallory", "43ca10be77f0e2d9a8b6c4e2f0a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e353a0", "identity", false, 0,
+                 '![x](https://127.0.0.1:8977/md-image.png) \\<img src="http://127.0.0.1:8977/md-backslash.png"> \\\\<img src=http://127.0.0.1:8977/md-double.png>\n'
+                 + '**<img src=http://127.0.0.1:8977/md-bold.png>** _<img src=http://127.0.0.1:8977/md-italic.png>_ `<img src=http://127.0.0.1:8977/md-code.png>`\n'
+                 + '> <img src=http://127.0.0.1:8977/md-quote.png>\n- <img src=http://127.0.0.1:8977/md-list.png>\n'
+                 + '```\n<img src=http://127.0.0.1:8977/md-fence.png>\n```\n'
+                 + '[a](https://127.0.0.1:8977/md"><img src=http://127.0.0.1:8977/md-attr.png>) [b](javascript:alert(1)) [c](http://127.0.0.1:8977/md-http) '
+                 + '&#60;img src=http://127.0.0.1:8977/md-entity.png&#62; [d](https://127.0.0.1:8977/md-link)')
         ]
         // Scroll state: a long thread that grows on demand.
         property int extra: 0
         readonly property var linkTopic: post("t1", "Ghost", "6d6bb1fa0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d861a", "alias", false, 30,
             "The release notes are at https://github.com/logos-co/logos-basecamp/releases and the testnet status at https://status.logos.co.\nWhat broke for you?",
             { title: "Basecamp 0.3.0: links and notes", replies: 2, last: t0, unread: false })
+        readonly property var mdTopic: post("t1", "Ghost", "6d6bb1fa0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d861a", "alias", false, 30,
+            "Storage fails to start after the **0.3.0** update, with *this* in the log:\n\n```\nFailed to load Mix relay pool:\n  Invalid mixPubKey in pool entry\n```\n\n- macOS 15, Apple silicon\n- `storage_module` 3.0.0\n  - fresh install\n\nAnyone seen it? ___Really___ stuck.",
+            { title: "Storage fails after the update", replies: 2, last: t0, unread: false })
         function listTopics() { return JSON.stringify(win.state === "stress" ? [stressTopic].concat(topicList.slice(1))
                                                       : win.state === "inject" ? [injectTopic] : topicList) }
         function thread(id) {
@@ -120,6 +139,9 @@ Window {
                     img(0, true, { thumb: "https://127.0.0.1:8977/thumb-https.png" }) ], imagesMissing: 0 })
                 return JSON.stringify({ topic: withImages, replies: [injectTopic].concat(injectReplies) })
             }
+            if (win.state === "markdown-shot") return JSON.stringify({ topic: mdTopic, replies: [
+                post("r1", "Alice", myKey, "identity", true, 20, "Same here. What fixed it for me:\n\n1. stop Basecamp\n2. run `rm -rf ~/basecamp/module_data/storage`\n3. start it again\n\n> Expect a reset. Deployments on 0.2.4 will most likely not carry over.\n\nSo **back up first**, see [the notes](https://github.com/logos-co/logos-basecamp/releases)."),
+                post("r2", "Bob", "43ca10be77f0e2d9a8b6c4e2f0a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e353a0", "identity", false, 1, "Shown, not run: <img src=x> and \\*not italic\\*, snake_case_names stay as typed.")] })
             if (win.state === "links") return JSON.stringify({ topic: linkTopic, replies: [
                 post("r1", "Alice", myKey, "identity", true, 20, "Mine is fine. Changelog (with the storage API change): https://github.com/logos-co/logos-storage-module/blob/master/CHANGELOG.md, worth a read."),
                 post("r2", "Bob", "43ca10be77f0e2d9a8b6c4e2f0a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e353a0", "identity", false, 1, "Not links: javascript:alert(1) and plain http://example.org. A link: https://example.org/a?b=1&c=2 (in brackets).")] })
@@ -162,6 +184,31 @@ Window {
         function rotateAccount() { return "" }
         function setRotation() { return "" }
         function saveSnapshot() { return "" }
+        function unlock(p) { return p === "right" ? "" : "wrong passphrase" }
+        function lockKeys() { return "" }
+        function setPassphrase(c, n) { return "" }
+        function recoveryPhrase(label, pass) {
+            return "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth title"
+        }
+        function restoreAccount(label, words) { return "" }
+        function markInboxRead() { return "" }
+        function inbox() {
+            return JSON.stringify({ handle: myKey.substring(0, 16), unread: 2, items: [
+                post("r7", "Ghost", "6d6bb1fa0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d861a", "alias", false, 3,
+                     "Tried it on Linux too: same error, same fix. Thanks for writing it up.",
+                     { why: "topic", unread: true, topicId: "t2", topicTitle: "Basecamp 0.3.0 RC: what broke for you?" }),
+                post("r8", "43ca…53a0", "43ca10be77f0e2d9a8b6c4e2f0a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e353a0", "identity", false, 30,
+                     "@" + myKey.substring(0, 16) + " you ran this last week, did the reset keep your memberships?",
+                     { why: "mention", unread: true, topicId: "t1", topicTitle: "When does testnet v0.3 land?" }),
+                post("r9", "anonymous", "6b79c6d4e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5", "anonymous", false, 1500,
+                     "Same for me after your reply: removing the old package first fixed it.",
+                     { why: "after", unread: false, topicId: "t3", topicTitle: "LEZ wallet 1.1.1 update fails to install" })] })
+        }
+        function myPosts() {
+            return JSON.stringify([
+                post("t2", "Alice", myKey, "identity", true, 180, "Dogfooding the RC this week.", { title: "Basecamp 0.3.0 RC: what broke for you?", topicId: "t2", topicTitle: "Basecamp 0.3.0 RC: what broke for you?" }),
+                post("r3", "Alice", myKey, "identity", true, 2, "Rotated my key before posting this.", { topicId: "t1", topicTitle: "When does testnet v0.3 land?" })])
+        }
         // What the view asked to open, in order (a click calls this).
         property var opened: []
         function openLink(url) { opened.push(url); console.log("click opens " + url); return "" }
@@ -337,6 +384,134 @@ Window {
         Qt.exit(fails === 0 ? 0 : 1)
     }
 
+    // ── markdown: what a post body may turn into ──────────────────────────────
+    function markdownCases(m) {
+        var fails = 0
+        function eq(name, got, want) {
+            if (got !== want) { fails++; console.log("FAIL " + name + "\n  got:  " + got + "\n  want: " + want) }
+            else console.log("ok   " + name)
+        }
+        function ok(name, cond, detail) { if (!cond) { fails++; console.log("FAIL " + name + (detail ? ": " + detail : "")) } else console.log("ok   " + name) }
+        var C = { code: "#f5925e", quote: "#8b93a1", dim: "#8b93a1" }
+        function r(t) { return Md.render(t, C) }
+        // Every href in an output, opened as a click would: exactly an https
+        // URL the view's own check accepts, unchanged by it.
+        function hrefsOk(out) {
+            var re = /<a href="([^"]*)">/g, h
+            while ((h = re.exec(out)) !== null) if (m.safeUrl(h[1]) === "" ) return false
+            return true
+        }
+        function safe(name, input) {
+            var out = r(input)
+            ok(name + " (own tags only)", Md.onlyOwnTags(out) && hrefsOk(out), out)
+            return out
+        }
+        var code = '<font color="#f5925e">', dim = '<font color="#8b93a1">'
+        // The subset.
+        eq("bold", r("**a** __b__"), "<b>a</b> <b>b</b>")
+        eq("italic", r("*a* _b_"), "<i>a</i> <i>b</i>")
+        eq("bold italic", r("***a***"), "<i><b>a</b></i>")
+        eq("nested emphasis", r("**a *b* c**"), "<b>a <i>b</i> c</b>")
+        eq("italic around bold", r("*a **b** c*"), "<i>a <b>b</b> c</i>")
+        eq("unclosed stays text", r("**a"), "**a")
+        eq("crossing pairs do not cross", r("*a _b* c_"), "<i>a _b</i> c_")
+        eq("crossing the other way", r("_a *b_ c*"), "<i>a *b</i> c*")
+        eq("snake_case is not italic", r("snake_case_name"), "snake_case_name")
+        eq("a lone star is text", r("2 * 3 * 4"), "2 * 3 * 4")
+        eq("inline code", r("run `ls -la`"), "run " + code + "ls&nbsp;-la</font>")
+        eq("code keeps markup as text", r("`**not bold** <b>`"), code + "**not&nbsp;bold**&nbsp;&lt;b&gt;</font>")
+        eq("fenced code", r("```js\nif (a < b) **x**\n```\nafter"), "<pre>if (a &lt; b) **x**</pre>after")
+        eq("an unclosed fence runs to the end", r("```\n<img src=x>"), "<pre>&lt;img src=x&gt;</pre>")
+        eq("quote", r("> said *this*"), dim + "▎&nbsp;said <i>this</i></font>")
+        eq("nested quote", r(">> deeper"), dim + "▎▎&nbsp;deeper</font>")
+        eq("list", r("- one\n* two\n  + sub"), "•&nbsp;one<br>•&nbsp;two<br>&nbsp;&nbsp;&nbsp;•&nbsp;sub")
+        eq("ordered list", r("1. one\n2) two"), "1.&nbsp;one<br>2)&nbsp;two")
+        eq("line breaks kept", r("a\nb"), "a<br>b")
+        eq("bare https link", r("see https://a.org/x."), 'see <a href="https://a.org/x">https://a.org/x</a>.')
+        eq("link with text shows its host", r("[notes](https://a.org/n)"), '<a href="https://a.org/n">notes</a> ' + dim + "(a.org)</font>")
+        eq("link text that looks like another site", r("[https://bank.org](https://evil.org/x)"),
+           '<a href="https://evil.org/x">https://bank.org</a> ' + dim + "(evil.org)</font>")
+        eq("bold link text", r("[**x**](https://a.org)"), '<a href="https://a.org"><b>x</b></a> ' + dim + "(a.org)</font>")
+        eq("& in a link", r("https://a.org/?x=1&y=2"), '<a href="https://a.org/?x=1&amp;y=2">https://a.org/?x=1&amp;y=2</a>')
+        eq("a link inside emphasis", r("**https://a.org**"), '<b><a href="https://a.org">https://a.org</a></b>')
+        // Raw HTML is shown, never used.
+        eq("raw html", safe("raw html", "<b>x</b><script>alert(1)</script>"), "&lt;b&gt;x&lt;/b&gt;&lt;script&gt;alert(1)&lt;/script&gt;")
+        eq("img", safe("img", '<img src="https://e.org/x.png" onerror=alert(1)>'), "&lt;img src=&quot;<a href=\"https://e.org/x.png\">https://e.org/x.png</a>&quot; onerror=alert(1)&gt;")
+        eq("an img that starts with a link", safe("img link", "<img src=https://e.org/x.png>"), '&lt;img src=<a href="https://e.org/x.png">https://e.org/x.png</a>&gt;')
+        eq("image syntax is not an image", safe("image syntax", "![x](https://e.org/x.png)"), '!<a href="https://e.org/x.png">x</a> ' + dim + "(e.org)</font>")
+        eq("entities stay as typed", safe("entities", "&#60;img&#62; &lt;b&gt; &amp;"), "&amp;#60;img&amp;#62; &amp;lt;b&amp;gt; &amp;amp;")
+        // One backslash, and two.
+        eq("backslash before a tag", safe("bs tag", "\\<img src=x>"), "&lt;img src=x&gt;")
+        eq("two backslashes before a tag", safe("bs bs tag", "\\\\<img src=x>"), "\\&lt;img src=x&gt;")
+        eq("backslash before a quote", safe("bs quote", '\\"'), "&quot;")
+        eq("backslash before an ampersand", safe("bs amp", "\\&lt;"), "&amp;lt;")
+        eq("escaped stars are text", r("\\*not italic\\*"), "*not italic*")
+        eq("escaped backtick", r("\\`not code\\`"), "`not code`")
+        eq("escaped bracket is no link", r("\\[x](https://a.org)"), '[x](<a href="https://a.org">https://a.org</a>)')
+        eq("backslash before a letter stays", r("a\\b"), "a\\b")
+        eq("a trailing backslash stays", r("a\\"), "a\\")
+        eq("backslash in a URL ends it", safe("bs url", 'https://a.org/\\"><img src=x>'), '<a href="https://a.org/">https://a.org/</a>&quot;&gt;&lt;img src=x&gt;')
+        eq("backslash in a link target refuses it", safe("bs target", "[x](https://a.org/\\x)"), "[x](<a href=\"https://a.org/\">https://a.org/</a>\\x)")
+        // Links that are not https, or try to leave the href.
+        eq("javascript: link", safe("js", "[x](javascript:alert(1))"), "[x](javascript:alert(1))")
+        eq("JavaScript: with spaces", safe("js2", "[x]( javascript:alert(1))"), "[x]( javascript:alert(1))")
+        eq("http link", safe("http", "[x](http://a.org)"), "[x](http://a.org)")
+        eq("data: link", safe("data", "[x](data:text/html,<b>)"), "[x](data:text/html,&lt;b&gt;)")
+        eq("quote in a target", safe("quote target", '[x](https://a.org"onmouseover=alert(1))'), '[x](<a href="https://a.org">https://a.org</a>&quot;onmouseover=alert(1))')
+        eq("user info in a target", safe("userinfo", "[x](https://bank.org@evil.org)"), "[x](https://bank.org@evil.org)")
+        eq("no host", safe("no host", "[x](https://)"), "[x](https://)")
+        eq("a link inside a link", safe("nested link", "[[a](https://b.org)](https://c.org)"),
+           '[<a href="https://b.org">a</a> ' + dim + '(b.org)</font>](<a href="https://c.org">https://c.org</a>)')
+        eq("no link inside code", safe("code link", "`https://a.org`"), code + "https://a.org</font>")
+        safe("html in a link's text", "[<img src=x>](https://a.org)")
+        safe("emphasis across a link", "*a [b* c](https://a.org) d*")
+        safe("unicode", "**é** _ü_ `ö` https://例え.jp/パス « https://a »")
+        safe("control characters", "a\u0000b\u202Ec**d**\u200B")
+        // What a click on any of them opens.
+        var href = (r("[x](https://a.org/p?q=1&r=2)").match(/href="([^"]*)"/) || [])[1]
+        eq("a click opens the URL as typed", m.safeUrl(href), "https://a.org/p?q=1&r=2")
+
+        // Random text made of the characters that matter: always only our
+        // own tags, nested, with https hrefs the click check accepts.
+        var alphabet = ["*", "_", "**", "__", "`", "```", "\\", "[", "]", "(", ")", "<", ">", "\"", "'", "&", "#", ";", "!",
+                        "https://a.org/", "http://", "javascript:", "@", "-", "1.", "> ", "\n", " ", "x", "é", "<img src=x>", "&lt;", "\u202E"]
+        var seed = 12345
+        function rnd(n) { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n }
+        var bad = 0
+        for (var t = 0; t < 4000; t++) {
+            var s = "", len = 1 + rnd(60)
+            for (var k = 0; k < len; k++) s += alphabet[rnd(alphabet.length)]
+            var out = r(s)
+            if (!Md.onlyOwnTags(out) || !hrefsOk(out)) { if (bad++ < 5) console.log("FAIL fuzz input " + JSON.stringify(s) + "\n  out " + out) }
+        }
+        ok("4000 random inputs: own tags only, https hrefs only", bad === 0, bad + " bad")
+
+        // The largest bodies a post may have (20,000 bytes), built to be the
+        // worst case for each rule: each renders, safely, well within a second.
+        function rep(x, n) { return new Array(n + 1).join(x) }
+        var huge = {
+            "stars": rep("*", 20000), "star a": rep("*a", 10000), "underscores": rep("_a", 10000), "bold opens": rep("**a ", 5000),
+            "brackets": rep("[", 20000), "open links": rep("[a](", 5000), "link-likes": rep("[a](https://a.org/ ", 1052),
+            "backticks": rep("`", 20000), "backtick runs": rep("`a``", 5000), "backslashes": rep("\\", 20000),
+            "quotes": rep("> ", 10000), "quote lines": rep(">\n", 10000), "list lines": rep("- *a\n", 5000),
+            "fences": rep("```\n", 5000), "urls": rep("https://a.org/", 1428), "one url": "https://a.org/" + rep("x", 19980),
+            "tags": rep("<b>", 6666), "entities": rep("&#60;", 4000), "mixed": rep("*_`[\\(<&", 2500)
+        }
+        for (var name in huge) {
+            var t0 = Date.now()
+            var o = r(huge[name])
+            var ms = Date.now() - t0
+            ok("20 kB of " + name + ": " + ms + " ms, own tags only", ms < 1000 && Md.onlyOwnTags(o) && hrefsOk(o), ms + " ms")
+        }
+        // And Qt lays out the biggest of them without trouble.
+        var big = Qt.createQmlObject('import QtQuick; Text { width: 600; wrapMode: Text.WrapAtWordBoundaryOrAnywhere; textFormat: Text.StyledText }', win)
+        var t1 = Date.now()
+        big.text = r(huge["mixed"]); var h = big.implicitHeight
+        ok("Qt lays out 20 kB of rendered Markdown in " + (Date.now() - t1) + " ms", h > 0 && Date.now() - t1 < 3000)
+        console.log(fails === 0 ? "markdown: all cases pass" : "markdown: " + fails + " FAILED")
+        Qt.exit(fails === 0 ? 0 : 1)
+    }
+
     // ── authors: who the topic list names, where there is no badge ───────────
     function authorCases(m) {
         var fails = 0
@@ -461,6 +636,7 @@ Window {
             var m = view.item
             if (win.state === "linkify") { linkifyCases(m); return }
             if (win.state === "authors") { authorCases(m); return }
+            if (win.state === "markdown") { markdownCases(m); return }
             var pf = find(m, function (o) { return o.openInvite !== undefined && o.openMuted !== undefined })
             if (win.state === "create") { pf.openCreate(); shot.start(); return }
             if (win.state === "join") { pf.openJoin(); shot.start(); return }
@@ -476,7 +652,9 @@ Window {
             if (win.state === "anonymous") replyAs.mode = 2
             var popups = m.data.filter(function (o) { return o.title !== undefined && o.open !== undefined })
             if (win.state === "newtopic") popups.filter(function (p) { return p.title === "New topic" })[0].open()
-            if (win.state === "accounts") popups.filter(function (p) { return p.title === "Accounts" })[0].open()
+            if (win.state === "accounts" || win.state === "backup") popups.filter(function (p) { return p.title === "Accounts" })[0].open()
+            if (win.state === "inbox") popups.filter(function (p) { return p.title === "Inbox" })[0].open()
+            if (win.state === "backup") m.showPhrase("Alice")
             if (win.state === "scroll") { scrollCases(m); return }
             if (win.state === "media") { mediaCases(m); return }
             if (win.state === "imagefail") {

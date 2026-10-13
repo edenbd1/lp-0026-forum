@@ -28,6 +28,7 @@
 #pragma once
 
 #include "forum/engine.h"
+#include "forum/keystore.h"
 #include "forum/store.h"
 
 #include <array>
@@ -91,10 +92,12 @@ private:
     SealKey key_;
 };
 
-// The groups this install has joined, in forum.db.
+// The groups this install has joined, in forum.db. With `keys` sealed by a
+// passphrase, each group's secret is stored sealed (keystore.h): locked, no
+// group opens and none can be joined.
 class Groups {
 public:
-    explicit Groups(Store& store);
+    explicit Groups(Store& store, const Keystore* keys = nullptr);
     bool save(const Group& g, uint64_t now_ms);   // false if already joined
     std::vector<Group> all() const;               // in the order joined
     // Leave: the group, its posts and anything of it still in the outbox go
@@ -103,6 +106,7 @@ public:
 
 private:
     Store& store_;
+    const Keystore* keys_ = nullptr;
 };
 
 } // namespace forum

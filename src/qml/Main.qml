@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "Markdown.js" as Md
 
 // Logos Forum. The view holds no forum state of its own: it asks the backend
 // for the topic list and the open thread, and asks again whenever the backend
@@ -21,6 +22,11 @@ Item {
     readonly property int    outboxCount:   backend ? backend.outboxCount : 0
     readonly property string historyStatus: backend ? backend.historyStatus : ""
     readonly property string rlnJson:       backend ? backend.rlnJson : "{}"
+    readonly property string keysJson:      backend ? backend.keysJson || "{}" : "{}"
+    readonly property int    inboxUnread:   backend ? backend.inboxUnread || 0 : 0
+    // Account keys: {protected, unlocked}. Locked, only anonymous posts can be signed.
+    readonly property var keys: { try { return JSON.parse(keysJson) } catch (e) { return ({}) } }
+    readonly property bool keysLocked: keys.protected === true && keys.unlocked !== true
     // RLN membership: {on, phase, title, detail, payer, needs, holds}.
     readonly property var rln: { try { return JSON.parse(rlnJson) } catch (e) { return ({}) } }
     // Posting waits on the membership (the posts are kept, not refused).
@@ -227,6 +233,15 @@ Item {
         if (u === "") { log("refused to open a link: " + href); return }
         call(backend.openLink(u), function (r) { if (r !== "") root.lastError = "The link was not opened: " + r.replace(/^error: /, "") })
     }
+    // "@" and the first 16 hex digits of a key, into the reply box: a mention
+    // reaches that key's owner whatever name they post under.
+    function mention(key) {
+        var m = "@" + String(key || "").substring(0, 16) + " "
+        replyBody.text = replyBody.text === "" || /\s$/.test(replyBody.text) ? replyBody.text + m : replyBody.text + " " + m
+        replyBody.forceActiveFocus(); replyBody.cursorPosition = replyBody.length
+    }
+    // An account's recovery phrase (Accounts… → Back up).
+    function showPhrase(label) { safety.showPhrase(label) }
     function exact(ms) { return Qt.formatDateTime(new Date(ms), "d MMM yyyy, HH:mm") }
     function result(r) {
         // Posting slots return the new id, or "error: …".
@@ -288,14 +303,17 @@ Item {
     component Label2: Text { color: root.text; font.pixelSize: 14; wrapMode: Text.WrapAtWordBoundaryOrAnywhere; textFormat: Text.PlainText }
     component Dim: Text { color: root.dim; font.pixelSize: 12; wrapMode: Text.WrapAtWordBoundaryOrAnywhere; textFormat: Text.PlainText }
     // Text from the network with its https links clickable (see linkify).
-    // Text without a link stays plain text, exactly as before.
+    // Text without a link stays plain text, exactly as before. Post bodies
+    // (`markdown`) are rendered by Markdown.js instead: the same escaping and
+    // links, plus bold, italic, code, quotes and lists, and only tags it writes.
     component LinkText: Text {
         id: lt
         property string raw: ""
-        readonly property string html: root.linkify(raw)
+        property bool markdown: false
+        readonly property string html: markdown ? Md.render(raw, { code: root.accent, quote: root.dim, dim: root.dim }) : root.linkify(raw)
         readonly property bool linked: html.indexOf("<a href=") >= 0
-        text: linked ? html : raw
-        textFormat: linked ? Text.StyledText : Text.PlainText
+        text: linked || markdown ? html : raw
+        textFormat: linked || markdown ? Text.StyledText : Text.PlainText
         color: root.text; font.pixelSize: 14; wrapMode: Text.WrapAtWordBoundaryOrAnywhere
         linkColor: root.link
         onLinkActivated: function (href) { root.openLink(href) }
@@ -341,6 +359,14 @@ Item {
             ToolTip.visible: keyHover.hovered
             ToolTip.text: post ? "Signature verified against key " + post.authorKey : ""
             HoverHandler { id: keyHover }
+        }
+        Text {
+            objectName: "mentionButton"
+            visible: post !== null && post !== undefined && post.mode !== "anonymous" && !post.mine && root.openId !== ""
+            text: "@"; color: root.accent; font.pixelSize: 12; font.bold: true
+            ToolTip.visible: mentionHover.hovered; ToolTip.text: "Mention this key in your reply"
+            HoverHandler { id: mentionHover; cursorShape: Qt.PointingHandCursor }
+            TapHandler { onTapped: root.mention(post.authorKey) }
         }
         Dim {
             text: post ? "· " + root.when(post.ts) : ""
@@ -464,7 +490,10 @@ Item {
         // so it is read in full at any width.
         Dim {
             Layout.fillWidth: true
-            text: modeBox.currentIndex === 2
+            color: root.keysLocked && modeBox.currentIndex !== 2 ? root.warn : root.dim
+            text: root.keysLocked && modeBox.currentIndex !== 2
+                ? "Your keys are locked: unlock them above, or post anonymously."
+                : modeBox.currentIndex === 2
                 ? "Shown as “anonymous”. One-time key: can’t be linked to you."
                 : modeBox.currentIndex === 1
                 ? "Shown as “" + (aliasField.text.trim() || "…") + "”, signed by your key."
@@ -515,6 +544,12 @@ Item {
                     onActivated: function (i) { root.call(root.backend.selectAccount(root.accounts[i].label), root.plain) }
                 }
                 AppButton { text: "Accounts…"; onClicked: accountsDialog.open() }
+                AppButton {
+                    objectName: "inboxButton"
+                    text: root.inboxUnread > 0 ? "Inbox · " + root.inboxUnread : "Inbox"
+                    onClicked: inboxDialog.open()
+                    ToolTip.visible: hovered; ToolTip.text: "Replies to you and mentions of your key"
+                }
                 Item { visible: root.narrow && !root.phone; Layout.fillWidth: true }
             }
         }
@@ -579,6 +614,7 @@ Item {
                 }
             }
         }
+        LockBanner { app: root; Layout.fillWidth: true; visible: root.keysLocked }
         Text {
             Layout.fillWidth: true; visible: root.lastError !== ""
             text: root.lastError; textFormat: Text.PlainText; color: root.warn; font.pixelSize: 13; wrapMode: Text.WrapAtWordBoundaryOrAnywhere
@@ -750,7 +786,7 @@ Item {
                                     font.pixelSize: 18; font.bold: true
                                 }
                                 Byline { post: root.openTopic; visible: root.openTopic !== null; Layout.fillWidth: true }
-                                LinkText { Layout.fillWidth: true; raw: root.openTopic ? root.openTopic.body : ""; visible: raw !== "" }
+                                LinkText { Layout.fillWidth: true; markdown: true; raw: root.openTopic ? root.openTopic.body : ""; visible: raw !== "" }
                                 PostImages { Layout.fillWidth: true; app: root; post: root.openTopic }
                                 ReactionBar { Layout.fillWidth: true; app: root; post: root.openTopic }
                                 Rectangle { Layout.fillWidth: true; height: 1; color: root.line }
@@ -759,7 +795,7 @@ Item {
                                     delegate: ColumnLayout {
                                         Layout.fillWidth: true; spacing: 4
                                         Byline { post: modelData; Layout.fillWidth: true }
-                                        LinkText { Layout.fillWidth: true; raw: modelData.body; visible: raw !== "" }
+                                        LinkText { Layout.fillWidth: true; markdown: true; raw: modelData.body; visible: raw !== "" }
                                         PostImages { Layout.fillWidth: true; app: root; post: modelData }
                                         ReactionBar { Layout.fillWidth: true; app: root; post: modelData }
                                     }
@@ -889,6 +925,8 @@ Item {
         }
     }
 
+    InboxDialog { id: inboxDialog; app: root }
+
     Dialog {
         id: accountsDialog
         palette: root.palette
@@ -927,9 +965,12 @@ Item {
                             Dim { visible: modelData.selected; text: "in use"; color: root.ok; wrapMode: Text.NoWrap; Layout.fillWidth: true }
                         }
                         Dim { text: root.shortKey(modelData.key) + " · " + modelData.posts + " posts on this key"; Layout.fillWidth: true }
+                        Dim { visible: modelData.backedUp !== true; color: root.warn; Layout.fillWidth: true
+                              text: modelData.posts > 0 || modelData.selected ? "Not backed up: write down its recovery phrase" : "Not backed up" }
                     }
                     // Only the actions that do something are shown.
                     AppButton { visible: !modelData.selected; text: "Use"; onClicked: root.call(root.backend.selectAccount(modelData.label), root.plain) }
+                    AppButton { text: "Back up"; enabled: !root.keysLocked; onClicked: safety.showPhrase(modelData.label) }
                     AppButton { visible: root.accounts.length > 1; text: "Delete"; onClicked: root.call(root.backend.deleteAccount(modelData.label), root.plain) }
                 }
             }
@@ -938,9 +979,11 @@ Item {
                 AppButton { text: "Create"; onClicked: root.call(root.backend.createAccount(newLabel.text), function (r) { if (root.plain(r)) newLabel.text = "" }) }
             }
             Rectangle { Layout.fillWidth: true; height: 1; color: root.line }
+            AccountSafety { id: safety; app: root; Layout.fillWidth: true }
+            Rectangle { Layout.fillWidth: true; height: 1; color: root.line }
             Label2 { text: "Identity rotation"; font.bold: true }
             Dim { Layout.fillWidth: true
-                  text: "Replace the selected account's key with a fresh one. Nothing links the old key to the new one, so earlier posts stop being attributable to what you post next." }
+                  text: "Replace the selected account's key with a fresh one. Nothing links the old key to the new one, so earlier posts stop being attributable to what you post next. The new key needs a new recovery phrase: the old words restore the old key." }
             AppButton { text: "Rotate now"; onClicked: root.call(root.backend.rotateAccount(), root.plain) }
             Flow {
                 Layout.fillWidth: true; spacing: 8

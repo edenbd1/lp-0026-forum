@@ -51,6 +51,18 @@ jobs:
       - name: Test
         run: ./build/forum_core_tests
 
+  media:
+    name: image pipeline tests (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y qt6-base-dev qt6-image-formats-plugins cmake
+      - name: Build
+        run: cmake -S tests/media -B build-media && cmake --build build-media -j
+      - name: Test
+        run: QT_QPA_PLATFORM=offscreen ./build-media/media_tests
+
   module:
     name: Basecamp module (${{ matrix.target }})
     strategy:

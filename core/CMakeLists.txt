@@ -11,6 +11,7 @@ find_package(nlohmann_json REQUIRED)
 add_library(forum_core STATIC src/post.cpp src/identity.cpp src/store.cpp src/engine.cpp src/dns.cpp src/rln.cpp)
 target_sources(forum_core PRIVATE src/intake.cpp src/moderation.cpp src/group.cpp
     src/media.cpp src/reaction.cpp src/search.cpp)
+target_sources(forum_core PRIVATE src/keystore.cpp src/recovery.cpp src/inbox.cpp)
 target_include_directories(forum_core PUBLIC include)
 target_link_libraries(forum_core PUBLIC PkgConfig::SODIUM PkgConfig::SQLITE nlohmann_json::nlohmann_json)
 # inet_pton lives in Winsock on Windows.

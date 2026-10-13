@@ -41,9 +41,21 @@ bool parseKey(const QString& hex, forum::PublicKey& out) {
 
 void LogosForumBackend::initGroups() {
     moderation_ = std::make_unique<forum::Moderation>(*store_);
-    groups_ = std::make_unique<forum::Groups>(*store_);
+    groups_ = std::make_unique<forum::Groups>(*store_, keys_.get());
     for (const auto& g : groups_->all()) attachGroup(g);
     if (!joined_.empty()) forumLog("private forums joined: " + std::to_string(joined_.size()));
+    publishForums();
+}
+
+// After an unlock: the private forums whose secret was sealed were skipped at
+// start, they open now.
+void LogosForumBackend::openGroups() {
+    if (!groups_) return;
+    const size_t before = joined_.size();
+    for (const auto& g : groups_->all()) attachGroup(g);
+    if (joined_.size() == before) return;
+    subscribeGroups();
+    QTimer::singleShot(0, this, [this]() { catchUpGroups(); });
     publishForums();
 }
 
@@ -163,6 +175,8 @@ QString LogosForumBackend::selectForum(QString id) {
 
 QString LogosForumBackend::createGroup(QString name) {
     if (!groups_) return QStringLiteral("error: the forum is still starting");
+    if (keys_ && keys_->is_protected() && !keys_->is_unlocked())
+        return QStringLiteral("error: unlock your keys first: a private forum's secret is sealed with them");
     const auto g = forum::Group::create(s(name));
     if (!g) return QStringLiteral("error: give the forum a name (at most %1 bytes)").arg(forum::kMaxGroupName);
     if (!groups_->save(*g, nowMs())) return QStringLiteral("error: the forum could not be saved on this device");
@@ -178,6 +192,8 @@ QString LogosForumBackend::joinGroup(QString invite) {
     const auto g = forum::Group::from_invite(s(invite));
     if (!g) return QStringLiteral("error: this is not a Logos Forum invite (logosforum://join/…)");
     if (!joinedById(g->forum_id())) {
+        if (keys_ && keys_->is_protected() && !keys_->is_unlocked())
+            return QStringLiteral("error: unlock your keys first: a private forum's secret is sealed with them");
         if (!groups_->save(*g, nowMs())) return QStringLiteral("error: the forum could not be saved on this device");
         attachGroup(*g);
         subscribeGroups();
