@@ -42,6 +42,10 @@ struct Post {
     uint64_t ts_ms = 0;     // the author's clock; display and ordering only
     PublicKey author{};     // the key the signature checks against
     Signature sig{};
+    // Not signed itself: the image manifest the body's last line commits to
+    // (see media.h). Empty for a post without images, or when a peer that
+    // does not keep it relayed the post.
+    std::string att;
 
     // The exact bytes that are signed and hashed: every field above except
     // `sig`, length-prefixed so no two different posts serialise the same way.
@@ -66,11 +70,15 @@ void sign(Post& p, const SecretKey& sk);
 // Structural rules plus the signature.
 Check verify(const Post& p);
 
-// Compact JSON for Logos Delivery; binary fields are base64.
+// Compact JSON for Logos Delivery; binary fields are base64. "att" is
+// written only when present, so a post without images encodes exactly as in
+// 0.3.x.
 std::string encode(const Post& p);
 
 // Parse and VERIFY. Returns nothing for anything that is not a well-formed,
 // correctly signed post — non-forum traffic on the topic is ignored this way.
+// An "att" that is not the manifest the signed body commits to is dropped
+// (the post itself is kept: its signature holds).
 std::optional<Post> decode(const std::string& json, Check* why = nullptr);
 
 std::string to_hex(const uint8_t* data, size_t len);

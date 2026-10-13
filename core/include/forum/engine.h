@@ -19,11 +19,17 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
 namespace forum {
+
+class Attachments;
+class Reactions;
+struct Reaction;
 
 struct SendResult {
     bool ok = false;
@@ -52,6 +58,8 @@ class RateLimiter {
 public:
     RateLimiter(double capacity, double per_minute) : cap_(capacity), rate_(per_minute / 60000.0), tokens_(capacity) {}
     bool take(uint64_t now_ms);
+    // Whether take() would succeed now, without taking.
+    bool ready(uint64_t now_ms) const;
 private:
     double cap_, rate_, tokens_;
     uint64_t last_ = 0;
@@ -112,16 +120,19 @@ struct HistoryRequest {
 class Engine {
 public:
     Engine(Store& store, Transport& net, std::string forum);
+    ~Engine();
 
     const std::string& forum() const { return forum_; }
     const std::string& topic() const { return topic_; }
 
     // Compose. The post is stored and queued at once, so it shows up locally
     // and survives a restart even when the network is down. Returns its id.
+    // `manifest`, if given, is the image manifest (media.h): the body gets
+    // the signed line that commits to it. Returns "" if it breaks a limit.
     std::string post_topic(Account* as, const std::string& title, const std::string& body,
-                           const std::string& alias, uint64_t now_ms);
+                           const std::string& alias, uint64_t now_ms, const std::string& manifest = {});
     std::string post_reply(Account* as, const std::string& topic_id, const std::string& body,
-                           const std::string& alias, uint64_t now_ms);
+                           const std::string& alias, uint64_t now_ms, const std::string& manifest = {});
 
     // Send what is due in the outbox, within the rate limit. Returns how many
     // went out.
@@ -224,6 +235,37 @@ public:
     // Delivery answers carry the posts themselves, so they are rarer.
     static constexpr uint64_t kDeliveryAnswerEveryMs = 60000;
 
+    // ── Images (media.h) ──────────────────────────────────────────────────────
+    // A post's manifest, if we hold one; a post read from the store with it.
+    std::string manifest(const std::string& id) const;
+    Post with_manifest(Post p) const;
+    // An image this install published: it may answer "who has this CID".
+    void add_own_image(const std::string& cid);
+    // Ask the topic who provides `cid` (for a reader whose Logos Storage
+    // cannot find it through the DHT). At most once per CID per
+    // kImageAskEveryMs. Returns the request id, or "" if not sent.
+    std::string request_image(const std::string& cid, uint64_t now_ms);
+    static constexpr uint64_t kImageAskEveryMs = 60000;
+    // Answers to our own open image requests: who provides the CID.
+    std::function<void(const std::string& cid, const std::string& peer, const std::vector<std::string>& addrs)>
+        on_image_provider;
+    // A "who has CID X" from anyone costs this node at most: one set lookup
+    // per token of a bucket of kImageWantBurst, refilled at
+    // kImageWantsPerMinute (on arrival time), and one answer per CID per
+    // kImageAnswerEveryMs, paced by the send bucket. Everything else is a
+    // JSON parse and a drop.
+    static constexpr double kImageWantBurst = 10, kImageWantsPerMinute = 30;
+    static constexpr uint64_t kImageAnswerEveryMs = 10 * 60 * 1000;
+    uint64_t image_lookups() const { return image_lookups_; }
+    uint64_t image_answers() const { return image_answers_; }
+
+    // ── Reactions (reaction.h) ────────────────────────────────────────────────
+    // React as `as` (on or off), kept at once and sent paced. "" if refused.
+    std::string react(Account& as, const std::string& target, int emoji, bool on, uint64_t now_ms);
+    Reactions& reactions() { return *reactions_; }
+    // A reaction changed what a post shows.
+    std::function<void(const std::string& target)> on_reaction;
+
     // Called for every new post, local or remote, after it is stored.
     std::function<void(const Post&, const std::string& id)> on_post;
 
@@ -284,6 +326,16 @@ private:
     std::string provider_peer_;
     std::vector<std::string> provider_addrs_;
     bool answered_[2] = {false, false};
+    std::unique_ptr<Attachments> att_;
+    std::unique_ptr<Reactions> reactions_;
+    void receive_reaction(const Reaction& r, uint64_t now_ms, bool live);
+    std::set<std::string> own_images_;
+    std::map<std::string, uint64_t> image_answered_;            // cid -> when we last answered
+    struct ImageAsk { std::string cid; uint64_t closes_ms = 0; };
+    std::map<std::string, ImageAsk> image_asked_;               // our open requests, by id
+    std::map<std::string, uint64_t> image_asked_at_;            // cid -> when we last asked
+    RateLimiter image_wants_{kImageWantBurst, kImageWantsPerMinute};
+    uint64_t image_lookups_ = 0, image_answers_ = 0;
     uint64_t history_lookups_ = 0;
     uint64_t posts_received_ = 0;
     bool counted_ = false;

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #include "forum/post.h"
 
+#include "forum/media.h"
+
 #include <nlohmann/json.hpp>
 #include <sodium.h>
 
@@ -112,6 +114,7 @@ std::string encode(const Post& p) {
     if (p.kind == Kind::Topic) j["title"] = p.title;
     if (p.kind == Kind::Reply) j["topic"] = p.topic_id;
     if (p.mode == Mode::Alias) j["alias"] = p.alias;
+    if (!p.att.empty()) j["att"] = p.att;
     return j.dump();
 }
 
@@ -144,6 +147,10 @@ std::optional<Post> decode(const std::string& text, Check* why) {
         if (!unb64(j.at("sig").get<std::string>(), p.sig)) return fail(Check::Malformed);
         const Check c = verify(p);
         if (c != Check::Ok) return fail(c);
+        const auto att = j.find("att");
+        if (att != j.end() && att->is_string() && att->get_ref<const std::string&>().size() <= kMaxManifestBytes &&
+            manifest_images(p.body, att->get<std::string>()))
+            p.att = att->get<std::string>();
         if (why) *why = Check::Ok;
         return p;
     } catch (const std::exception&) {

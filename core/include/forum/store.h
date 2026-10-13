@@ -71,6 +71,10 @@ public:
     std::vector<Post> recent(const std::string& forum, uint64_t since_ms, uint64_t before_ts,
                              const std::string& after_id, size_t limit) const;
 
+    // The connection, for tables kept beside the posts (attachments,
+    // reactions, the search index).
+    sqlite3* handle() const { return db_; }
+
     // Many writes as one commit (a history import), instead of one each.
     class Batch {
     public:
