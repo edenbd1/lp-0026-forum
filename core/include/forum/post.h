@@ -75,4 +75,12 @@ std::optional<Post> decode(const std::string& json, Check* why = nullptr);
 
 std::string to_hex(const uint8_t* data, size_t len);
 
+// An alias as it may be shown next to other text: without the characters that
+// would reorder or hide what follows it (bidi controls, zero-width and other
+// invisible format characters, C0/C1 controls, line and paragraph breaks),
+// with runs of whitespace as one space, trimmed, and without bytes that are
+// not UTF-8. Empty if nothing visible is left. Display only: the signed post
+// keeps the alias as its author wrote it.
+std::string display_alias(const std::string& alias);
+
 } // namespace forum

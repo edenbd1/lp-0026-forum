@@ -162,6 +162,15 @@ Item {
         var h = (k || "").replace("…", "")
         return h.length > 10 ? h.substring(0, 4) + "…" + h.substring(h.length - 4) : h
     }
+    // Who a topic is by, in the topic list, where there is no badge: someone
+    // else's account by its key, ours by its label, an alias marked as one,
+    // so an alias written like a key ("3694…b945") or "anonymous" cannot pass
+    // for that key or for an anonymous post.
+    function listAuthor(t) {
+        if (t.mode === "identity") return t.mine ? t.author : shortKey(t.authorKey)
+        if (t.mode === "alias") return t.author + " (alias)"
+        return "anonymous"
+    }
     function esc(t) { return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;") }
 
     // Links in text from the network. The whole text is escaped first, so no
@@ -629,7 +638,7 @@ Item {
                                     textFormat: Text.PlainText
                                 }
                                 Dim { Layout.fillWidth: true; elide: Text.ElideRight; maximumLineCount: 1
-                                      text: (modelData.mode === "identity" && !modelData.mine ? root.shortKey(modelData.authorKey) : modelData.author)
+                                      text: root.listAuthor(modelData)
                                             + " · " + modelData.replies + (modelData.replies === 1 ? " reply" : " replies")
                                             + " · " + root.when(modelData.last) }
                                 Dim { visible: modelData.state !== ""; color: root.warn; text: "not sent yet, will retry" }

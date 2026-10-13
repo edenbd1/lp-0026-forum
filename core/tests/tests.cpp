@@ -1095,6 +1095,27 @@ TEST(an_anonymous_post_written_here_is_stored_like_one_received) {
     }
 }
 
+TEST(an_alias_cannot_hide_or_reorder_what_is_shown_next_to_it) {
+    // An alias is any 40 bytes its author chose. Shown to others it loses the
+    // characters that would reorder or hide the text after it (bidi controls,
+    // zero-width and other invisible characters, controls, line breaks), and
+    // runs of spaces become one.
+    CHECK(display_alias("Ghost") == "Ghost");
+    CHECK(display_alias("  Night   owl ") == "Night owl");
+    CHECK(display_alias("\xE2\x80\xAE" "evil") == "evil");                       // U+202E right-to-left override
+    CHECK(display_alias("a\xE2\x81\xA6" "b\xE2\x81\xA9") == "ab");                // U+2066 / U+2069 isolates
+    CHECK(display_alias("bo\xE2\x80\x8B" "b") == "bob");                         // U+200B zero width space
+    CHECK(display_alias("x\xEF\xBB\xBFy\xC2\xADz") == "xyz");                     // U+FEFF, U+00AD soft hyphen
+    CHECK(display_alias("one\ntwo\r\n\tthree") == "one two three");
+    CHECK(display_alias("a\xE2\x80\xA8" "b") == "a b");                          // U+2028 line separator
+    CHECK(display_alias("\x1b[31mred") == "[31mred");                            // ESC
+    CHECK(display_alias("caf\xC3\xA9 \xE6\x97\xA5\xE6\x9C\xAC \xD7\xA9\xD7\x9C\xD7\x95\xD7\x9D") ==
+          "caf\xC3\xA9 \xE6\x97\xA5\xE6\x9C\xAC \xD7\xA9\xD7\x9C\xD7\x95\xD7\x9D");   // real text, Hebrew included, untouched
+    CHECK(display_alias("ok\xFF\xC3") == "ok");                                   // not UTF-8
+    CHECK(display_alias("\xE2\x80\x8B\xE2\x80\x8B").empty());                     // nothing visible left
+    CHECK(display_alias("\xF3\xA0\x80\x81tag") == "tag");                         // U+E0001 language tag
+}
+
 int main() {
     for (auto& t : all()) {
         const int before = failures;

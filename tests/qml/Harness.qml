@@ -12,6 +12,7 @@ import QtQuick.Controls
 //   (links: a thread whose posts carry links, for screenshots)
 //
 //   qml tests/qml/Harness.qml -- 800 600 linkify   unit cases for linkify/safeUrl, exit 1 on any failure
+//   qml tests/qml/Harness.qml -- 800 600 authors   who the topic list names, exit 1 on any failure
 //   qml tests/qml/Harness.qml -- 800 600 scroll    auto-scroll behaviour of the thread, exit 1 on any failure
 Window {
     id: win
@@ -229,6 +230,24 @@ Window {
         Qt.exit(fails === 0 ? 0 : 1)
     }
 
+    // ── authors: who the topic list names, where there is no badge ───────────
+    function authorCases(m) {
+        var fails = 0
+        function eq(name, got, want) {
+            if (got !== want) { fails++; console.log("FAIL " + name + "\n  got:  " + got + "\n  want: " + want) }
+            else console.log("ok   " + name)
+        }
+        var key = "3694648d41f07a9d3c5e6b1a2f4d8c9e0b7a6f5e4d3c2b1a0f9e8d7c6b5ab945"
+        eq("someone's account, by its key", m.listAuthor({ mode: "identity", mine: false, author: "x", authorKey: key }), "3694…b945")
+        eq("our account, by its label", m.listAuthor({ mode: "identity", mine: true, author: "Alice", authorKey: key }), "Alice")
+        eq("an alias written like that key is marked", m.listAuthor({ mode: "alias", mine: false, author: "3694…b945", authorKey: "ff" + key.substring(2) }), "3694…b945 (alias)")
+        eq("an alias called anonymous is marked", m.listAuthor({ mode: "alias", mine: false, author: "anonymous", authorKey: key }), "anonymous (alias)")
+        eq("an alias called like our account is marked", m.listAuthor({ mode: "alias", mine: false, author: "Alice", authorKey: key }), "Alice (alias)")
+        eq("anonymous", m.listAuthor({ mode: "anonymous", mine: false, author: "anonymous", authorKey: key }), "anonymous")
+        console.log(fails === 0 ? "authors: all cases pass" : "authors: " + fails + " FAILED")
+        Qt.exit(fails === 0 ? 0 : 1)
+    }
+
     // ── scroll: the thread follows its newest message unless the reader scrolled up ──
     function scrollCases(m) {
         var fails = 0
@@ -279,6 +298,7 @@ Window {
         onTriggered: {
             var m = view.item
             if (win.state === "linkify") { linkifyCases(m); return }
+            if (win.state === "authors") { authorCases(m); return }
             if (win.state !== "welcome" && win.state !== "list" && win.state !== "newtopic") m.openThread("t1")
             if (win.state === "list") m.openId = ""
             var replyAs = find(m, function (o) { return o.objectName === "replyAs" })

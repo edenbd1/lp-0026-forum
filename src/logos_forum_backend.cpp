@@ -1146,7 +1146,12 @@ QJsonObject postJson(const Post& p, const std::string& id, const std::vector<Acc
         if (a.key.pk == p.author) own = true;
     switch (p.mode) {
     case Mode::Anonymous: author = QStringLiteral("anonymous"); break;
-    case Mode::Alias: author = q(p.alias); break;
+    case Mode::Alias: {
+        // Shown next to other text: nothing in it may reorder or hide that.
+        const std::string shown = forum::display_alias(p.alias);
+        author = shown.empty() ? QStringLiteral("(blank alias)") : q(shown);
+        break;
+    }
     case Mode::Identity: {
         author = q(forum::short_key(p.author));
         for (const auto& a : mine)

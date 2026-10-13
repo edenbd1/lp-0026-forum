@@ -162,4 +162,49 @@ std::string to_hex(const uint8_t* data, size_t len) {
     return s;
 }
 
+namespace {
+// Decodes one UTF-8 character at `i`; false (and one byte skipped) if invalid.
+bool next_char(const std::string& s, size_t& i, uint32_t& cp) {
+    const auto b = [&](size_t k) { return static_cast<unsigned char>(s[k]); };
+    const unsigned char c = b(i);
+    size_t n = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 0;
+    if (n == 0 || i + n > s.size()) { ++i; return false; }
+    cp = n == 1 ? c : n == 2 ? c & 0x1F : n == 3 ? c & 0x0F : c & 0x07;
+    for (size_t k = 1; k < n; ++k) {
+        if ((b(i + k) & 0xC0) != 0x80) { ++i; return false; }
+        cp = (cp << 6) | (b(i + k) & 0x3F);
+    }
+    const uint32_t least[] = {0, 0, 0x80, 0x800, 0x10000};
+    if (cp < least[n] || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) { ++i; return false; }
+    i += n;
+    return true;
+}
+bool is_space(uint32_t c) {
+    return (c >= 0x09 && c <= 0x0D) || c == 0x20 || c == 0x85 || c == 0xA0 || c == 0x1680 ||
+           (c >= 0x2000 && c <= 0x200A) || c == 0x2028 || c == 0x2029 || c == 0x202F || c == 0x205F || c == 0x3000;
+}
+bool is_hidden(uint32_t c) {
+    return c < 0x20 || (c >= 0x7F && c <= 0x9F) || c == 0xAD || c == 0x34F || c == 0x61C || c == 0x115F ||
+           c == 0x1160 || c == 0x17B4 || c == 0x17B5 || (c >= 0x180B && c <= 0x180F) || (c >= 0x200B && c <= 0x200F) ||
+           (c >= 0x202A && c <= 0x202E) || (c >= 0x2060 && c <= 0x206F) || c == 0x3164 || (c >= 0xFE00 && c <= 0xFE0F) ||
+           c == 0xFEFF || c == 0xFFA0 || (c >= 0xFFF0 && c <= 0xFFFB) || (c >= 0xE0000 && c <= 0xE0FFF);
+}
+} // namespace
+
+std::string display_alias(const std::string& alias) {
+    std::string out;
+    bool space = false;
+    for (size_t i = 0; i < alias.size();) {
+        const size_t at = i;
+        uint32_t c = 0;
+        if (!next_char(alias, i, c)) continue;
+        if (is_space(c)) { space = !out.empty(); continue; }
+        if (is_hidden(c)) continue;
+        if (space) out.push_back(' ');
+        space = false;
+        out.append(alias, at, i - at);
+    }
+    return out;
+}
+
 } // namespace forum
