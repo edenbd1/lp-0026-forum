@@ -197,7 +197,9 @@ std::string Engine::compose(Post p, Account* as, const std::string& alias, uint6
     const Post signed_post = as ? author_as(*as, std::move(p), alias) : author_anonymously(std::move(p));
     const std::string id = signed_post.id();
     if (!store_.enqueue(id, encode(signed_post), now_ms)) return {};  // could not be kept to send: refuse it
-    if (store_.put(signed_post, now_ms) && on_post) on_post(signed_post, id);
+    const bool stored = store_.put(signed_post, now_ms);
+    if (stored) counted_ = false;  // our own post changes what a want is compared with
+    if (stored && on_post) on_post(signed_post, id);
     return id;
 }
 
@@ -251,13 +253,23 @@ bool Engine::receive(const std::string& payload, uint64_t now_ms) {
         const json a = json::parse(payload, nullptr, false);
         if (a.is_object() && int_at(a, kWantTag) == 1 && str_at(a, "forum") == forum_) {
             const int64_t theirs = int_at(a, "have");
-            const size_t ours = store_.count(forum_);
             // A Storage request, when this node does not answer those (it keeps
             // its storage address to itself), is answered over Delivery instead.
             const int path = str_at(a, "via") == "delivery" || !on_history_wanted ? 1 : 0;
             const uint64_t every = path == 1 ? kDeliveryAnswerEveryMs : kAnswerEveryMs;
             const bool quiet = !answered_[path] || now_ms >= last_answer_ms_[path] + every;
-            if (quiet && !pending_ && theirs >= 0 && static_cast<size_t>(theirs) < ours) {
+            // Anyone can send a want, unsigned and for free, so the store is
+            // only asked when an answer could actually be scheduled, and then
+            // at most once per kLookupEveryMs: a flood reuses the last count
+            // instead of costing a query per message.
+            if (!quiet || pending_ || theirs < 0) return false;
+            if (!counted_ || now_ms >= counted_ms_ + kLookupEveryMs) {
+                ours_ = store_.count(forum_);
+                counted_ = true;
+                counted_ms_ = now_ms;
+                ++history_lookups_;
+            }
+            if (static_cast<size_t>(theirs) < ours_) {
                 HistoryRequest r;
                 r.id = str_at(a, "id").substr(0, 64);
                 r.have = static_cast<size_t>(theirs);
@@ -346,6 +358,7 @@ bool Engine::accept(const Post& p, uint64_t now_ms) {
     // A reply to a topic we do not have yet is still kept: the topic may arrive
     // later, from another peer or from history, and the reply attaches then.
     if (!store_.put(p, now_ms)) return false;
+    counted_ = false;
     if (on_post) on_post(p, p.id());
     return true;
 }

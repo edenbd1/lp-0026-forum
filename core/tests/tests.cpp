@@ -608,6 +608,34 @@ TEST(a_replayed_partial_bundle_does_not_silence_the_answerers) {
     CHECK(answered);
 }
 
+TEST(a_flood_of_unsigned_wants_costs_one_count_per_window) {
+    // A want is unsigned and free to make, so it must not cost the receiver a
+    // store query each: thousands within a second are answered from one count.
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    ea.jitter = [] { return uint64_t{1000}; };
+    Account alice{"alice", Keypair::generate()};
+    for (int i = 0; i < 50; ++i) sa.put(author_as(alice, topic("t" + std::to_string(i))), 1);
+    // Nothing to answer (they claim more than we hold): no answer is ever
+    // scheduled, so the cooldown alone would never stop the counting.
+    for (int i = 0; i < 5000; ++i)
+        ea.receive(R"({"logos-forum-want":1,"forum":"Logos Forum","have":999999,"via":"delivery","id":"f)" +
+                   std::to_string(i) + "\"}", 10 + i / 10);
+    CHECK(ea.history_lookups() == 1);
+    // A second later the count is taken afresh, once.
+    for (int i = 0; i < 100; ++i)
+        ea.receive(R"({"logos-forum-want":1,"forum":"Logos Forum","have":999999,"via":"delivery","id":"g)" +
+                   std::to_string(i) + "\"}", 2000);
+    CHECK(ea.history_lookups() == 2);
+    // And an honest request is still answered.
+    ea.receive(R"({"logos-forum-want":1,"forum":"Logos Forum","have":0,"via":"delivery","id":"r1"})", 2100);
+    const size_t before = bus.log.size();
+    ea.tick(4000); ea.pump(4000);
+    bool answered = false;
+    for (size_t i = before; i < bus.log.size(); ++i) answered = answered || bus.log[i].find("\"re\":\"r1\"") != std::string::npos;
+    CHECK(answered);
+}
+
 TEST(a_node_away_for_long_gets_everything_it_missed_over_delivery) {
     // Answers are capped; a full one says so, and the asker pages down until
     // it has everything since it left.
