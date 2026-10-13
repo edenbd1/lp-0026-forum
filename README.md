@@ -27,7 +27,7 @@ and every post is checked by the app itself on arrival.
 > **Status:** the forum runs in **Logos Basecamp 0.3.0** (macOS and Linux) and is
 > installable from its [catalog](#install-in-basecamp). It has been tested end to
 > end on five real nodes, 24 checks, on logos.test and again on logos.dev
-> ([`docs/e2e.md`](docs/e2e.md)); the core has 47 tests of its own; CI is green
+> ([`docs/e2e.md`](docs/e2e.md)); the core has 54 tests of its own; CI is green
 > on Linux and macOS, and builds the Windows x86_64 package (a mingw cross
 > build, not yet run in Basecamp on Windows; the official catalog has no Windows
 > build of `liblogos_lez_rln_module` or `libp2p_module`, so `logos.test` with RLN
