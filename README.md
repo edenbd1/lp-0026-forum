@@ -16,7 +16,7 @@ and every post is checked by the app itself on arrival.
   <img alt="Logos Basecamp 0.3.0" src="https://img.shields.io/badge/Logos%20Basecamp-0.3.0-2f6b4f">
   <img alt="Logos Messaging (delivery_module) 0.3.0" src="https://img.shields.io/badge/Logos%20Messaging-0.3.0-2f6b4f">
   <img alt="network logos.dev" src="https://img.shields.io/badge/network-logos.dev-2f6b4f">
-  <a href="https://github.com/edenbd1/logos-forum-catalog"><img alt="catalog 0.3.5" src="https://img.shields.io/badge/catalog-0.3.5-e2552b"></a>
+  <a href="https://github.com/edenbd1/logos-forum-catalog"><img alt="catalog 0.3.6" src="https://img.shields.io/badge/catalog-0.3.6-e2552b"></a>
   <img alt="licence MIT / Apache-2.0" src="https://img.shields.io/badge/licence-MIT%20%2F%20Apache--2.0-7a9a3a">
 </p>
 
@@ -28,7 +28,7 @@ and every post is checked by the app itself on arrival.
 > installable from its [catalog](#install-in-basecamp). It has been tested end to
 > end on five real nodes, 24 checks, on logos.test and again on logos.dev, the
 > network it uses since testnet v0.3
-> ([`docs/e2e.md`](docs/e2e.md)); the core has 47 tests of its own; CI is green
+> ([`docs/e2e.md`](docs/e2e.md)); the core has 53 tests of its own; CI is green
 > on Linux and macOS, and builds the Windows x86_64 package (a mingw cross
 > build, not yet run in Basecamp on Windows).
 
