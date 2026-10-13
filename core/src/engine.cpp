@@ -43,6 +43,11 @@ int64_t int_at(const json& j, const char* k) {
     const auto it = j.find(k);
     return it != j.end() && it->is_number_integer() ? it->get<int64_t>() : 0;
 }
+// The forum an outbox payload (an encoded post) belongs to; "" if unreadable.
+std::string forum_of(const std::string& payload) {
+    const json j = json::parse(payload, nullptr, false);
+    return j.is_object() ? str_at(j, "forum") : std::string();
+}
 // A clock before 2020 is a test's clock, not a real one: no date check then.
 constexpr uint64_t kRealClockMs = 1577836800000ull;
 } // namespace
@@ -235,6 +240,9 @@ int Engine::pump(uint64_t now_ms) {
         ++sent;
     }
     for (const auto& item : store_.due(now_ms)) {
+        // The outbox is shared by every forum in this store (the public one
+        // and each private group): only this forum's posts go on its topic.
+        if (forum_of(item.payload) != forum_) continue;
         if (!limiter_.take(now_ms)) break;  // paced, not dropped: it stays due
         const SendResult r = net_.send(topic_, item.payload);
         if (r.ok) {
