@@ -345,7 +345,7 @@ void LogosForumBackend::bootstrap() {
         answerRe_ = r.id;
         // Off the delivery event's call stack: answering calls back into modules.
         QTimer::singleShot(0, this, [this]() {
-            if (!lastSnapshotCid_.empty() && postsAtLastSnapshot_ == store_->count())
+            if (!lastSnapshotCid_.empty() && postsAtLastSnapshot_ == store_->count(s(forumName())))
                 engine_->announce_snapshot(lastSnapshotCid_, postsAtLastSnapshot_, now_ms(), answerRe_);  // unchanged: same CID
             else
                 saveSnapshot();
@@ -360,7 +360,7 @@ void LogosForumBackend::bootstrap() {
     publishAccounts();
     initGroups();
     publishOutbox();
-    postsAtLastSnapshot_ = store_->count();
+    postsAtLastSnapshot_ = store_->count(s(forumName()));
     setNodeReady(true);  // composing needs only the local store
 
     wireDelivery();
@@ -377,7 +377,7 @@ void LogosForumBackend::bootstrap() {
     connect(&historyTimer_, &QTimer::timeout, [this]() { runCatchUp("periodic"); });
     historyTimer_.start(kCatchUpMs);
     if (g_fetchSnapshots) connect(&snapshotTimer_, &QTimer::timeout, [this]() {
-        if (store_ && store_->count() != postsAtLastSnapshot_) saveSnapshot();
+        if (store_ && store_->count(s(forumName())) != postsAtLastSnapshot_) saveSnapshot();
     });
     snapshotTimer_.start(kSnapshotMs);
 }
@@ -1130,6 +1130,7 @@ QString LogosForumBackend::compose(bool topic, const QString& target, const QStr
     }
     const std::string a = mode == 1 ? s(alias.trimmed()) : std::string();
     forum::Engine* e = currentEngine();  // the public forum, or the private one shown
+    if (!e) return QStringLiteral("error: this private forum is no longer joined");
     const std::string id = topic ? e->post_topic(as, s(title.trimmed()), s(text), a, now_ms())
                                  : e->post_reply(as, s(target), s(text), a, now_ms());
     if (id.empty()) return QStringLiteral("error: the post could not be saved on this device");
@@ -1519,10 +1520,10 @@ void LogosForumBackend::runCatchUp(const char* why) {
             // a request sent into an empty mesh is lost. Ask again shortly if
             // nothing has arrived, rather than waiting for the periodic catch-up.
             if (reason == "node started" || reason == "joined running node") {
-                const size_t had = store_->count();
+                const size_t had = store_->count(s(forumName()));
                 for (int delay : {20000, 60000})
                     QTimer::singleShot(delay, this, [this, had]() {
-                        if (!engine_ || store_->count() != had) return;
+                        if (!engine_ || store_->count(s(forumName())) != had) return;
                         engine_->request_history(now_ms(), !g_fetchSnapshots);
                         log("asked peers for history again (nothing arrived yet)");
                     });
@@ -1691,7 +1692,7 @@ QString LogosForumBackend::saveSnapshot() {
     armUploadWatchdog();
     uploadDoc_ = engine_->snapshot();
     uploadOffset_ = 0;
-    uploadPosts_ = store_->count();
+    uploadPosts_ = store_->count(s(forumName()));
     lastSnapshot_ = QStringLiteral("Saving snapshot…");
     publishHistory();
     // Every storage call from here on is asynchronous: a synchronous call made

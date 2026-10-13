@@ -70,8 +70,10 @@ LogosForumBackend::Joined* LogosForumBackend::joinedById(const std::string& foru
 
 forum::Engine* LogosForumBackend::currentEngine() {
     if (currentForum().isEmpty()) return engine_.get();
+    // Never the public engine for a private forum: a post meant for a group
+    // must not go out in the clear because the group went away.
     auto* j = joinedById(s(currentForum()));
-    return j ? j->engine.get() : engine_.get();
+    return j ? j->engine.get() : nullptr;
 }
 
 std::string LogosForumBackend::currentForumId() const {
