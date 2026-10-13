@@ -64,6 +64,18 @@ TEST(an_invite_carries_the_secret_and_the_name_and_nothing_else_parses) {
     CHECK(!Group::from_invite("logosforum://join/!!!!"));
     CHECK(!Group::from_invite("logosforum://join/" + std::string(2000, 'A')));
     CHECK(!Group::create("") && !Group::create("\xE2\x80\x8B") && !Group::create(std::string(kMaxGroupName + 1, 'n')));
+    {   // a well-formed invite whose name is one byte too long
+        std::string raw(1, '\x01'); raw += std::string(32, '\x07'); raw += std::string(kMaxGroupName + 1, 'n');
+        std::string enc(sodium_base64_encoded_len(raw.size(), sodium_base64_VARIANT_URLSAFE_NO_PADDING), '\0');
+        sodium_bin2base64(enc.data(), enc.size(), reinterpret_cast<const unsigned char*>(raw.data()), raw.size(), sodium_base64_VARIANT_URLSAFE_NO_PADDING);
+        enc.resize(std::strlen(enc.c_str()));
+        CHECK(!Group::from_invite("logosforum://join/" + enc));
+        raw.resize(raw.size() - 1);
+        enc.assign(sodium_base64_encoded_len(raw.size(), sodium_base64_VARIANT_URLSAFE_NO_PADDING), '\0');
+        sodium_bin2base64(enc.data(), enc.size(), reinterpret_cast<const unsigned char*>(raw.data()), raw.size(), sodium_base64_VARIANT_URLSAFE_NO_PADDING);
+        enc.resize(std::strlen(enc.c_str()));
+        CHECK(Group::from_invite("logosforum://join/" + enc).has_value());   // at the limit: fine
+    }
     // The name is cleaned like an alias: it cannot reorder what is shown next to it.
     CHECK(Group::create("\xE2\x80\xAE" "evil")->name == "evil");
 }
