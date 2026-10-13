@@ -195,3 +195,39 @@ TEST(titles_aliases_and_bodies_over_their_caps_are_refused_on_receipt) {
     CHECK(n.store.count() == 0);
     CHECK(n.engine.intake().refused() == 0);   // refused as malformed, before any budget
 }
+
+TEST(a_clock_stepping_back_does_not_widen_the_budget) {
+    // Ten topics now, the clock steps back an hour, ten more, the clock comes
+    // back: the ten from the "past" were charged now, so none is left.
+    using namespace intake_tests;
+    Node n; Account alice{"alice", Keypair::generate()}; make_known(n.store, alice);
+    int stored = 0;
+    for (int i = 0; i < 10; ++i) stored += n.live(author_as(alice, topic_at("a" + std::to_string(i), kNow)), kNow);
+    for (int i = 0; i < 10; ++i) stored += n.live(author_as(alice, topic_at("b" + std::to_string(i), kNow)), kNow - kHour + 1);
+    for (int i = 0; i < 10; ++i) stored += n.live(author_as(alice, topic_at("c" + std::to_string(i), kNow)), kNow + 1);
+    CHECK(stored == 20);
+}
+
+TEST(a_page_cut_short_by_the_budget_resumes_above_its_first_refused_post) {
+    // Our request is answered with ten posts, newest first, and "more"; the
+    // history budget has room for five. The next page must start after the
+    // fifth (the oldest one stored), not after the tenth.
+    using namespace intake_tests;
+    Bus bus; FakeNet b(bus); Store sb(":memory:"); Engine eb(sb, b, "Logos Forum"); b.engine = &eb;
+    IntakeLimits l; l.history_posts = 5; eb.set_intake_limits(l);
+    const std::string re = eb.request_history(1'000'000, true);
+    Account alice{"alice", Keypair::generate()};
+    std::vector<Post> posts;
+    for (int i = 0; i < 10; ++i) posts.push_back(author_as(alice, topic("t" + std::to_string(i))));
+    for (int i = 0; i < 10; ++i) { posts[i].ts_ms = 900'000 - i * 1000; sign(posts[i], alice.key.sk); }
+    nlohmann::json doc{{"logos-forum-snapshot", 1}, {"forum", "Logos Forum"}, {"re", re}, {"more", true}, {"posts", nlohmann::json::array()}};
+    for (const auto& p : posts) doc["posts"].push_back(encode(p));
+    eb.receive(doc.dump(), 1'000'100);
+    CHECK(sb.count() == 5);
+    eb.tick(1'000'100 + 70'000);                       // no room yet: the page waits
+    CHECK(nlohmann::json::parse(bus.log.back()).value("id", "") == re);
+    eb.tick(1'000'100 + 3'600'000);                    // an hour on: it is asked for
+    const auto want = nlohmann::json::parse(bus.log.back());
+    CHECK(want.value("until", uint64_t{0}) == posts[4].ts_ms);
+    CHECK(want.value("until_id", std::string()) == posts[4].id());
+}
