@@ -49,6 +49,9 @@ namespace {
 
 // Basecamp does not surface a ui-host's stderr, so the log also goes to
 // forum.log in the forum's data directory, where tests and bug reports read it.
+// It never names a post this install wrote, nor a delivery request id: a log
+// attached to a bug report must not say which posts, anonymous ones included,
+// came from here.
 QString g_logPath;
 void log(const std::string& m) {
     const std::string line = QDateTime::currentDateTime().toString(Qt::ISODateWithMs).toStdString() + " " + m;
@@ -305,19 +308,19 @@ void LogosForumBackend::bootstrap() {
             if (!p || !engine_) return;  // a history answer or a request: nothing to track
             const std::string id = p->id();
             if (sent) {
-                log("handed " + id.substr(0, 12) + " to delivery as request " + request);
+                log("handed a post to delivery");
                 if (request.empty()) return;
                 // The network may have confirmed it before this reply reached us.
                 if (earlyConfirms_.remove(q(request)) > 0) {
                     engine_->confirm(id);
-                    log("confirmed " + id.substr(0, 12) + " (before its send reply)");
+                    log("confirmed a post (before its send reply)");
                     publishOutbox();
                     emit postStateChanged(q(id), QStringLiteral("sent"), QString());
                     return;
                 }
                 inFlight_.insert(q(request), q(id));
             } else {
-                log("delivery refused " + id.substr(0, 12) + ": " + error);
+                log("delivery refused a post: " + error);
                 if (engine_->requeue(id, error.empty() ? "send failed" : error, now_ms())) publishOutbox();
                 emit postStateChanged(q(id), QStringLiteral("failed"), q(error));
             }
@@ -449,7 +452,7 @@ void LogosForumBackend::wireDelivery() {
         if (quotaHeld_.remove(id) && quotaHeld_.isEmpty() && rlnPhase_ == QLatin1String("quota"))
             setRln(QStringLiteral("active"), QString());
         if (engine_) engine_->confirm(s(id));
-        log("confirmed " + s(id).substr(0, 12) + " (" + how + ")");
+        log(std::string("confirmed a post (") + how + ")");
         publishOutbox();
         emit postStateChanged(id, QStringLiteral("sent"), QString());
     };
@@ -487,7 +490,7 @@ void LogosForumBackend::wireDelivery() {
         const QString request = data.value(0).toString();
         const auto it = inFlight_.constFind(request);
         if (it == inFlight_.constEnd()) return;  // not ours
-        log("held by the RLN rate limit: " + s(it.value()).substr(0, 12) + " (goes out when the epoch's quota refills)");
+        log("held a post for the RLN rate limit (it goes out when the epoch's quota refills)");
         quotaHeld_.insert(it.value());
         if (rlnPhase_ == QLatin1String("active")) setRln(QStringLiteral("quota"), QString());
         emit postStateChanged(it.value(), QStringLiteral("queued"), QStringLiteral("rate limit"));
@@ -499,7 +502,7 @@ void LogosForumBackend::wireDelivery() {
         const QString id = it.value();
         const QString why = data.value(2).toString();
         inFlight_.remove(request);
-        log("lost " + s(id).substr(0, 12) + ": " + s(why));
+        log("lost a post: " + s(why));
         // Accepted locally, then lost: back in the outbox, retried with back-off.
         if (engine_ && engine_->requeue(s(id), s(why), now_ms())) publishOutbox();
         emit postStateChanged(id, QStringLiteral("failed"), why);
