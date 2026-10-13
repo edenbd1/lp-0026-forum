@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS posts (
   ts INTEGER NOT NULL, author BLOB NOT NULL, sig BLOB NOT NULL, received INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS posts_topic ON posts(topic_id);
 CREATE INDEX IF NOT EXISTS posts_forum ON posts(forum, kind);
+CREATE INDEX IF NOT EXISTS posts_author ON posts(author);
 CREATE TABLE IF NOT EXISTS outbox (
   id TEXT PRIMARY KEY, payload TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
   next_try INTEGER NOT NULL, last_error TEXT NOT NULL DEFAULT '');
@@ -160,6 +161,12 @@ bool Store::put(const Post& p, uint64_t received_ms) {
 bool Store::has(const std::string& id) const {
     Stmt q(db_, "SELECT 1 FROM posts WHERE id=?");
     q.text(1, id);
+    return q.step();
+}
+
+bool Store::has_author(const std::string& forum, const PublicKey& author) const {
+    Stmt q(db_, "SELECT 1 FROM posts WHERE author=? AND forum=? LIMIT 1");
+    q.blob(1, author.data(), author.size()).text(2, forum);
     return q.step();
 }
 

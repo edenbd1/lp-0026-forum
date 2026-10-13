@@ -3,6 +3,7 @@
 #include "forum/dns.h"
 #include "forum/engine.h"
 #include "forum/identity.h"
+#include "forum/intake.h"
 #include "forum/store.h"
 #include "forum/post.h"
 #include "forum/rln.h"
@@ -1136,6 +1137,8 @@ TEST(what_a_message_added_is_known_without_counting_the_store) {
     ea.post_topic(&alice, "mine", "b", "", 5);                  // our own posts are not received
     CHECK(ea.posts_received() == 4);
 }
+
+#include "intake_tests.inc"
 
 int main() {
     for (auto& t : all()) {

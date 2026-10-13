@@ -48,6 +48,8 @@ public:
     // True if the post was new; false if its id was already stored.
     bool put(const Post& p, uint64_t received_ms);
     bool has(const std::string& id) const;
+    // Whether the store holds a post of `forum` signed by `author`.
+    bool has_author(const std::string& forum, const PublicKey& author) const;
     std::optional<Post> get(const std::string& id) const;
 
     // Topics of a forum, most recently active first.
