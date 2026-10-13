@@ -26,6 +26,12 @@ struct Keypair {
     PublicKey pk{};
     SecretKey sk{};
     static Keypair generate();
+    // Every copy of a secret key is wiped when it goes away: temporaries,
+    // vector reallocations and accounts dropped from memory alike.
+    Keypair() = default;
+    Keypair(const Keypair&) = default;
+    Keypair& operator=(const Keypair&) = default;
+    ~Keypair();
 };
 
 struct Account {
@@ -33,6 +39,9 @@ struct Account {
     Keypair key;
     uint64_t created_ms = 0;
     uint32_t posts = 0;  // posts signed since this key was created
+    // A recovery phrase has been shown for this key. Rotation clears it: the
+    // phrase written down before restores the retired key, not the new one.
+    bool backed_up = false;
 };
 
 // When an account's key is replaced by a fresh one. Zero disables a limit.

@@ -1156,6 +1156,8 @@ TEST(a_deeply_nested_or_oversized_message_is_dropped_without_harm) {
     CHECK(sa.count() == 0);
 }
 
+#include "accounts_tests.inc"
+
 int main() {
     for (auto& t : all()) {
         const int before = failures;
