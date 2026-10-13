@@ -1,0 +1,115 @@
+# exiftool 12.57 (Debian bookworm) on tests/media/media_tests output: build-media/media_tests /tmp/mt-out
+# *-in.* are the inputs the test builds; *-out.* and the thumbnail are what the forum uploads and posts.
+=== phone-in.jpg
+[IFD0]          Make                            : SecretCam
+[IFD0]          Orientation                     : Horizontal (normal)
+[GPS]           GPSLatitudeRef                  : North
+[GPS]           GPSLatitude                     : 48 deg 51' 24.22"
+[GPS]           GPSLongitudeRef                 : East
+[GPS]           GPSLongitude                    : 2 deg 17' 40.26"
+[XMP-exif]      GPSLatitude                     : 48 deg 53' 42.90" N
+[ICC-header]    ProfileCMMType                  : 
+[ICC-header]    ProfileVersion                  : 4.4.0
+[ICC-header]    ProfileClass                    : Display Device Profile
+[ICC-header]    ColorSpaceData                  : RGB
+[ICC-header]    ProfileConnectionSpace          : XYZ
+[ICC-header]    ProfileDateTime                 : 0000:00:00 00:00:00
+[ICC-header]    ProfileFileSignature            : acsp
+[ICC-header]    PrimaryPlatform                 : Unknown ()
+[ICC-header]    CMMFlags                        : Not Embedded, Independent
+[ICC-header]    DeviceManufacturer              : 
+[ICC-header]    DeviceModel                     : 
+[ICC-header]    DeviceAttributes                : Reflective, Glossy, Positive, Color
+[ICC-header]    RenderingIntent                 : Perceptual
+[ICC-header]    ConnectionSpaceIlluminant       : 0.9642 1 0.82491
+[ICC-header]    ProfileCreator                  : Unknown (Qt..)
+[ICC-header]    ProfileID                       : 0
+[ICC_Profile]   RedMatrixColumn                 : 0.51509 0.24118 -0.00105
+[ICC_Profile]   GreenMatrixColumn               : 0.29198 0.69225 0.04189
+[ICC_Profile]   BlueMatrixColumn                : 0.15715 0.06657 0.78435
+[ICC_Profile]   MediaWhitePoint                 : 0.95042 1 1.0889
+[ICC_Profile]   ProfileCopyright                : N/A
+[ICC_Profile]   ChromaticAdaptation             : 1.04785 0.0229 -0.05014 0.02957 0.99046 -0.01706 -0.00923 0.01505 0.75206
+[ICC_Profile]   RedTRC                          : (Binary data 32 bytes, use -b option to extract)
+[ICC_Profile]   GreenTRC                        : (Binary data 32 bytes, use -b option to extract)
+[ICC_Profile]   BlueTRC                         : (Binary data 32 bytes, use -b option to extract)
+[ICC_Profile]   ProfileDescription              : Display P3
+[JFIF]          JFIFVersion                     : 1.01
+[JFIF]          ResolutionUnit                  : inches
+[JFIF]          XResolution                     : 96
+[JFIF]          YResolution                     : 96
+[Composite]     ImageSize                       : 64x32
+[Composite]     Megapixels                      : 0.002
+[Composite]     GPSLatitude                     : 48 deg 51' 24.22" N
+[Composite]     GPSLongitude                    : 2 deg 17' 40.26" E
+[Composite]     GPSLatitudeRef                  : North
+[Composite]     GPSPosition                     : 48 deg 51' 24.22" N, 2 deg 17' 40.26" E
+=== phone-out.jpg
+[JFIF]          JFIFVersion                     : 1.01
+[JFIF]          ResolutionUnit                  : inches
+[JFIF]          XResolution                     : 96
+[JFIF]          YResolution                     : 96
+[Composite]     ImageSize                       : 64x32
+[Composite]     Megapixels                      : 0.002
+=== phone-thumb.jpg
+[JFIF]          JFIFVersion                     : 1.01
+[JFIF]          ResolutionUnit                  : inches
+[JFIF]          XResolution                     : 96
+[JFIF]          YResolution                     : 96
+[Composite]     ImageSize                       : 64x32
+[Composite]     Megapixels                      : 0.002
+=== text-in.png
+[PNG]           ImageWidth                      : 50
+[PNG]           ImageHeight                     : 40
+[PNG]           BitDepth                        : 8
+[PNG]           ColorType                       : RGB with Alpha
+[PNG]           Compression                     : Deflate/Inflate
+[PNG]           Filter                          : Adaptive
+[PNG]           Interlace                       : Noninterlaced
+[PNG]           ProfileName                     : Display P3
+[PNG]           Comment                         : secret-png-text
+[PNG]           GPS                             : 48.857N 2.295E
+[ICC-header]    ProfileCMMType                  : 
+[ICC-header]    ProfileVersion                  : 4.4.0
+[ICC-header]    ProfileClass                    : Display Device Profile
+[ICC-header]    ColorSpaceData                  : RGB
+[ICC-header]    ProfileConnectionSpace          : XYZ
+[ICC-header]    ProfileDateTime                 : 0000:00:00 00:00:00
+[ICC-header]    ProfileFileSignature            : acsp
+[ICC-header]    PrimaryPlatform                 : Unknown ()
+[ICC-header]    CMMFlags                        : Not Embedded, Independent
+[ICC-header]    DeviceManufacturer              : 
+[ICC-header]    DeviceModel                     : 
+[ICC-header]    DeviceAttributes                : Reflective, Glossy, Positive, Color
+[ICC-header]    RenderingIntent                 : Perceptual
+[ICC-header]    ConnectionSpaceIlluminant       : 0.9642 1 0.82491
+[ICC-header]    ProfileCreator                  : Unknown (Qt..)
+[ICC-header]    ProfileID                       : 0
+[ICC_Profile]   RedMatrixColumn                 : 0.51509 0.24118 -0.00105
+[ICC_Profile]   GreenMatrixColumn               : 0.29198 0.69225 0.04189
+[ICC_Profile]   BlueMatrixColumn                : 0.15715 0.06657 0.78435
+[ICC_Profile]   MediaWhitePoint                 : 0.95042 1 1.0889
+[ICC_Profile]   ProfileCopyright                : N/A
+[ICC_Profile]   ChromaticAdaptation             : 1.04785 0.0229 -0.05014 0.02957 0.99046 -0.01706 -0.00923 0.01505 0.75206
+[ICC_Profile]   RedTRC                          : (Binary data 32 bytes, use -b option to extract)
+[ICC_Profile]   GreenTRC                        : (Binary data 32 bytes, use -b option to extract)
+[ICC_Profile]   BlueTRC                         : (Binary data 32 bytes, use -b option to extract)
+[ICC_Profile]   ProfileDescription              : Display P3
+[PNG-pHYs]      PixelsPerUnitX                  : 3780
+[PNG-pHYs]      PixelsPerUnitY                  : 3780
+[PNG-pHYs]      PixelUnits                      : meters
+[Composite]     ImageSize                       : 50x40
+[Composite]     Megapixels                      : 0.002
+=== text-out.png
+[PNG]           ImageWidth                      : 50
+[PNG]           ImageHeight                     : 40
+[PNG]           BitDepth                        : 8
+[PNG]           ColorType                       : RGB with Alpha
+[PNG]           Compression                     : Deflate/Inflate
+[PNG]           Filter                          : Adaptive
+[PNG]           Interlace                       : Noninterlaced
+[PNG-pHYs]      PixelsPerUnitX                  : 3780
+[PNG-pHYs]      PixelsPerUnitY                  : 3780
+[PNG-pHYs]      PixelUnits                      : meters
+[Composite]     ImageSize                       : 50x40
+[Composite]     Megapixels                      : 0.002
