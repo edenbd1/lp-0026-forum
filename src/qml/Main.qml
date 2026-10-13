@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "Markdown.js" as Md
 
 // Logos Forum. The view holds no forum state of its own: it asks the backend
 // for the topic list and the open thread, and asks again whenever the backend
@@ -277,14 +278,17 @@ Item {
     component Label2: Text { color: root.text; font.pixelSize: 14; wrapMode: Text.WrapAtWordBoundaryOrAnywhere; textFormat: Text.PlainText }
     component Dim: Text { color: root.dim; font.pixelSize: 12; wrapMode: Text.WrapAtWordBoundaryOrAnywhere; textFormat: Text.PlainText }
     // Text from the network with its https links clickable (see linkify).
-    // Text without a link stays plain text, exactly as before.
+    // Text without a link stays plain text, exactly as before. Post bodies
+    // (`markdown`) are rendered by Markdown.js instead: the same escaping and
+    // links, plus bold, italic, code, quotes and lists, and only tags it writes.
     component LinkText: Text {
         id: lt
         property string raw: ""
-        readonly property string html: root.linkify(raw)
+        property bool markdown: false
+        readonly property string html: markdown ? Md.render(raw, { code: root.accent, quote: root.dim, dim: root.dim }) : root.linkify(raw)
         readonly property bool linked: html.indexOf("<a href=") >= 0
-        text: linked ? html : raw
-        textFormat: linked ? Text.StyledText : Text.PlainText
+        text: linked || markdown ? html : raw
+        textFormat: linked || markdown ? Text.StyledText : Text.PlainText
         color: root.text; font.pixelSize: 14; wrapMode: Text.WrapAtWordBoundaryOrAnywhere
         linkColor: root.link
         onLinkActivated: function (href) { root.openLink(href) }
@@ -726,14 +730,14 @@ Item {
                                     font.pixelSize: 18; font.bold: true
                                 }
                                 Byline { post: root.openTopic; visible: root.openTopic !== null; Layout.fillWidth: true }
-                                LinkText { Layout.fillWidth: true; raw: root.openTopic ? root.openTopic.body : "" }
+                                LinkText { Layout.fillWidth: true; markdown: true; raw: root.openTopic ? root.openTopic.body : "" }
                                 Rectangle { Layout.fillWidth: true; height: 1; color: root.line }
                                 Repeater {
                                     model: root.openReplies
                                     delegate: ColumnLayout {
                                         Layout.fillWidth: true; spacing: 4
                                         Byline { post: modelData; Layout.fillWidth: true }
-                                        LinkText { Layout.fillWidth: true; raw: modelData.body }
+                                        LinkText { Layout.fillWidth: true; markdown: true; raw: modelData.body }
                                     }
                                 }
                             }
