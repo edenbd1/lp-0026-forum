@@ -61,7 +61,60 @@ CREATE TABLE IF NOT EXISTS post_att (id TEXT PRIMARY KEY, manifest TEXT NOT NULL
 CREATE TABLE IF NOT EXISTS own_images (cid TEXT PRIMARY KEY);
 )sql";
 
+constexpr size_t kImagePad = 4096;
+
+std::array<uint8_t, crypto_aead_xchacha20poly1305_ietf_KEYBYTES> image_key(const GroupKey& seal_key) {
+    std::array<uint8_t, crypto_aead_xchacha20poly1305_ietf_KEYBYTES> k{};
+    static const char ctx[] = "LFimage1";
+    crypto_generichash(k.data(), k.size(), reinterpret_cast<const uint8_t*>(ctx), sizeof ctx - 1, seal_key.data(), seal_key.size());
+    return k;
+}
+std::string image_ad(const std::string& forum_id) { return "logos-forum:image:v1:" + forum_id; }
+
 } // namespace
+
+size_t sealed_image_size(size_t plain_bytes) {
+    return 1 + crypto_aead_xchacha20poly1305_ietf_NPUBBYTES + (plain_bytes / kImagePad + 1) * kImagePad +
+           crypto_aead_xchacha20poly1305_ietf_ABYTES;
+}
+
+std::string seal_image(const GroupKey& seal_key, const std::string& forum_id, const std::string& plain) {
+    if (plain.size() > kMaxImageBytes) return {};
+    std::vector<uint8_t> padded(plain.size() + kImagePad);
+    std::copy(plain.begin(), plain.end(), padded.begin());
+    size_t padded_len = 0;
+    if (sodium_pad(&padded_len, padded.data(), plain.size(), kImagePad, padded.size()) != 0) return {};
+    const auto key = image_key(seal_key);
+    const std::string ad = image_ad(forum_id);
+    std::string out(1 + crypto_aead_xchacha20poly1305_ietf_NPUBBYTES + padded_len + crypto_aead_xchacha20poly1305_ietf_ABYTES, '\0');
+    out[0] = 1;
+    auto* nonce = reinterpret_cast<uint8_t*>(out.data() + 1);
+    randombytes_buf(nonce, crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
+    unsigned long long clen = 0;
+    crypto_aead_xchacha20poly1305_ietf_encrypt(nonce + crypto_aead_xchacha20poly1305_ietf_NPUBBYTES, &clen, padded.data(), padded_len,
+                                               reinterpret_cast<const uint8_t*>(ad.data()), ad.size(), nullptr, nonce, key.data());
+    sodium_memzero(padded.data(), padded.size());
+    return out;
+}
+
+std::optional<std::string> open_image(const GroupKey& seal_key, const std::string& forum_id, const std::string& sealed) {
+    const size_t head = 1 + crypto_aead_xchacha20poly1305_ietf_NPUBBYTES;
+    if (sealed.size() < head + crypto_aead_xchacha20poly1305_ietf_ABYTES || sealed[0] != 1 ||
+        sealed.size() > sealed_image_size(kMaxImageBytes))
+        return std::nullopt;
+    const auto key = image_key(seal_key);
+    const std::string ad = image_ad(forum_id);
+    const auto* nonce = reinterpret_cast<const uint8_t*>(sealed.data() + 1);
+    std::vector<uint8_t> plain(sealed.size() - head);
+    unsigned long long plen = 0;
+    if (crypto_aead_xchacha20poly1305_ietf_decrypt(plain.data(), &plen, nullptr, nonce + crypto_aead_xchacha20poly1305_ietf_NPUBBYTES,
+                                                   sealed.size() - head, reinterpret_cast<const uint8_t*>(ad.data()), ad.size(),
+                                                   nonce, key.data()) != 0)
+        return std::nullopt;
+    size_t unpadded = 0;
+    if (sodium_unpad(&unpadded, plain.data(), static_cast<size_t>(plen), kImagePad) != 0) return std::nullopt;
+    return std::string(reinterpret_cast<const char*>(plain.data()), unpadded);
+}
 
 std::string sha256_hex(const std::string& bytes) {
     uint8_t h[crypto_hash_sha256_BYTES];

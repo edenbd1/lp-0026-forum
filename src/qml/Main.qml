@@ -864,7 +864,7 @@ Item {
             Dim { Layout.alignment: Qt.AlignRight; visible: topicBody.length > 16000 || topicTitle.length > 160
                   color: topicBody.length > 20000 ? "#e5484d" : root.dim
                   text: "title " + topicTitle.length + " / 200 · body " + topicBody.length + " / 20000" }
-            Attachments { id: topicImages; Layout.fillWidth: true; app: root; anonymous: topicAs.mode === 2 }
+            Attachments { id: topicImages; objectName: "topicImages"; Layout.fillWidth: true; app: root; anonymous: topicAs.mode === 2 }
             SignAs { id: topicAs; Layout.fillWidth: true }
             RowLayout {
               Layout.alignment: Qt.AlignRight

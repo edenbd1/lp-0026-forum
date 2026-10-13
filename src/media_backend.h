@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "forum/engine.h"
 #include "forum/media.h"
 #include "forum/post.h"
 #include "forum/search.h"
@@ -30,6 +31,8 @@ public:
 
     // Once the engine exists: connects the core's callbacks and Storage's events.
     void start(bool viaMix);
+    // Each forum's engine (the public one, and each joined group's).
+    void wire(forum::Engine& engine);
 
     QString attach(const QString& fileUrl);
     QString discard(const QString& token);
@@ -55,15 +58,18 @@ private:
     struct Pending {
         QByteArray full, thumb;
         QString type, path, session, cid, error;
+        std::string forum;     // the forum it was attached in
         int w = 0, h = 0;
         bool done = false;
     };
     struct Download {
-        std::string postId, cid, sha256, path;
+        std::string postId, cid, sha256, path, forum;
         int index = 0;
         uint64_t bytes = 0;
     };
-    std::vector<forum::ImageRef> images(const std::string& postId) const;
+    std::vector<forum::ImageRef> images(const std::string& postId, std::string* forum = nullptr) const;
+    forum::Engine* engineFor(const std::string& forumId) const;
+    std::optional<forum::GroupKey> groupKey(const std::string& forumId) const;
     QString cachePath(const std::string& sha256) const;
     QByteArray cached(const forum::ImageRef& ref) const;
     void startDownload(const std::string& postId, int index, const forum::ImageRef& ref);

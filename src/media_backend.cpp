@@ -88,7 +88,9 @@ void ForumMedia::start(bool viaMix) {
     mlog(dir_, std::string("search: ") + (search_->fts() ? "SQLite FTS5" : "plain scan (this SQLite has no FTS5)"));
 
     auto* engine = b_.engine_.get();
-    engine->on_reaction = [this](const std::string& target) { emit b_.reactionsChanged(q(target)); };
+    wire(*engine);
+    // Only the public forum answers or follows "who has this CID": a
+    // group's images are sealed, and fetched through the DHT alone.
     engine->on_image_provider = [this](const std::string& cid, const std::string& peer, const std::vector<std::string>& addrs) {
         // A peer says it has an image we asked for. Over Mix nothing is
         // dialled (that would reveal us); otherwise only public addresses.
@@ -134,6 +136,23 @@ void ForumMedia::start(bool viaMix) {
     });
 }
 
+void ForumMedia::wire(forum::Engine& engine) {
+    engine.on_reaction = [this](const std::string& target) { emit b_.reactionsChanged(q(target)); };
+}
+
+forum::Engine* ForumMedia::engineFor(const std::string& forumId) const {
+    if (forumId == s(b_.forumName())) return b_.engine_.get();
+    auto* j = b_.joinedById(forumId);
+    return j ? j->engine.get() : nullptr;
+}
+
+std::optional<forum::GroupKey> ForumMedia::groupKey(const std::string& forumId) const {
+    if (forumId == s(b_.forumName())) return std::nullopt;
+    auto* j = b_.joinedById(forumId);
+    if (!j) return std::nullopt;
+    return j->group.seal_key();
+}
+
 QString ForumMedia::cachePath(const std::string& sha256) const {
     return dir_ + QStringLiteral("/media/cache/") + q(sha256);
 }
@@ -156,13 +175,20 @@ QString ForumMedia::attach(const QString& fileUrl) {
     randombytes_buf(raw, sizeof raw);
     const QString token = q(forum::to_hex(raw, sizeof raw));
     Pending pend;
+    pend.forum = b_.currentForumId();
+    const bool group = pend.forum != s(b_.forumName());
+    const auto key = groupKey(pend.forum);
+    if (group && !key) return QStringLiteral("error: this private forum is no longer joined");
     pend.full = p.full;
     pend.thumb = p.thumb;
     pend.type = p.type;
     pend.w = p.w;
     pend.h = p.h;
     pend.path = dir_ + QStringLiteral("/media/out/") + token + (p.type == QLatin1String("image/png") ? ".png" : ".jpg");
-    if (!writePrivate(pend.path, p.full)) return QStringLiteral("error: the image could not be written");
+    // In a private group the bytes on Logos Storage are sealed with the
+    // group's key: a CID is readable by anyone who learns it.
+    const QByteArray stored = key ? QByteArray::fromStdString(forum::seal_image(*key, pend.forum, p.full.toStdString())) : p.full;
+    if (stored.isEmpty() || !writePrivate(pend.path, stored)) return QStringLiteral("error: the image could not be written");
     pending_[token] = pend;
     // Not announced (advertise=false) until the post is: an image attached
     // and then dropped is never offered to anyone.
@@ -206,6 +232,8 @@ QString ForumMedia::manifest(const QString& tokens, std::string* out) {
     for (const auto& t : list) {
         const auto it = pending_.find(t);
         if (it == pending_.end()) return QStringLiteral("error: an attached image is gone; attach it again");
+        if (it->second.forum != b_.currentForumId())
+            return QStringLiteral("error: an image was attached in another forum; attach it again here");
         if (!it->second.done) return QStringLiteral("error: an image is still being stored; try again in a moment");
         if (it->second.cid.isEmpty()) return QStringLiteral("error: an image could not be stored: %1").arg(it->second.error);
         ImageRef r;
@@ -229,14 +257,15 @@ void ForumMedia::published(const QString& tokens) {
         if (it == pending_.end()) continue;
         // Now announced and served: readers can fetch it.
         b_.modules().storage_module.setAdvertiseAsync(it->second.cid, true, [](LogosResult) {});
-        b_.engine_->add_own_image(s(it->second.cid));
+        if (auto* e = engineFor(it->second.forum)) e->add_own_image(s(it->second.cid));
         pending_.erase(it);
     }
 }
 
-std::vector<ImageRef> ForumMedia::images(const std::string& postId) const {
+std::vector<ImageRef> ForumMedia::images(const std::string& postId, std::string* forum) const {
     const auto p = b_.store_->get(postId);
     if (!p) return {};
+    if (forum) *forum = p->forum;
     const auto imgs = forum::manifest_images(p->body, b_.engine_->manifest(postId));
     return imgs ? *imgs : std::vector<ImageRef>{};
 }
@@ -288,8 +317,11 @@ void ForumMedia::decorate(QJsonObject& o, const forum::Post& p, const std::strin
 }
 
 QString ForumMedia::load(const QString& postId, int index) {
-    const auto imgs = images(s(postId));
+    std::string forumId;
+    const auto imgs = images(s(postId), &forumId);
     if (index < 0 || index >= static_cast<int>(imgs.size())) return QStringLiteral("error: no such image");
+    forum::Engine* engine = engineFor(forumId);
+    if (!engine) return QStringLiteral("error: this private forum is no longer joined");
     const ImageRef& ref = imgs[static_cast<size_t>(index)];
     if (!cached(ref).isEmpty()) {
         emit b_.imageState(postId, index, QStringLiteral("ready"), QString());
@@ -304,14 +336,16 @@ QString ForumMedia::load(const QString& postId, int index) {
     wanted_[ref.cid] = {s(postId), index};
     // And ask the topic who has it, for when the DHT cannot find it (both
     // ends behind NAT). Paced in the engine, once a minute per CID.
-    b_.engine_->request_image(ref.cid, now_ms());
+    engine->request_image(ref.cid, now_ms());  // sealed, on a group's topic
     return QString();
 }
 
 void ForumMedia::startDownload(const std::string& postId, int index, const ImageRef& ref) {
     uint8_t raw[8];
     randombytes_buf(raw, sizeof raw);
-    Download d{postId, ref.cid, ref.sha256, s(dir_ + QStringLiteral("/media/in/") + q(forum::to_hex(raw, sizeof raw))), index, ref.bytes};
+    const auto p = b_.store_->get(postId);
+    Download d{postId, ref.cid, ref.sha256, s(dir_ + QStringLiteral("/media/in/") + q(forum::to_hex(raw, sizeof raw))),
+               p ? p->forum : std::string(), index, ref.bytes};
     const QString session = q(ref.cid);  // storage_module names a download session by its CID
     downloads_[session] = d;
     emit b_.imageState(q(postId), index, QStringLiteral("loading"), QString());
@@ -339,7 +373,9 @@ bool ForumMedia::downloadProgress(const QString& sessionId, const QString& paylo
         const auto f = j.find(k);
         return f != j.end() && f->is_number_unsigned() ? f->get<uint64_t>() : 0;
     };
-    if (num("total") > it->second.bytes || num("bytes") > it->second.bytes) {
+    const bool group = groupKey(it->second.forum).has_value();
+    const uint64_t most = group ? forum::sealed_image_size(it->second.bytes) : it->second.bytes;
+    if (num("total") > most || num("bytes") > most) {
         b_.modules().storage_module.downloadCancelAsync(sessionId, [](LogosResult) {});
         finish(sessionId, false, QStringLiteral("larger than the signed size: not shown"));
     }
@@ -360,7 +396,15 @@ void ForumMedia::finish(const QString& session, bool ok, const QString& why) {
     const QString path = q(d.path);
     QString state = QStringLiteral("failed"), detail = why;
     if (ok) {
-        const QByteArray bytes = readCapped(path, static_cast<qint64>(forum::kMaxImageBytes));
+        QByteArray bytes = readCapped(path, static_cast<qint64>(forum::sealed_image_size(forum::kMaxImageBytes)));
+        // A group's image is opened with the group's key first; what does not
+        // open is not the image.
+        if (const auto key = groupKey(d.forum)) {
+            const auto plain = forum::open_image(*key, d.forum, bytes.toStdString());
+            bytes = plain ? QByteArray::fromStdString(*plain) : QByteArray();
+        } else if (d.forum != s(b_.forumName())) {
+            bytes.clear();  // a group left meanwhile
+        }
         ImageRef ref;
         ref.sha256 = d.sha256;
         ref.bytes = d.bytes;
@@ -395,7 +439,9 @@ QString ForumMedia::react(const QString& postId, int emoji) {
     if (!as) return QStringLiteral("error: no account selected");
     const auto had = b_.engine_->reactions().get(as->key.pk, s(postId), emoji);
     const bool on = !(had && had->on);
-    if (b_.engine_->react(*as, s(postId), emoji, on, now_ms()).empty()) return QStringLiteral("error: this post cannot be reacted to");
+    forum::Engine* engine = b_.currentEngine();  // the reaction goes where the post is, sealed in a group
+    if (!engine) return QStringLiteral("error: this private forum is no longer joined");
+    if (engine->react(*as, s(postId), emoji, on, now_ms()).empty()) return QStringLiteral("error: this post cannot be reacted to");
     QTimer::singleShot(0, &b_, [this]() { b_.pump(); });
     return QString();
 }
@@ -403,10 +449,15 @@ QString ForumMedia::react(const QString& postId, int emoji) {
 QString ForumMedia::search(const QString& query) {
     QJsonArray out;
     if (!search_) return dump(QJsonDocument(out));
-    const std::string forumName = s(b_.forumName());
-    // Muted authors are left out here once muting exists (the hook is the
-    // last argument); today nobody is hidden.
-    const auto hits = search_->find(forumName, s(query), 50, {});
+    // The forum shown (public, or a joined group), without what this
+    // account muted or hid (moderation.h): a muted key, a hidden post, or a
+    // reply in a hidden thread.
+    const std::string forumName = b_.currentForumId();
+    const std::string account = s(b_.selectedLabel_);
+    forum::Moderation* mod = b_.moderation_.get();
+    const auto hits = search_->find(forumName, s(query), 50, [&](const forum::SearchHit& h) {
+        return mod && (mod->is_muted(account, h.author) || mod->is_hidden(account, h.id) || mod->is_hidden(account, h.topic_id));
+    });
     for (const auto& h : hits) {
         const auto p = b_.store_->get(h.id);
         if (!p || p->ts_ms > now_ms() + forum::Engine::kMaxClockSkewMs) continue;

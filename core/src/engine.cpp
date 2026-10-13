@@ -256,7 +256,10 @@ std::string Engine::react(Account& as, const std::string& target, int emoji, boo
     // clock that went back.
     const auto had = reactions_->get(as.key.pk, target, emoji);
     r.ts_ms = had && had->ts_ms >= now_ms ? had->ts_ms + 1 : now_ms;
-    if (!well_formed(r) || !store_.has(target)) return {};
+    // Only on a post of this engine's forum: a reaction on a private group's
+    // post must never go out on the public topic, where it would name it.
+    const auto post = store_.get(target);
+    if (!well_formed(r) || !post || post->forum != forum_) return {};
     sign(r, as.key.sk);
     if (!reactions_->put(r)) return {};
     const std::string payload = encode(r);
@@ -265,11 +268,11 @@ std::string Engine::react(Account& as, const std::string& target, int emoji, boo
     return payload;
 }
 
-void Engine::receive_reaction(const Reaction& r, uint64_t now_ms, bool live) {
+void Engine::receive_reaction(const Reaction& r, uint64_t now_ms, Origin from) {
     if (r.forum != forum_) return;
     // Dated far ahead it would outlast every later state of its author's.
     if (now_ms >= kRealClockMs && r.ts_ms > now_ms + kMaxClockSkewMs) return;
-    if (reactions_->receive(r, now_ms, live) == Reactions::Outcome::Stored && on_reaction) on_reaction(r.target);
+    if (reactions_->receive(r, now_ms, from) == Reactions::Outcome::Stored && on_reaction) on_reaction(r.target);
 }
 
 std::string Engine::compose(Post p, Account* as, const std::string& alias, uint64_t now_ms) {
@@ -354,7 +357,7 @@ bool Engine::receive(const std::string& payload, uint64_t now_ms, Origin from) {
         const json a = json::parse(payload, nullptr, false);
         if (a.is_object() && int_at(a, kReactionTag) == 1) {
             // A signed reaction: limited before its signature is checked.
-            if (const auto r = decode_reaction(payload)) receive_reaction(*r, now_ms, true);
+            if (const auto r = decode_reaction(payload)) receive_reaction(*r, now_ms, Origin::Live);
             return false;
         }
         if (a.is_object() && int_at(a, kImageWantTag) == 1 && str_at(a, "forum") == forum_) {
@@ -615,7 +618,7 @@ int Engine::import_snapshot(const std::string& doc, uint64_t now_ms, std::vector
         size_t n = 0;
         for (const auto& m : *rs) {
             if (!m.is_string() || ++n > Reactions::kMaxPerBundle) break;
-            if (const auto r = decode_reaction(m.get<std::string>())) receive_reaction(*r, now_ms, false);
+            if (const auto r = decode_reaction(m.get<std::string>())) receive_reaction(*r, now_ms, from);
         }
     }
     return added;

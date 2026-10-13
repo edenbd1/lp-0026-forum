@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import "sample-images.js" as Pics
 
 // Renders the real Main.qml against a stand-in backend, at a given size and in
 // a given state, and saves a screenshot. Used to check the layout at every
@@ -8,6 +9,9 @@ import QtQuick.Controls
 //   qml tests/qml/Harness.qml -- <width> <height> <state> <out.png>
 //   out.png "live" keeps the window open (to resize it by hand) instead of saving.
 //   state: welcome | list | thread | alias | anonymous | newtopic | accounts | offline | stress | inject | links
+//          | images | imagefail | imagecompose | search
+//   (images: posts with images and reactions; imagefail: a download that does not match its signed hash;
+//    imagecompose: the composer with two attachments; search: results for "reset")
 //          | private | create | join | invite | leave | muted   (private forums and moderation)
 //   (inject: a title, an alias and bodies carrying <img> tags, https links and plain http URLs pointing at 127.0.0.1:8977, none to be fetched)
 //   (links: a thread whose posts carry links, for screenshots)
@@ -15,6 +19,7 @@ import QtQuick.Controls
 //   qml tests/qml/Harness.qml -- 800 600 linkify   unit cases for linkify/safeUrl, exit 1 on any failure
 //   qml tests/qml/Harness.qml -- 800 600 authors   who the topic list names, exit 1 on any failure
 //   qml tests/qml/Harness.qml -- 800 600 scroll    auto-scroll behaviour of the thread, exit 1 on any failure
+//   qml tests/qml/Harness.qml -- 800 600 media     images and reactions: only backend data: URLs, nothing loaded without a click
 Window {
     id: win
     readonly property var args: Qt.application.arguments.slice(Qt.application.arguments.indexOf("--") + 1)
@@ -102,8 +107,19 @@ Window {
                 post("r4", "Bob", "43ca10be77f0e2d9a8b6c4e2f0a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e353a0", "identity", true, 0,
                      "Written on a train with no signal. It goes out when I'm back online.", { state: win.state === "offline" ? "sending" : "" })
             ]
+            if (win.state === "images" || win.state === "imagefail" || win.state === "media")
+                return JSON.stringify({ topic: imageTopic, replies: imageReplies() })
             if (win.state === "stress") return JSON.stringify({ topic: stressTopic, replies: [stressTopic] })
-            if (win.state === "inject") return JSON.stringify({ topic: injectTopic, replies: [injectTopic].concat(injectReplies) })
+            if (win.state === "inject") {
+                // Images whose thumbnails and full image are not the backend's
+                // own data: URLs (a URL to the check's server, an SVG that
+                // would fetch one): none may be loaded.
+                var withImages = Object.assign({}, injectTopic, { images: [
+                    img(0, true, { thumb: "http://127.0.0.1:8977/thumb.png" }),
+                    img(0, true, { thumb: "data:image/svg+xml;base64," + Qt.btoa('<svg xmlns="http://www.w3.org/2000/svg"><image href="http://127.0.0.1:8977/svg.png"/></svg>') }),
+                    img(0, true, { thumb: "https://127.0.0.1:8977/thumb-https.png" }) ], imagesMissing: 0 })
+                return JSON.stringify({ topic: withImages, replies: [injectTopic].concat(injectReplies) })
+            }
             if (win.state === "links") return JSON.stringify({ topic: linkTopic, replies: [
                 post("r1", "Alice", myKey, "identity", true, 20, "Mine is fine. Changelog (with the storage API change): https://github.com/logos-co/logos-storage-module/blob/master/CHANGELOG.md, worth a read."),
                 post("r2", "Bob", "43ca10be77f0e2d9a8b6c4e2f0a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e353a0", "identity", false, 1, "Not links: javascript:alert(1) and plain http://example.org. A link: https://example.org/a?b=1&c=2 (in brackets).")] })
@@ -149,6 +165,76 @@ Window {
         // What the view asked to open, in order (a click calls this).
         property var opened: []
         function openLink(url) { opened.push(url); console.log("click opens " + url); return "" }
+
+        // ── Images, reactions, search ────────────────────────────────────────
+        signal imageUploaded(string token, string state, string detail)
+        signal imageState(string postId, int index, string state, string detail)
+        signal reactionsChanged(string postId)
+        property var loads: []          // what the view asked to load, in order
+        property int attached: 0
+        function img(n, cached, extra) {
+            var o = { w: 1200, h: 800, bytes: n === 0 ? Pics.bytes0 : Pics.bytes1, type: "image/jpeg",
+                      thumb: n === 0 ? Pics.thumb0 : Pics.thumb1, cached: cached }
+            for (var k in extra) o[k] = extra[k]
+            return o
+        }
+        function attachImage(url) {
+            var t = "tok" + (attached++)
+            var thumb = attached % 2 ? Pics.thumb0 : Pics.thumb1
+            if (win.state !== "imagecompose" || attached === 1) Qt.callLater(function () { backend.imageUploaded(t, "ready", "") })
+            return JSON.stringify({ token: t, thumb: thumb, w: 1200, h: 800, bytes: 180000, type: "image/jpeg" })
+        }
+        function discardImage(t) { return "" }
+        function createTopicWithImages() { return "t9" }
+        function replyWithImages() { return "r9" }
+        function loadImage(id, i) {
+            loads.push(id + "/" + i)
+            console.log("load image " + id + "/" + i)
+            var fail = win.state === "imagefail" && id === "r1"
+            imageState(id, i, "loading", "")
+            var t = Qt.createQmlObject('import QtQuick; Timer { interval: 300 }', win)
+            t.triggered.connect(function () {
+                backend.imageState(id, i, fail ? "failed" : "ready", fail ? "the bytes received are not the image the author signed: not shown" : "")
+                t.destroy()
+            })
+            t.start()
+            return ""
+        }
+        function fullImage(id, i) {
+            if (win.state === "inject") return "http://127.0.0.1:8977/full.png"
+            return (id === "t1" && i === 1) || id === "r2" ? Pics.full1 : Pics.full0
+        }
+        property var reacted: ({})
+        function react(id, e) { var r = Object.assign({}, reacted); r[id + e] = !r[id + e]; reacted = r; reactionsChanged(id); return "" }
+        function counts(id, base) {
+            var c = base.slice(), mine = [false, false, false, false, false]
+            for (var e = 0; e < 5; e++) if (reacted[id + e]) { c[e]++; mine[e] = true }
+            return { reactions: c, reacted: mine }
+        }
+        function search(q) {
+            var all = topicList.map(function (t) { return { id: t.id, topicId: t.id, kind: "topic", title: t.title, snippet: t.body,
+                                                             mode: t.mode, author: t.author, authorKey: t.authorKey, mine: t.mine, ts: t.ts } })
+            all.push({ id: "r2", topicId: "t1", kind: "reply", title: topicList[0].title, snippet: "Expect a reset. Deployments on 0.2.4 will most likely not carry over.",
+                       mode: "anonymous", author: "", authorKey: "6b79c6d4e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5", mine: false, ts: t0 - 22 * 60000 })
+            var w = q.toLowerCase().split(/\s+/).filter(function (x) { return x !== "" })
+            return JSON.stringify(all.filter(function (h) {
+                return w.every(function (x) { return (h.title + " " + h.snippet).toLowerCase().indexOf(x) >= 0 })
+            }))
+        }
+        readonly property var imageTopic: post("t1", "Ghost", "6d6bb1fa0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d861a", "alias", false, 40,
+            "From the ridge last night, after the meetup. Metadata stripped on the way out, as promised.",
+            Object.assign({ title: "Sunset over the ridge", replies: 3, last: t0, unread: false, imageCount: 2,
+                            images: [img(0, true), img(1, false)], imagesMissing: 0 }, counts("t1", [3, 1, 2, 0, 0])))
+        function imageReplies() {
+            return [
+                post("r1", "Alice", myKey, "identity", true, 20, "Same evening, other side of the valley:",
+                     Object.assign({ imageCount: 1, images: [img(1, false)], imagesMissing: 0 }, counts("r1", [1, 0, 0, 1, 0]))),
+                post("r2", "anonymous", "6b79c6d4e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5", "anonymous", false, 10,
+                     "This copy reached me through an older node.", Object.assign({ imageCount: 1, images: [], imagesMissing: 1 }, counts("r2", [0, 0, 0, 0, 0]))),
+                post("r3", "Bob", "43ca10be77f0e2d9a8b6c4e2f0a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e353a0", "identity", false, 2,
+                     "Beautiful. Are these straight from the phone?", counts("r3", [2, 0, 0, 0, 1]))
+            ]
+        }
     }
 
     Loader { id: view; anchors.fill: parent; source: "../../src/qml/Main.qml" }
@@ -314,6 +400,61 @@ Window {
         t.start()
     }
 
+    // ── media: images and reactions in the view ─────────────────────────────
+    function mediaCases(m) {
+        var fails = 0
+        function check(name, cond) { if (!cond) fails++; console.log((cond ? "ok   " : "FAIL ") + name) }
+        var strips = []
+        ;(function walk(o) { if (!o) return; if (o.safe !== undefined && o.images !== undefined) strips.push(o)
+                             var k = (o.children || []).concat(o.data || []); for (var i = 0; i < k.length; i++) if (k[i] !== o) walk(k[i]) })(m)
+        var s = strips[0]
+        check("a post's image strip is shown", strips.length >= 2)
+        check("a data:image/jpeg URL from the backend is used", s.safe(Pics.thumb0) === Pics.thumb0)
+        check("an http URL is not", s.safe("http://127.0.0.1:8977/x.png") === "")
+        check("an https URL is not", s.safe("https://example.org/x.jpg") === "")
+        check("a file URL is not", s.safe("file:///etc/passwd") === "")
+        check("an SVG data URL is not", s.safe("data:image/svg+xml;base64,PHN2Zz4=") === "")
+        check("an HTML data URL is not", s.safe("data:text/html;base64,PGI+") === "")
+        check("a data URL with a trailing payload is not", s.safe(Pics.thumb0 + '"><img src=x>') === "")
+        var steps = [
+            function () { check("only the image already kept on this machine was loaded, without a click", JSON.stringify(backend.loads) === JSON.stringify(["t1/0"])) },
+            function () {
+                var cell = find(m, function (o) { return o.Accessible !== undefined && o.Accessible.name === "Load image 2" && o.enabled === true })
+                cell.clicked(null)
+            },
+            function () { check("a click loads exactly that image", JSON.stringify(backend.loads) === JSON.stringify(["t1/0", "t1/1"])) },
+            function () { check("a loaded image is shown full size", strips[0].states[1] && strips[0].states[1].state === "ready" && strips[0].states[1].full === Pics.full1) },
+            function () {
+                var r = find(m, function (o) { return o.Accessible !== undefined && o.Accessible.name === "React thumbs up" })
+                r.clicked(null)
+            },
+            function () { check("a reaction is counted and marked as ours", JSON.parse(backend.thread("t1")).topic.reactions[0] === 4 && backend.reacted["t10"] === true) },
+            function () {
+                var r = find(m, function (o) { return o.Accessible !== undefined && o.Accessible.name === "Remove reaction thumbs up" })
+                if (r) r.clicked(null)
+            },
+            function () { check("clicking it again withdraws it", backend.reacted["t10"] === false) },
+            function () {
+                var att = find(m, function (o) { return o.objectName === "replyImages" })
+                var signAs = find(m, function (o) { return o.objectName === "replyAs" })
+                signAs.mode = 2
+                var btn = find(att, function (o) { return o.text === "Add image" })
+                check("no image can be attached to an anonymous post", btn && btn.enabled === false)
+                signAs.mode = 0
+                check("…and can again as the account", btn && btn.enabled === true)
+            }
+        ]
+        var i = 0
+        var t = Qt.createQmlObject('import QtQuick; Timer { interval: 450; repeat: true }', win)
+        t.triggered.connect(function () {
+            if (i < steps.length) { steps[i++](); return }
+            t.stop()
+            console.log(fails === 0 ? "media: all cases pass" : "media: " + fails + " FAILED")
+            Qt.exit(fails === 0 ? 0 : 1)
+        })
+        t.start()
+    }
+
     Timer {
         interval: 400; running: view.status === Loader.Ready
         onTriggered: {
@@ -337,6 +478,25 @@ Window {
             if (win.state === "newtopic") popups.filter(function (p) { return p.title === "New topic" })[0].open()
             if (win.state === "accounts") popups.filter(function (p) { return p.title === "Accounts" })[0].open()
             if (win.state === "scroll") { scrollCases(m); return }
+            if (win.state === "media") { mediaCases(m); return }
+            if (win.state === "imagefail") {
+                // A click on the reply's "Load image"; the download does not match.
+                var cell = find(m, function (o) { return o.Accessible !== undefined && o.Accessible.name === "Load image 1" && o.enabled === true
+                                                   && o.parent && o.parent.parent && o.parent.parent.parent && o.parent.parent.parent.parent
+                                                   && o.parent.parent.parent.parent.post && o.parent.parent.parent.parent.post.id === "r1" })
+                if (cell) cell.clicked(null)
+            }
+            if (win.state === "imagecompose") {
+                popups.filter(function (p) { return p.title === "New topic" })[0].open()
+                var ti = find(m, function (o) { return o.objectName === "topicImages" })
+                ti.add("file:///Users/alice/Pictures/ridge.jpg"); ti.add("file:///Users/alice/Pictures/valley.heic.jpg")
+                var tt = find(m, function (o) { return o.placeholderText === "Title" })
+                if (tt) tt.text = "Sunset over the ridge"
+            }
+            if (win.state === "search") {
+                var sf = find(m, function (o) { return o.placeholderText === "Search posts on this device" })
+                sf.text = "reset"
+            }
             if (win.args[3] !== "live") shot.start()
         }
     }

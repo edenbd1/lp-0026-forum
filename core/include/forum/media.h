@@ -21,6 +21,7 @@
 // it, and shown only if its bytes hash to the signed SHA-256.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -75,6 +76,20 @@ std::optional<std::vector<ImageRef>> manifest_images(const std::string& body, co
 // Whether downloaded bytes are the image the author signed. Nothing that
 // fails this is ever shown.
 bool image_bytes_match(const std::string& bytes, const ImageRef& ref);
+
+// Images in a private group (group.h). The post and its manifest travel
+// sealed like every group message, but the full image is on Logos Storage,
+// which anyone can read by CID. So it is uploaded sealed: XChaCha20-Poly1305
+// under a key derived from the group's seal key (BLAKE2b keyed, context
+// "LFimage1"), the group's forum id bound in as associated data, padded to a
+// multiple of 4 KiB. The manifest's SHA-256 and size are those of the image
+// itself, checked after opening. Format: 1 | nonce (24) | ciphertext.
+using GroupKey = std::array<uint8_t, 32>;
+std::string seal_image(const GroupKey& seal_key, const std::string& forum_id, const std::string& plain);
+std::optional<std::string> open_image(const GroupKey& seal_key, const std::string& forum_id, const std::string& sealed);
+// The largest a sealed image of `plain_bytes` can be: a download above it is
+// stopped.
+size_t sealed_image_size(size_t plain_bytes);
 
 // Manifests of stored posts, kept beside the posts table (a post's id is its
 // signed content; the manifest is the unsigned part it commits to), and the

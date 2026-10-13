@@ -15,6 +15,7 @@
 #pragma once
 
 #include "forum/engine.h"
+#include "forum/intake.h"
 #include "forum/post.h"
 
 #include <array>
@@ -60,12 +61,14 @@ class Reactions {
 public:
     explicit Reactions(Store& store);
 
-    // Every reaction from the network goes through here: live ones under the
-    // arrival limits; ones carried in a history bundle without them (their
-    // number is capped per bundle by the caller, kMaxPerBundle, and costs what
-    // the bundle's posts cost).
+    // Every reaction from the network goes through here, charged on arrival
+    // time like posts are by Intake (intake.h): a Live one (on the topic, or
+    // in a bundle nobody here asked for) to the topic's budget before its
+    // signature is checked, then to its key's; a History one (an answer to
+    // our own request, a snapshot) to an hourly history budget, before its
+    // signature too. A bundle also carries at most kMaxPerBundle.
     enum class Outcome { Stored, Unchanged, Malformed, OverBudget, BadSignature, OverKeyLimit, UnknownPost };
-    Outcome receive(const Reaction& r, uint64_t now_ms, bool live = true);
+    Outcome receive(const Reaction& r, uint64_t now_ms, Origin from = Origin::Live);
 
     // Ours: kept at once, sent by the caller.
     bool put(const Reaction& r);
@@ -83,6 +86,7 @@ public:
     static constexpr double kKeyBurst = 10, kKeyPerMinute = 20;
     static constexpr size_t kMaxTrackedKeys = 4096;
     static constexpr size_t kMaxPerBundle = 500;
+    static constexpr double kHistoryPerHour = 5000;
     uint64_t verified() const { return verified_; }    // signatures checked
     uint64_t dropped() const { return dropped_; }
     size_t tracked_keys() const { return keys_.size(); }
@@ -91,6 +95,7 @@ private:
     sqlite3* db_;
     Store& store_;
     RateLimiter topic_{kTopicBurst, kTopicPerMinute};
+    RateLimiter history_{kHistoryPerHour, kHistoryPerHour / 60};
     struct KeyBucket { RateLimiter bucket{kKeyBurst, kKeyPerMinute}; uint64_t last_ms = 0; };
     std::map<PublicKey, KeyBucket> keys_;
     uint64_t verified_ = 0, dropped_ = 0;

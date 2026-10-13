@@ -56,6 +56,7 @@ LogosForumBackend::Joined* LogosForumBackend::attachGroup(const forum::Group& g)
     j->engine->on_post = [this](const forum::Post& p, const std::string& id) {
         postArrivedSoon(q(id), q(p.kind == forum::Kind::Topic ? id : p.topic_id));
     };
+    if (media_) media_->wire(*j->engine);  // reactions (media_backend.cpp)
     // No Storage snapshots for a group: they would be public. History comes
     // from the store nodes (sealed) and from members, as sealed bundles.
     joined_.push_back(std::move(j));

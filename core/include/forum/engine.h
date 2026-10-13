@@ -342,7 +342,7 @@ private:
     bool answered_[2] = {false, false};
     std::unique_ptr<Attachments> att_;
     std::unique_ptr<Reactions> reactions_;
-    void receive_reaction(const Reaction& r, uint64_t now_ms, bool live);
+    void receive_reaction(const Reaction& r, uint64_t now_ms, Origin from);
     std::set<std::string> own_images_;
     std::map<std::string, uint64_t> image_answered_;            // cid -> when we last answered
     struct ImageAsk { std::string cid; uint64_t closes_ms = 0; };

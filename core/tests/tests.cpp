@@ -1317,6 +1317,27 @@ TEST(image_manifests_are_capped) {
     CHECK(ea.post_topic(&alice, "t", std::string(kMaxBody - 50, 'b'), "", 11, make_manifest({image("x")})).empty());
 }
 
+TEST(an_image_in_a_private_group_is_stored_sealed) {
+    GroupKey k{}; for (size_t i = 0; i < k.size(); ++i) k[i] = static_cast<uint8_t>(i);
+    GroupKey other = k; other[0] ^= 1;
+    const std::string plain = "\xFF\xD8 a picture of the meeting room whiteboard" + std::string(10000, 'p');
+    const std::string sealed = seal_image(k, "g:0123", plain);
+    CHECK(!sealed.empty() && sealed.find("whiteboard") == std::string::npos);
+    CHECK(sealed.size() % 4096 == 41 % 4096 && sealed.size() <= sealed_image_size(plain.size()));   // padded to 4 KiB
+    CHECK(open_image(k, "g:0123", sealed) == plain);
+    CHECK(!open_image(other, "g:0123", sealed));             // another group's key
+    CHECK(!open_image(k, "g:4567", sealed));                 // moved to another group
+    std::string flipped = sealed; flipped[flipped.size() / 2] ^= 1;
+    CHECK(!open_image(k, "g:0123", flipped));                // one bit changed
+    CHECK(!open_image(k, "g:0123", sealed.substr(0, sealed.size() - 1)));
+    CHECK(!open_image(k, "g:0123", plain));                  // an unsealed image is not accepted in a group
+    CHECK(seal_image(k, "g:0123", plain) != sealed);          // a fresh nonce each time
+    CHECK(seal_image(k, "g:0123", std::string(kMaxImageBytes + 1, 'x')).empty());
+    // Opened, it is checked against the manifest like any image.
+    ImageRef ref = image(plain);
+    CHECK(image_bytes_match(*open_image(k, "g:0123", sealed), ref));
+}
+
 TEST(history_carries_the_manifests) {
     Account alice{"alice", Keypair::generate()};
     Bus bus; FakeNet a(bus); Store sa(":memory:");
@@ -1436,6 +1457,14 @@ TEST(a_forged_or_misdirected_reaction_is_dropped) {
     CHECK(!ea.receive(encode(edited), 21) && ea.reactions().counts(t)[2] == 0);
     // On a post we do not hold, in another forum, or an emoji outside the set.
     CHECK(ea.reactions().receive(reaction(alice, std::string(64, 'a'), 0, true, 22), 22) == Reactions::Outcome::UnknownPost);
+    // A post of another forum in the same file (a private group's): a public
+    // reaction cannot count on it, and the public engine will not send one.
+    Post secret = topic("group only", "x"); secret.forum = "g:0123456789abcdef0123456789abcdef"; secret = author_as(alice, secret);
+    sa.put(secret, 22);
+    CHECK(ea.reactions().receive(reaction(alice, secret.id(), 0, true, 22), 22) == Reactions::Outcome::UnknownPost);
+    CHECK(ea.react(alice, secret.id(), 0, true, 22).empty());
+    ea.pump(1000000);
+    for (const auto& m : bus.log) CHECK(m.find(secret.id()) == std::string::npos);
     Reaction other = reaction(alice, t, 0, true, 23); other.forum = "Elsewhere"; sign(other, alice.key.sk);
     ea.receive(encode(other), 23);
     CHECK(ea.reactions().counts(t)[0] == 0);
@@ -1448,7 +1477,7 @@ TEST(a_forged_or_misdirected_reaction_is_dropped) {
     const uint64_t now = 1790000000000ull;
     ea.receive(encode(reaction(alice, t, 3, true, now + Engine::kMaxClockSkewMs + 1)), now);
     CHECK(ea.reactions().counts(t)[3] == 0);
-    CHECK(sa.count() == 1);
+    CHECK(sa.count() == 2);
 }
 
 TEST(reactions_are_rate_limited_on_arrival_before_and_after_the_signature) {
@@ -1499,6 +1528,28 @@ TEST(reactions_are_rate_limited_on_arrival_before_and_after_the_signature) {
         eb.reactions().receive(f, 70000 + i * 1000);
     }
     CHECK(eb.reactions().receive(reaction(honest, posts[2], 1, true, 100), 200000) == Reactions::Outcome::Stored);
+}
+
+TEST(reactions_from_history_have_an_hourly_budget) {
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    Account alice{"alice", Keypair::generate()};
+    std::vector<std::string> posts;
+    for (int i = 0; i < 2; ++i) posts.push_back(ea.post_topic(&alice, "t" + std::to_string(i), "x", "", 10));
+    // A snapshot full of reactions, replayed: its reactions are charged to
+    // the history budget before their signatures are checked.
+    nlohmann::json doc{{"logos-forum-snapshot", 1}, {"forum", "Logos Forum"}, {"posts", nlohmann::json::array()}, {"reactions", nlohmann::json::array()}};
+    Account k{"k", Keypair::generate()};
+    for (int i = 0; i < 500; ++i) doc["reactions"].push_back(encode(reaction(k, posts[i % 2], i % kEmojiCount, true, 100 + i)));
+    const std::string d = doc.dump();
+    for (int i = 0; i < 20; ++i) ea.import_snapshot(d, 1000);
+    CHECK(ea.reactions().verified() == static_cast<uint64_t>(Reactions::kHistoryPerHour));
+    // The same document as a live bundle nobody asked for: the live limits.
+    Bus bus2; FakeNet b(bus2); Store sb(":memory:");
+    Engine eb(sb, b, "Logos Forum"); b.engine = &eb;
+    for (const auto& p : posts) eb.receive(encode(*sa.get(p)), 1);
+    eb.receive(d, 1000);
+    CHECK(eb.reactions().verified() <= Reactions::kKeyBurst + 1);
 }
 
 TEST(the_per_key_table_stays_bounded) {
@@ -1622,7 +1673,7 @@ TEST(search_input_is_text_never_query_syntax) {
     CHECK(fts_query("NEAR(x") == "\"NEAR(x\"*");
 }
 
-TEST(search_skips_the_image_line_and_hidden_authors) {
+TEST(search_skips_the_image_line_muted_authors_and_hidden_posts) {
     Store sa(":memory:");
     Search s(sa);
     Bus bus; FakeNet a(bus);
@@ -1632,8 +1683,20 @@ TEST(search_skips_the_image_line_and_hidden_authors) {
     ea.post_topic(&muted, "Cat too", "another cat", "", 11);
     CHECK(s.find("Logos Forum", "manifest").empty() && s.find("Logos Forum", "storage").empty());
     CHECK(s.find("Logos Forum", "cat").size() == 2);
-    const auto hits = s.find("Logos Forum", "cat", 50, [&](const PublicKey& k) { return k == muted.key.pk; });
+    Moderation mod(sa);
+    mod.mute("me", muted.key.pk, 1);
+    auto hide = [&](const SearchHit& h) {
+        return mod.is_muted("me", h.author) || mod.is_hidden("me", h.id) || mod.is_hidden("me", h.topic_id);
+    };
+    const auto hits = s.find("Logos Forum", "cat", 50, hide);
     CHECK(hits.size() == 1 && hits[0].title == "Cat");
+    // A hidden thread hides its replies from search too.
+    const std::string t = sa.topics("Logos Forum")[0].topic.title == "Cat" ? sa.topics("Logos Forum")[0].id : sa.topics("Logos Forum")[1].id;
+    ea.post_reply(&alice, t, "the cat replies", "", 12);
+    CHECK(s.find("Logos Forum", "replies", 50, hide).size() == 1);
+    mod.hide("me", t, 2);
+    CHECK(s.find("Logos Forum", "cat", 50, hide).empty() && s.find("Logos Forum", "replies", 50, hide).empty());
+    CHECK(s.find("Logos Forum", "cat", 50).size() == 3);         // another account's reader sees them all
 }
 
 #include "intake_tests.inc"

@@ -168,7 +168,8 @@ bool Reactions::put(const Reaction& r) {
     return ok;
 }
 
-Reactions::Outcome Reactions::receive(const Reaction& r, uint64_t now_ms, bool live) {
+Reactions::Outcome Reactions::receive(const Reaction& r, uint64_t now_ms, Origin from) {
+    const bool live = from == Origin::Live;
     auto drop = [&](Outcome o) { ++dropped_; return o; };
     if (!well_formed(r)) return drop(Outcome::Malformed);
     // A key that has spent its allowance (with reactions it really signed):
@@ -181,6 +182,7 @@ Reactions::Outcome Reactions::receive(const Reaction& r, uint64_t now_ms, bool l
     // Before the signature: anyone can send these for free, so the whole
     // topic gets a budget of checks, on arrival time.
     if (live && !topic_.take(now_ms)) return drop(Outcome::OverBudget);
+    if (!live && !history_.take(now_ms)) return drop(Outcome::OverBudget);
     ++verified_;
     if (!verify(r)) return drop(Outcome::BadSignature);
     if (live) {
@@ -198,8 +200,11 @@ Reactions::Outcome Reactions::receive(const Reaction& r, uint64_t now_ms, bool l
         it->second.last_ms = now_ms;
         if (!it->second.bucket.take(now_ms)) return drop(Outcome::OverKeyLimit);
     }
-    // Only on posts we hold: storage stays bounded by real posts.
-    if (!store_.has(r.target)) return drop(Outcome::UnknownPost);
+    // Only on posts we hold, in the reaction's own forum: storage stays
+    // bounded by real posts, and a public reaction cannot count on a post of
+    // a private group (or the other way round).
+    const auto target = store_.get(r.target);
+    if (!target || target->forum != r.forum) return drop(Outcome::UnknownPost);
     return put(r) ? Outcome::Stored : Outcome::Unchanged;
 }
 

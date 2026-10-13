@@ -47,10 +47,10 @@ public:
     explicit Search(Store& store, bool use_fts = true);
     bool fts() const { return fts_; }
     // Best matches first (FTS5's bm25), at most `limit`. `hidden` drops posts
-    // the reader does not want to see (muted authors, once they exist), before
-    // they count against the limit.
+    // the reader does not want to see (a muted author, a hidden post or
+    // thread: see moderation.h), before they count against the limit.
     std::vector<SearchHit> find(const std::string& forum, const std::string& typed, size_t limit = 50,
-                                const std::function<bool(const PublicKey&)>& hidden = {}) const;
+                                const std::function<bool(const SearchHit&)>& hidden = {}) const;
 private:
     sqlite3* db_;
     bool fts_ = false;

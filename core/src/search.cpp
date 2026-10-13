@@ -83,7 +83,7 @@ Search::Search(Store& store, bool use_fts) : db_(store.handle()) {
 }
 
 std::vector<SearchHit> Search::find(const std::string& forum, const std::string& typed, size_t limit,
-                                    const std::function<bool(const PublicKey&)>& hidden) const {
+                                    const std::function<bool(const SearchHit&)>& hidden) const {
     std::vector<SearchHit> out;
     const auto w = words(typed);
     if (w.empty() || limit == 0) return out;
@@ -132,7 +132,7 @@ std::vector<SearchHit> Search::find(const std::string& forum, const std::string&
         h.snippet = col(s, 4);
         if (sqlite3_column_bytes(s, 5) == 32) std::memcpy(h.author.data(), sqlite3_column_blob(s, 5), 32);
         h.ts_ms = static_cast<uint64_t>(sqlite3_column_int64(s, 6));
-        if (hidden && hidden(h.author)) continue;
+        if (hidden && hidden(h)) continue;
         if (!fts_ && h.snippet.size() > 200) h.snippet = h.snippet.substr(0, utf8_cut(h.snippet, 0, 200)) + "…";
         out.push_back(std::move(h));
     }
