@@ -9,6 +9,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <chrono>
 #include <cstdio>
 #include <functional>
 #include <map>
@@ -1051,6 +1052,32 @@ TEST(a_request_during_the_cooldown_is_answered_when_it_ends) {
     eb.request_history(t + 10000, true);
     for (uint64_t u = t + 10000; u <= t + 65000; u += 5000) { a.now = b.now = u; ea.tick(u); ea.pump(u); }
     CHECK(sb.count() == 40);
+}
+
+TEST(checking_a_bundle_against_a_pending_answer_costs_linear_work) {
+    // While an answer waits, every bundle naming the same request is compared
+    // with what our first page would carry. A stranger can replay a full
+    // bundle of valid posts as often as they like, so that comparison must
+    // cost about what reading the bundle costs, not bundle size × page size.
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    ea.jitter = [] { return uint64_t{1'000'000}; };
+    Account alice{"alice", Keypair::generate()}, eve{"eve", Keypair::generate()};
+    for (int i = 0; i < 400; ++i) { Post p = topic("t" + std::to_string(i), "b"); p.ts_ms = 1000 + i; sa.put(author_as(alice, p), 1); }
+    ea.receive(R"({"logos-forum-want":1,"forum":"Logos Forum","have":0,"via":"delivery","since":0,"id":"r1"})", 10);
+    nlohmann::json doc{{"logos-forum-snapshot", 1}, {"forum", "Logos Forum"}, {"re", "r1"}, {"posts", nlohmann::json::array()}};
+    for (int i = 0; i < 500; ++i) { Post p = topic("x", std::to_string(i)); p.ts_ms = 5; doc["posts"].push_back(encode(author_as(eve, p))); }
+    const std::string matching = doc.dump();
+    doc["re"] = "someone-else";
+    const std::string other = doc.dump();
+    ea.receive(other, 20);                                       // stored once; replays from here on
+    auto time = [&](const std::string& m) {
+        const auto t = std::chrono::steady_clock::now();
+        for (int k = 0; k < 3; ++k) ea.receive(m, 30);
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - t).count();
+    };
+    const double base = time(other), checked = time(matching);
+    CHECK(checked < 3 * base);                                   // was about 9 times
 }
 
 int main() {

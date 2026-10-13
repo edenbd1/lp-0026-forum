@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <set>
 #include <tuple>
 
 #ifdef _WIN32
@@ -307,12 +308,13 @@ bool Engine::receive(const std::string& payload, uint64_t now_ms) {
             // carried. Anything less (empty, forged, a replay of a few posts)
             // must not silence the honest answerers; the whole page is harmless.
             if (pending_ && pending_->via_delivery && !re.empty() && pending_->id == re) {
+                // Each post's id once, then a lookup per id of our page: a
+                // replayed bundle costs what reading it costs, not its size
+                // times our page's.
+                std::set<std::string> got;
+                for (const auto& p : valid) got.insert(p.id());
                 bool covers = true;
-                for (const auto& id : first_page_ids(*pending_, now_ms)) {
-                    bool in = false;
-                    for (const auto& p : valid) in = in || p.id() == id;
-                    covers = covers && in;
-                }
+                for (const auto& id : first_page_ids(*pending_, now_ms)) covers = covers && got.count(id) > 0;
                 if (covers) pending_.reset();
             }
             // Our own request: note the answer, and if it says there is more,
