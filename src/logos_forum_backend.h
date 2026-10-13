@@ -141,7 +141,7 @@ private:
     QString lastCatchUp_, lastSnapshot_;
     int uploadProgress_ = 0;        // upload watchdog generation, bumped at every upload step
     bool fetchSnapshots_ = false;
-    QString preset_ = QStringLiteral("logos.test");  // the Logos Delivery network
+    QString preset_ = QStringLiteral("logos.dev");  // the Logos Delivery network; bootstrap() reads the choice
     // RLN membership, on a network that runs RLN. rlnPhase_: "" (no RLN),
     // starting, wallet, gifting, gift-failed, funding, registering, pending,
     // active, quota, lapsed, failed, missing (the RLN modules are not loaded).

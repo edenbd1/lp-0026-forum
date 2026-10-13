@@ -1138,6 +1138,25 @@ TEST(what_a_message_added_is_known_without_counting_the_store) {
     CHECK(ea.posts_received() == 4);
 }
 
+TEST(a_deeply_nested_or_oversized_message_is_dropped_without_harm) {
+    // Anyone can put any bytes on the topic, up to the network's 150 KiB per
+    // message: nesting that deep must not exhaust the stack (the parser and
+    // the destructor are iterative), and a post over its limits is refused.
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    CHECK(!ea.receive(std::string(150 * 1024, '['), 1));
+    std::string objects;
+    for (int i = 0; i < 25000; ++i) objects += "{\"logos-forum-snapshot\":";
+    CHECK(!ea.receive(objects, 2));
+    std::string closed = std::string(50000, '[') + std::string(50000, ']');
+    CHECK(!ea.receive(closed, 3));
+    Account x{"x", Keypair::generate()};
+    Post big = topic("t", std::string(kMaxBody + 1, 'x'));
+    big.author = x.key.pk; sign(big, x.key.sk);
+    CHECK(!ea.receive(encode(big), 4));
+    CHECK(sa.count() == 0);
+}
+
 #include "intake_tests.inc"
 
 int main() {

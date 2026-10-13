@@ -27,7 +27,7 @@ and every post is checked by the app itself on arrival.
 > **Status:** the forum runs in **Logos Basecamp 0.3.0** (macOS and Linux) and is
 > installable from its [catalog](#install-in-basecamp). It has been tested end to
 > end on five real nodes, 24 checks, on logos.test and again on logos.dev
-> ([`docs/e2e.md`](docs/e2e.md)); the core has 54 tests of its own; CI is green
+> ([`docs/e2e.md`](docs/e2e.md)); the core has 63 tests of its own; CI is green
 > on Linux and macOS, and builds the Windows x86_64 package (a mingw cross
 > build, not yet run in Basecamp on Windows; the official catalog has no Windows
 > build of `liblogos_lez_rln_module` or `libp2p_module`, so `logos.test` with RLN
@@ -35,7 +35,9 @@ and every post is checked by the app itself on arrival.
 > can post with nothing to set up, and a newcomer gets the whole history from
 > the network's store nodes even when nobody else is online
 > ([run](docs/e2e/e2e-history-offline-0.3.2.out)). Support for `logos.test`
-> with RLN, the membership paid by a sponsor, is built and opt-in
+> with RLN, the membership paid by a sponsor, is built on `main` and opt-in, and
+> does not work today: the sponsor's registrations are refused ("Incorrect
+> fee"), so a node on logos.test gets no membership and cannot post
 > ([logos.test, RLN and the sponsor](#logostest-rln-and-the-sponsor)).
 
 ![A thread with replies from an account, an anonymous key and an alias, each marked as verified](docs/screens/04-thread.png)
@@ -56,15 +58,16 @@ and every post is checked by the app itself on arrival.
   of posts or a period of time; nothing links the old key to the new one.
 - **Nothing you write is lost.** A post is stored the moment you press Post and
   queued; if the network is down it is retried with back-off until it goes.
-- **Coming back online catches up, even on a network that keeps nothing.**
-  A returning node asks the network's store nodes, and it asks the forum: a
-  peer holding more posts sends the most recent ones as bundles over **Logos
-  Delivery**, through the relays, so neither side learns the other's address,
-  and every post is checked like a live one. On logos.test today the store
-  nodes keep no archive at all (measured, see [`docs/e2e.md`](docs/e2e.md)), so
-  this is the path that actually works. A node can also opt in to fetching a
-  peer's full snapshot from **Logos Storage**, at the cost of connecting to that
-  peer. Duplicates are impossible because ids are content.
+- **Coming back online catches up.** A returning node asks the network's
+  store nodes, which on logos.dev keep the forum's history (a newcomer gets it
+  even with every other node offline), and it asks the forum: a peer holding
+  more posts sends the most recent ones as bundles over **Logos Delivery**,
+  through the relays, so neither side learns the other's address, and every
+  post is checked like a live one. That second path is what works on a network
+  whose store nodes keep nothing, as the logos.test ones did when we measured
+  them on testnet v0.2 ([`docs/e2e.md`](docs/e2e.md)). A node can also opt in to
+  fetching a peer's full snapshot from **Logos Storage**. Duplicates are
+  impossible because ids are content.
 - **It does not flood the network.** Sends are paced by a token bucket, and
   history answers are capped and paced too.
 - **Unsigned traffic cannot steer it.** Titles and names from other people are
@@ -81,7 +84,7 @@ and every post is checked by the app itself on arrival.
 | Create topics and reply | `Engine::post_topic`, `Engine::post_reply` |
 | Reply by id, by alias, or revealing no id | `Mode::Identity`, `Mode::Alias`, `Mode::Anonymous` |
 | Privacy of a long-lived identity; rotation | `RotationPolicy`, `rotate()`; per-post anonymous keys |
-| No centralised server or service | Logos Delivery for posts, Logos Storage for history, SQLite on the device |
+| No centralised server or service | Logos Delivery for posts and history (store nodes and peers' bundles), Logos Storage snapshots when opted in, SQLite on the device |
 | If offline when a message arrived, obtain past messages | store query, then `Engine::request_history` → peers' bundles over Delivery, or (opt-in) a peer's snapshot on Logos Storage (`import_snapshot`); tested on five nodes |
 | If a send fails, the text stays locally to retry | the outbox, `Store::failed` + `backoff_ms` |
 | Does not flood the network | `RateLimiter` |
@@ -94,10 +97,11 @@ and every post is checked by the app itself on arrival.
 a repository*, paste
 `https://raw.githubusercontent.com/edenbd1/logos-forum-catalog/main/logos-repo.json`,
 then *Package Manager → Social → Logos Forum → Install*. Basecamp installs
-what the forum needs with it: `delivery_module` and `storage_module`, and for
-logos.test the RLN modules and `libp2p_module`, from the official catalog, and
-`rln_gifter_module` from the forum's catalog. Nothing else to do: no token, no
-wallet, no account to fund.
+what the forum needs with it: `delivery_module` and `storage_module` from the
+official catalog. The catalog's forum runs on logos.dev, which needs no RLN:
+nothing else to do, no token, no wallet, no account to fund. (The RLN modules
+and `rln_gifter_module` that logos.test would need are not in the catalog's
+package and are not installed.)
 
 1. **Add the repository** in *Settings → Package Repositories*:
 
@@ -111,13 +115,14 @@ wallet, no account to fund.
 
    ![The install dialog, with storage_module and delivery_module from Logos Official](docs/screens/03-install-with-dependencies.png)
 
-4. **Open it** from the sidebar. An account exists already, the history
-   arrives from peers who are online, and within a few minutes the forum's
-   sponsor has given this node its RLN membership (the banner says so while it
-   happens). Posts written meanwhile wait in the outbox.
+4. **Open it** from the sidebar. An account exists already, and the history
+   arrives from the store nodes and from peers who are online. You can post at
+   once: logos.dev needs no membership.
 
 **From source**, on a clean machine (macOS or Linux, [Nix](https://nixos.org) and
-[Basecamp 0.3.0](https://github.com/logos-co/logos-basecamp/releases/tag/0.3.0)):
+[Basecamp 0.3.0](https://github.com/logos-co/logos-basecamp/releases/tag/0.3.0)).
+This builds `main` (0.4.0), which is ahead of the catalog's 0.3.x release
+branch; on logos.dev, the default, it needs the same two modules:
 
 ```bash
 git clone https://github.com/edenbd1/lp-0026-forum && cd lp-0026-forum
@@ -125,15 +130,13 @@ nix build .#lgx-portable                      # result/logos-logos_forum-module.
 
 # the modules it depends on, from the official Logos catalog
 base=https://github.com/logos-co/logos-modules-release/releases/download
-for m in delivery_module-v0.3.0/delivery_module-0.3.0 storage_module-v3.0.0/storage_module-3.0.0 \
-         liblogos_rln_module-v0.10.0/liblogos_rln_module-0.10.0 liblogos_lez_rln_module-v4.2.1/liblogos_lez_rln_module-4.2.1 \
-         libp2p_module-v1.1.0/libp2p_module-1.1.0; do curl -LO $base/$m.lgx; done
-# and the sponsor's client, built from logos-rln-gifter with gifter/rln-gifter-module.patch
-# (the CI artifact, or: git clone https://github.com/logos-co/logos-rln-gifter && cd logos-rln-gifter &&
-#  git checkout c6d854a && git apply ../lp-0026-forum/gifter/rln-gifter-module.patch &&
-#  nix build ./rust/rln-gifter-module#lgx-portable)
+for m in delivery_module-v0.3.0/delivery_module-0.3.0 storage_module-v3.0.0/storage_module-3.0.0; do
+  curl -LO $base/$m.lgx; done
+# only for logos.test (opt-in, see below): liblogos_rln_module 0.10.0,
+# liblogos_lez_rln_module 4.2.1 and libp2p_module 1.1.0 from the same catalog, and
+# rln_gifter_module built from logos-rln-gifter c6d854a with gifter/rln-gifter-module.patch
 
-# install them all into a Basecamp user directory and open Basecamp on it
+# install them into a Basecamp user directory and open Basecamp on it
 scripts/install-local.sh ~/basecamp-forum result/*.lgx *.lgx
 LogosBasecamp --user-dir ~/basecamp-forum     # macOS: ~/Applications/LogosBasecamp.app/Contents/MacOS/LogosBasecamp
 ```
@@ -151,11 +154,11 @@ blockchain out of scope, and the forum runs no server. What plays that role:
 | Network | Logos Delivery, `logos.dev` preset (cluster 3, no RLN) by default; `logos.test` (cluster 2, RLN) with `"network": "logos.test"` in `settings.json` or `LOGOS_FORUM_PRESET=logos.test` |
 | RLN registry (logos.test) | `logos:testnet:841312e9…c893` (config account `9tZgjoUVHHWuE9D1cgQSXbYu2gm6uN9baTSERtTa9Str`) on the LEZ testnet zone behind `http://209.38.241.182:3240`, as delivery_module 0.3.0's preset names it |
 | Membership sponsor | `/ip4/88.160.11.28/tcp/24026/p2p/16Uiu2HAm4XsEj65CPBnXZTZbniEE9SEiRtJUmngGuQxQoGFSHxA6`, paying from `2mDx4MEQkt3JE1ZxmM3W18Nnq8pEZBnJJzTbHpYw75wm` on that zone ([`gifter/`](gifter), `scripts/gifter-status.sh`); `"gifter"` in `settings.json` or `LOGOS_FORUM_GIFTER` names another, `"off"` turns it off |
-| Forum topic | `/logos-forum/1/logos-forum-934410ad/json`, on shard `/waku/2/rs/2/6` |
-| History | peers' bundles over Delivery; peers' snapshots on Logos Storage (same network) when opted in |
+| Forum topic | `/logos-forum/1/logos-forum-934410ad/json`, on shard `/waku/2/rs/3/6` on logos.dev (cluster 3) and `/waku/2/rs/2/6` on logos.test (cluster 2) |
+| History | the store nodes and peers' bundles over Delivery; peers' snapshots on Logos Storage when opted in (fetched over Mix by default, a path that has not yet passed end to end: see [`docs/security.md`](docs/security.md#snapshots-over-mix-opt-in)) |
 | DNS | the fleet's `/dns4/` addresses are resolved through the name servers the system uses (`scutil --dns` on macOS, `/etc/resolv.conf` on Linux, the adapters on Windows), then 1.1.1.1 and 1.0.0.1, so networks that block public DNS still find peers; `LOGOS_FORUM_DNS=a,b` or `"dns": ["a", "b"]` in `settings.json` sets them by hand; `forum.log` names the ones used |
 | Store nodes queried | the six fleet nodes of the preset (`delivery-01`, `delivery-02` in `do-ams3`, `gc-us-central1-a` and `ac-cn-hongkong-c` for `logos.dev`; `node-01`, `node-02` for `logos.test`) |
-| Data on your machine | `<Basecamp user dir>/module_data/logos_forum/` (`forum.db`, `forum.log`) |
+| Data on your machine | `<Basecamp user dir>/module_data/logos_forum/` (`forum.db`, `forum.log`, `settings.json`), a directory only its owner can open, with `forum.db` readable by its owner only |
 
 A separate forum can be run by starting Basecamp with `LOGOS_FORUM_NAME=<name>`;
 the topic is derived from the name.
@@ -183,9 +186,14 @@ forum asks it for a membership by itself.
 - Reading, catching up and history never wait for it; posts stay in the
   outbox and go out once the membership is active. When the epoch's quota is
   spent, held posts are marked and go out in the next one.
-- Tested from a fresh Basecamp through the sponsor and back
+- **It does not grant memberships today.** Tested from a fresh Basecamp
+  through the sponsor and back
   ([`docs/e2e/e2e-sponsor-0.4.0-logos.test-unfunded.out`](docs/e2e/e2e-sponsor-0.4.0-logos.test-unfunded.out)):
-  with its account still unfunded, the refusal reaches the banner in 15 s.
+  the sponsor's account holds less than the fee reserve a registration needs,
+  the zone's sequencer refuses its registration with `Incorrect fee`
+  (`wallet_ffi` error 18), and that refusal reaches the forum's banner in 15 s.
+  Until the sponsor is funded, a node on logos.test gets no membership and its
+  posts stay in the outbox; the protocol path up to the payment works.
 
   ![The banner when the sponsor cannot pay yet](docs/screens/rln-sponsor-unfunded.jpg)
 - What the sponsor sees and cannot see, and why it has no limits:
@@ -222,8 +230,10 @@ blockchain into that zone's channel.
 
 ## Walkthrough
 
-Two real Basecamp nodes on logos.test, Alice on the left and Bob on the right,
-with no server between them. Every screenshot comes from the demo film.
+Two real Basecamp nodes, Alice on the left and Bob on the right, with no
+server between them. The screenshots come from the demo film, recorded with
+version 0.1 on logos.test before the forum moved to logos.dev; the flow is the
+same today, and the RLN banner is new.
 
 **A topic goes out and arrives, already verified.** Alice asks a question; a
 moment later Bob has it, with a ✓ for the signature his own app checked.
@@ -296,9 +306,11 @@ memory, so the forum keeps the post itself and sends it again as soon as the
 connection returns, or after two minutes without confirmation, or with
 back-off (2 s … 5 min) after an error. This holds even after Basecamp was closed.
 When you come back after
-being away, the forum fetches what you missed from the network and from peers'
-snapshots on Logos Storage; *Accounts… → Fetch missed posts* does it on demand,
-and *Save snapshot to Logos Storage* publishes yours for others.
+being away, the forum fetches what you missed from the network's store nodes
+and from peers, over Logos Delivery; *Accounts… → Fetch missed posts* does it
+on demand. Snapshots on Logos Storage are off by default (`"fetchSnapshots":
+true` in `settings.json` turns them on); *Save snapshot to Logos Storage*
+publishes yours for others.
 
 **Errors** are shown in one line under the header: a refused post (too long,
 no title), a send the network gave up on (it is retried), a storage node that
@@ -320,18 +332,25 @@ The view adapts instead of clipping. Below 720 px it shows one pane at a time
 scripts/e2e-two-nodes.sh result/*.lgx delivery_module-0.3.0.lgx storage_module-3.0.0.lgx
 ```
 
-The scripts run on the forum's default network, logos.test: pass the RLN
+The scripts run on the forum's default network, logos.dev, with no RLN.
+`LOGOS_FORUM_PRESET=logos.test` runs them on logos.test: pass the RLN
 packages, `libp2p_module` and `rln_gifter_module` after the others, and each
-posting node first waits for the membership the sponsor gives it
-([`scripts/e2e-rln.sh`](scripts/e2e-rln.sh)): `E2E_RLN_HOME` keeps the nodes'
-memberships between runs, `E2E_GIFTER_ACCOUNT` prints the sponsor's balance as
-the run goes. `LOGOS_FORUM_PRESET=logos.dev` runs them without RLN.
+posting node first waits for a membership from the sponsor
+([`scripts/e2e-rln.sh`](scripts/e2e-rln.sh)), which it does not get while the
+sponsor cannot pay (see above).
 
-Starts two Basecamp instances on logos.test, drives the forum's own interface
-and checks each node's store: a topic from A reaches B with the same author
-key; B's anonymous reply reaches A under a key none of B's accounts hold; and
-B, wiped to a fresh install, recovers both posts from A's snapshot on Logos
-Storage. Output of a run: [`docs/e2e/e2e-two-nodes.out`](docs/e2e/e2e-two-nodes.out).
+Starts two Basecamp instances, drives the forum's own interface and checks
+each node's store: a topic from A reaches B with the same author key; B's
+anonymous reply reaches A under a key none of B's accounts hold; and B, wiped
+to a fresh install, recovers both posts from A's snapshot on Logos Storage
+(this script turns snapshots on for both nodes; they are off by default).
+Output of its last recorded run, from version 0.1 on logos.test with
+`delivery_module` 0.2.1 and `storage_module` 2.1.2:
+[`docs/e2e/e2e-two-nodes.out`](docs/e2e/e2e-two-nodes.out). The current runs are
+the five-node scenario on logos.dev
+([`e2e-full.run7-0.3.2-logos.dev.out`](docs/e2e/e2e-full.run7-0.3.2-logos.dev.out),
+24/24) and history with everyone offline
+([`e2e-history-offline-0.3.5.out`](docs/e2e/e2e-history-offline-0.3.5.out)).
 
 ## Build and test the core
 
