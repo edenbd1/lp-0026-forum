@@ -87,12 +87,8 @@ Item {
     readonly property int gap: compact ? 10 : 16
 
     property string search: ""
-    function matches(t) {
-        if (search.trim() === "") return true
-        var q = search.toLowerCase()
-        return (t.title + " " + t.body + " " + t.author).toLowerCase().indexOf(q) >= 0
-    }
-    readonly property var shownTopics: topics.filter(matches)
+    // Search runs in the backend, over every stored post (SearchResults.qml).
+    readonly property var shownTopics: topics
     readonly property int unreadCount: topics.filter(function (t) { return t.unread }).length
 
     function log(m) { console.log("[logos_forum qml] " + m) }
@@ -249,6 +245,7 @@ Item {
         // topicId "" means many posts at once (a history import): refresh once.
         function onPostArrived(id, topicId) {
             root.refreshTopics()
+            searchResults.refresh()
             if (root.openId !== "" && (topicId === root.openId || topicId === "")) {
                 root.refreshThread()
                 root.call(root.backend.markRead(root.openId))  // the user is looking at it
@@ -261,7 +258,10 @@ Item {
             if (state === "failed" && !root.rlnBlocks) root.lastError = "A post did not go out (" + detail + "); it will be retried."
         }
         function onOutboxCountChanged() { root.refreshTopics(); root.refreshThread() }
+        function onReactionsChanged(postId) { reactionRefresh.restart() }
     }
+    // Reactions arrive in bursts: one refresh for a burst.
+    Timer { id: reactionRefresh; interval: 300; onTriggered: root.refreshThread() }
     Component.onCompleted: {
         ready = backend !== null && logos.isViewModuleReady("logos_forum")
         try { accounts = JSON.parse(accountsJson) } catch (e) {}
@@ -602,11 +602,19 @@ Item {
                     AppField {
                         id: searchField
                         Layout.fillWidth: true
-                        placeholderText: "Search topics"
+                        placeholderText: "Search posts on this device"
                         onTextChanged: root.search = text
+                    }
+                    // Typed text: the posts stored here, searched in full (SearchResults.qml).
+                    SearchResults {
+                        id: searchResults
+                        visible: root.search.trim() !== ""
+                        Layout.fillWidth: true; Layout.fillHeight: true
+                        app: root; query: root.search
                     }
                     ListView {
                         id: topicList
+                        visible: root.search.trim() === ""
                         Layout.fillWidth: true; Layout.fillHeight: true
                         clip: true; spacing: 4
                         model: root.shownTopics
@@ -644,9 +652,6 @@ Item {
                                 Dim { visible: modelData.state !== ""; color: root.warn; text: "not sent yet, will retry" }
                             }
                         }
-                        Dim { anchors.centerIn: parent; visible: root.topics.length > 0 && root.shownTopics.length === 0
-                              width: parent.width - 32; horizontalAlignment: Text.AlignHCenter
-                              text: "No topic matches \"" + root.search + "\"." }
                         Dim { anchors.centerIn: parent; width: parent.width - 32; horizontalAlignment: Text.AlignHCenter
                               visible: root.topics.length === 0
                               text: "No topics yet. Start one, or wait a moment: when you join, peers who were here before you send their history." }
@@ -726,14 +731,18 @@ Item {
                                     font.pixelSize: 18; font.bold: true
                                 }
                                 Byline { post: root.openTopic; visible: root.openTopic !== null; Layout.fillWidth: true }
-                                LinkText { Layout.fillWidth: true; raw: root.openTopic ? root.openTopic.body : "" }
+                                LinkText { Layout.fillWidth: true; raw: root.openTopic ? root.openTopic.body : ""; visible: raw !== "" }
+                                PostImages { Layout.fillWidth: true; app: root; post: root.openTopic }
+                                ReactionBar { Layout.fillWidth: true; app: root; post: root.openTopic }
                                 Rectangle { Layout.fillWidth: true; height: 1; color: root.line }
                                 Repeater {
                                     model: root.openReplies
                                     delegate: ColumnLayout {
                                         Layout.fillWidth: true; spacing: 4
                                         Byline { post: modelData; Layout.fillWidth: true }
-                                        LinkText { Layout.fillWidth: true; raw: modelData.body }
+                                        LinkText { Layout.fillWidth: true; raw: modelData.body; visible: raw !== "" }
+                                        PostImages { Layout.fillWidth: true; app: root; post: modelData }
+                                        ReactionBar { Layout.fillWidth: true; app: root; post: modelData }
                                     }
                                 }
                             }
@@ -781,6 +790,7 @@ Item {
                             color: root.text; placeholderTextColor: root.dim
                             background: Rectangle { color: root.bg; radius: 6; border.color: replyBody.activeFocus ? root.focusRing : root.line }
                         }
+                        Attachments { id: replyImages; objectName: "replyImages"; Layout.fillWidth: true; app: root; anonymous: replyAs.mode === 2 }
                         GridLayout {
                             Layout.fillWidth: true
                             columns: replyArea.width < 470 ? 1 : 2
@@ -793,10 +803,13 @@ Item {
                                       text: replyBody.length + " / 20000"; wrapMode: Text.NoWrap }
                                 AccentButton {
                                     text: "Reply"
-                                    enabled: replyBody.text.trim().length > 0
-                                    onClicked: root.call(root.backend.reply(root.openId, replyBody.text, replyAs.mode, replyAs.alias), function (r) {
+                                    enabled: (replyBody.text.trim().length > 0 || replyImages.tokens.length > 0) && !replyImages.busy
+                                    onClicked: root.call(replyImages.tokens.length > 0
+                                            ? root.backend.replyWithImages(root.openId, replyBody.text, replyAs.mode, replyAs.alias, JSON.stringify(replyImages.tokens))
+                                            : root.backend.reply(root.openId, replyBody.text, replyAs.mode, replyAs.alias), function (r) {
                                         if (root.result(r)) {
                                             replyBody.text = ""
+                                            replyImages.clear(false)
                                             root.scrollToEnd()   // show the reply just posted
                                             root.refreshThread(); root.refreshTopics()
                                         }
@@ -830,17 +843,20 @@ Item {
             Dim { Layout.alignment: Qt.AlignRight; visible: topicBody.length > 16000 || topicTitle.length > 160
                   color: topicBody.length > 20000 ? "#e5484d" : root.dim
                   text: "title " + topicTitle.length + " / 200 · body " + topicBody.length + " / 20000" }
+            Attachments { id: topicImages; Layout.fillWidth: true; app: root; anonymous: topicAs.mode === 2 }
             SignAs { id: topicAs; Layout.fillWidth: true }
             RowLayout {
               Layout.alignment: Qt.AlignRight
               spacing: 10
-              AppButton { text: "Cancel"; onClicked: newTopic.close() }
+              AppButton { text: "Cancel"; onClicked: { topicImages.clear(true); newTopic.close() } }
               AccentButton {
                 text: "Post"
-                enabled: topicTitle.text.trim().length > 0 && topicBody.text.trim().length > 0
-                onClicked: root.call(root.backend.createTopic(topicTitle.text, topicBody.text, topicAs.mode, topicAs.alias), function (r) {
+                enabled: topicTitle.text.trim().length > 0 && (topicBody.text.trim().length > 0 || topicImages.tokens.length > 0) && !topicImages.busy
+                onClicked: root.call(topicImages.tokens.length > 0
+                        ? root.backend.createTopicWithImages(topicTitle.text, topicBody.text, topicAs.mode, topicAs.alias, JSON.stringify(topicImages.tokens))
+                        : root.backend.createTopic(topicTitle.text, topicBody.text, topicAs.mode, topicAs.alias), function (r) {
                     if (root.result(r)) {
-                        topicTitle.text = ""; topicBody.text = ""
+                        topicTitle.text = ""; topicBody.text = ""; topicImages.clear(false)
                         newTopic.close()
                         // Open it, and show it in the list: a search that hides it is cleared.
                         searchField.text = ""; root.revealTopic = r

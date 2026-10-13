@@ -27,6 +27,7 @@
 #include <QTimer>
 
 #include "delivery_transport.h"
+#include "media_backend.h"
 #include "forum/engine.h"
 #include "forum/identity.h"
 #include "forum/store.h"
@@ -56,6 +57,16 @@ public:
     QString retryMembership() override;
     QString openLink(QString url) override;
 
+    // Images, reactions and search: media_backend.cpp.
+    QString attachImage(QString fileUrl) override;
+    QString discardImage(QString token) override;
+    QString createTopicWithImages(QString title, QString body, int mode, QString alias, QString tokens) override;
+    QString replyWithImages(QString topicId, QString body, int mode, QString alias, QString tokens) override;
+    QString loadImage(QString postId, int index) override;
+    QString fullImage(QString postId, int index) override;
+    QString react(QString postId, int emoji) override;
+    QString search(QString query) override;
+
 protected:
     void onContextReady() override;
 
@@ -81,7 +92,11 @@ private:
 
     // Posting
     QString compose(bool topic, const QString& target, const QString& text, const QString& title, int mode,
-                    const QString& alias);
+                    const QString& alias, const std::string& manifest = {});
+    QString composeWithImages(bool topic, const QString& target, const QString& text, const QString& title, int mode,
+                              const QString& alias, const QString& tokens);
+    friend class ForumMedia;
+    std::unique_ptr<ForumMedia> media_;
     forum::Account* selected();
     void publishAccounts();
     void publishOutbox();

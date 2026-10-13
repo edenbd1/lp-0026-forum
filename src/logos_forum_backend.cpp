@@ -331,6 +331,8 @@ void LogosForumBackend::bootstrap() {
     // id arrives with the asynchronous send result (on_send_result above).
     g_fetchSnapshots = qEnvironmentVariableIsSet("LOGOS_FORUM_FETCH_SNAPSHOTS") || fetchSnapshots_;
     g_snapshotsOverMix = !qEnvironmentVariableIsSet("LOGOS_FORUM_SNAPSHOTS_DIRECT");
+    media_ = std::make_unique<ForumMedia>(*this);
+    media_->start(g_fetchSnapshots && g_snapshotsOverMix);
     if (g_fetchSnapshots) engine_->on_snapshot = [this](const forum::Announcement& an) { fetchSnapshot(an); };
     log(std::string("history from peers: ") + (g_fetchSnapshots ? "Logos Storage snapshots, then Delivery" : "Delivery only"));
     // Storage-path answers announce this node's storage address: only when the
@@ -1093,13 +1095,14 @@ Account* LogosForumBackend::selected() {
 }
 
 QString LogosForumBackend::compose(bool topic, const QString& target, const QString& text, const QString& title,
-                                   int mode, const QString& alias) {
+                                   int mode, const QString& alias, const std::string& manifest) {
     if (!engine_) return QStringLiteral("error: the forum is still starting");
     if (mode < 0 || mode > 2) return QStringLiteral("error: unknown posting mode");
     if (topic && title.trimmed().isEmpty()) return QStringLiteral("error: a topic needs a title");
-    if (text.trimmed().isEmpty()) return QStringLiteral("error: nothing to post");
+    if (text.trimmed().isEmpty() && manifest.empty()) return QStringLiteral("error: nothing to post");
     if (mode == 1 && alias.trimmed().isEmpty()) return QStringLiteral("error: choose an alias");
-    if (text.toUtf8().size() > static_cast<int>(forum::kMaxBody)) return QStringLiteral("error: the post is too long");
+    if (text.toUtf8().size() + (manifest.empty() ? 0 : 112) > static_cast<int>(forum::kMaxBody))  // 112: the image line
+        return QStringLiteral("error: the post is too long");
     if (title.toUtf8().size() > static_cast<int>(forum::kMaxTitle)) return QStringLiteral("error: the title is too long");
     if (alias.toUtf8().size() > static_cast<int>(forum::kMaxAlias)) return QStringLiteral("error: the alias is too long");
 
@@ -1115,8 +1118,8 @@ QString LogosForumBackend::compose(bool topic, const QString& target, const QStr
         }
     }
     const std::string a = mode == 1 ? s(alias.trimmed()) : std::string();
-    const std::string id = topic ? engine_->post_topic(as, s(title.trimmed()), s(text), a, now_ms())
-                                 : engine_->post_reply(as, s(target), s(text), a, now_ms());
+    const std::string id = topic ? engine_->post_topic(as, s(title.trimmed()), s(text), a, now_ms(), manifest)
+                                 : engine_->post_reply(as, s(target), s(text), a, now_ms(), manifest);
     if (id.empty()) return QStringLiteral("error: the post could not be saved on this device");
     if (as) {
         store_->save_account(*as, true);
@@ -1166,7 +1169,7 @@ QJsonObject postJson(const Post& p, const std::string& id, const std::vector<Acc
     return QJsonObject{
         {"id", q(id)},
         {"title", q(p.title)},
-        {"body", q(p.body)},
+        {"body", q(forum::shown_body(p.body))},  // without the image line, shown as images
         {"author", author},
         {"authorKey", q(forum::to_hex(p.author.data(), p.author.size()))},
         {"mode", p.mode == Mode::Identity ? "identity" : p.mode == Mode::Alias ? "alias" : "anonymous"},
@@ -1189,6 +1192,7 @@ QString LogosForumBackend::listTopics() {
         // Kept from before dates were checked: not pinned above everything.
         if (t.topic.ts_ms > now_ms() + forum::Engine::kMaxClockSkewMs) continue;
         QJsonObject o = postJson(t.topic, t.id, accounts_, outbox);
+        if (media_) media_->decorate(o, t.topic, t.id, false);
         o.insert("replies", t.replies);
         o.insert("last", static_cast<double>(t.last_activity_ms));
         // New to this user: activity since they last opened the topic, and
@@ -1206,10 +1210,14 @@ QString LogosForumBackend::thread(QString topicId) {
     for (const auto& o : store_->outbox()) outbox.insert(q(o.id), o.attempts);
     QJsonObject out;
     const auto t = store_->get(s(topicId));
-    out.insert("topic", t && t->kind == Kind::Topic ? QJsonValue(postJson(*t, s(topicId), accounts_, outbox))
-                                                     : QJsonValue(QJsonValue::Null));
+    auto full = [&](const Post& p, const std::string& id) {
+        QJsonObject o = postJson(p, id, accounts_, outbox);
+        if (media_) media_->decorate(o, p, id, true);
+        return o;
+    };
+    out.insert("topic", t && t->kind == Kind::Topic ? QJsonValue(full(*t, s(topicId))) : QJsonValue(QJsonValue::Null));
     QJsonArray replies;
-    for (const auto& r : store_->replies(s(topicId))) replies.append(postJson(r, r.id(), accounts_, outbox));
+    for (const auto& r : store_->replies(s(topicId))) replies.append(full(r, r.id()));
     out.insert("replies", replies);
     return dump(QJsonDocument(out));
 }
@@ -1542,6 +1550,7 @@ void LogosForumBackend::wireStorage() {
     });
     st.onStorageDownloadProgress([this](const QString& payload) {
         const auto j = nlohmann::json::parse(s(payload), nullptr, false);
+        if (media_ && media_->downloadProgress(q(str_at(j, "sessionId")), payload)) return;  // an image
         if (!bool_at(j, "success") || q(str_at(j, "sessionId")) != downloadSession_)
             return;
         const std::string chunk = str_at(j, "chunk");
@@ -1570,6 +1579,7 @@ void LogosForumBackend::wireStorage() {
     });
     st.onStorageDownloadDone([this](const QString& payload) {
         const auto j = nlohmann::json::parse(s(payload), nullptr, false);
+        if (media_ && media_->downloadDone(q(str_at(j, "sessionId")), bool_at(j, "success"), q(str_at(j, "error")))) return;  // an image
         if (!j.is_object() || q(str_at(j, "sessionId")) != downloadSession_) return;
         downloadSession_.clear();
         log("download done: " + s(payload).substr(0, 200) + ", " + std::to_string(downloadBuf_.size()) + " bytes");
