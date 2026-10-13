@@ -34,7 +34,8 @@ logos.dev, the default network: [run 4](e2e/e2e-full.run4-0.2.1-logos.dev.out),
 [run 6](e2e/e2e-full.run6-0.3.1-logos.dev.out),
 [run 7](e2e/e2e-full.run7-0.3.2-logos.dev.out),
 [run 8](e2e/e2e-full.run8-0.4.0-logos.dev.out) (0.4.0, with private forums, the
-passphrase vault, images and reactions in the build).
+passphrase vault, images and reactions in the build),
+[run 9](e2e/e2e-full.run9-0.3.7-logos.dev.out) (0.3.7, the package the catalog serves).
 
 | Who | What | Checked on the other nodes |
 |---|---|---|
