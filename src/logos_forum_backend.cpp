@@ -231,6 +231,9 @@ QString LogosForumBackend::dataDir() const {
         ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/logos_forum")
         : userDir + QStringLiteral("/module_data/logos_forum");
     QDir().mkpath(dir);
+    // The store holds secret keys, the log and settings describe what this
+    // install did: the directory is its owner's alone (forum.db is 0600 too).
+    QFile::setPermissions(dir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
     return dir;
 }
 

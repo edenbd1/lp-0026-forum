@@ -16,6 +16,11 @@
 #include <string>
 #include <vector>
 
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 using namespace forum;
 
 static int failures = 0, ran = 0;
@@ -956,6 +961,29 @@ TEST(the_system_servers_come_first_then_deliverys_own) {
     CHECK((split_dns_list(" 10.16.0.1, 192.168.1.1;;2001:db8::1 ") == std::vector<std::string>{"10.16.0.1", "192.168.1.1", "2001:db8::1"}));
     CHECK(split_dns_list(" , ").empty());
 }
+
+#ifndef _WIN32
+TEST(the_store_file_is_readable_by_its_owner_only) {
+    // forum.db holds every account's secret key: no other user of the machine
+    // may read it, whatever the umask, and a file made by an older version is
+    // tightened when it is opened.
+    char dir[] = "/tmp/forum-perm-XXXXXX";
+    CHECK(mkdtemp(dir) != nullptr);
+    const std::string path = std::string(dir) + "/forum.db";
+    auto mode = [](const std::string& f) { struct stat st{}; return stat(f.c_str(), &st) == 0 ? int(st.st_mode & 0777) : -1; };
+    {
+        Store s(path);
+        s.save_account(Account{"me", Keypair::generate()}, true);
+        CHECK(mode(path) == 0600);
+        CHECK(mode(path + "-wal") == 0600);                    // the log the key is written to first
+    }
+    chmod(path.c_str(), 0644);
+    chmod((path + "-wal").c_str(), 0644);
+    { Store again(path); CHECK(mode(path) == 0600); CHECK(mode(path + "-wal") == 0600); }
+    for (const char* f : {"/forum.db", "/forum.db-wal", "/forum.db-shm"}) unlink((std::string(dir) + f).c_str());
+    rmdir(dir);
+}
+#endif
 
 int main() {
     for (auto& t : all()) {

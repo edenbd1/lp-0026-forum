@@ -7,6 +7,12 @@
 #include <cstring>
 #include <stdexcept>
 
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 namespace forum {
 namespace {
 
@@ -86,6 +92,19 @@ uint64_t backoff_ms(int attempts) {
 }
 
 Store::Store(const std::string& path) {
+#ifndef _WIN32
+    // The file holds every account's secret key: readable by its owner only.
+    // Created that way (SQLite gives its -wal and -shm files the database's
+    // own mode), and tightened if an older version left it readable by others.
+    if (!path.empty() && path != ":memory:" && path.rfind("file:", 0) != 0) {
+        const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        if (fd >= 0) {
+            ::fchmod(fd, 0600);
+            ::close(fd);
+        }
+        for (const char* side : {"-wal", "-shm", "-journal"}) ::chmod((path + side).c_str(), 0600);
+    }
+#endif
     if (sqlite3_open(path.c_str(), &db_) != SQLITE_OK)
         throw std::runtime_error(std::string("cannot open store: ") + path);
     exec("PRAGMA journal_mode=WAL;");
