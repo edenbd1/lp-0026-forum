@@ -60,6 +60,33 @@ class LogosForum
     // with a host is refused. Returns "" or "error: …".
     SLOT(QString openLink(QString url))
 
+    // ── Keys at rest ──────────────────────────────────────────────────────────
+    // With a passphrase, account keys are sealed in forum.db (Argon2id,
+    // XChaCha20-Poly1305) and unlocked once per session; reading and posting
+    // anonymously work while locked. Each returns "" or why not.
+    SLOT(QString unlock(QString passphrase))
+    SLOT(QString lockKeys())
+    // `current` is "" while there is none; `next` "" removes the passphrase.
+    SLOT(QString setPassphrase(QString current, QString next))
+
+    // ── Backup ────────────────────────────────────────────────────────────────
+    // The 24 words of an account's current key, or "error: …". Asks for the
+    // passphrase again when there is one. Never logged.
+    SLOT(QString recoveryPhrase(QString label, QString passphrase))
+    // A new account from 24 words: the same key as the one written down.
+    // Returns "" or why not.
+    SLOT(QString restoreAccount(QString label, QString words))
+
+    // ── Replies to you ────────────────────────────────────────────────────────
+    // For the selected account only, matched by its key, never by a name:
+    // {handle, unread, items:[{…post, why, unread, topicId, topicTitle}]}, why
+    // = "topic" (a reply to your topic) | "after" (after your reply) |
+    // "mention" ("@" + your handle).
+    SLOT(QString inbox())
+    // The selected account's own posts (account or alias, never anonymous).
+    SLOT(QString myPosts())
+    SLOT(QString markInboxRead())
+
     PROP(QString status="Starting…" READONLY)
     PROP(bool nodeReady=false READONLY)
     PROP(QString forumName="" READONLY)
@@ -67,7 +94,7 @@ class LogosForum
     PROP(QString appVersion="" READONLY)
     PROP(QString myLabel="" READONLY)
     PROP(QString myKey="" READONLY)
-    // [{label,key,posts,created,selected}]
+    // [{label,key,posts,created,selected,backedUp,handle}]
     PROP(QString accountsJson="[]" READONLY)
     // {maxPosts,maxDays}
     PROP(QString rotationJson="{}" READONLY)
@@ -84,6 +111,11 @@ class LogosForum
     // is the LEZ account that would pay for the membership; `retry` is true
     // when retryMembership() can do something.
     PROP(QString rlnJson="{}" READONLY)
+    // {protected, unlocked}: whether keys are sealed with a passphrase, and
+    // whether they are unlocked this session.
+    PROP(QString keysJson="{}" READONLY)
+    // Unread replies and mentions for the selected account.
+    PROP(int inboxUnread=0 READONLY)
 
     // A post was stored — ours or a peer's. `topicId` is the thread it belongs
     // to (its own id for a topic).

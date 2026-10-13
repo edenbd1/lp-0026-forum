@@ -16,6 +16,7 @@ import "../../src/qml/Markdown.js" as Md
 //   qml tests/qml/Harness.qml -- 800 600 authors   who the topic list names, exit 1 on any failure
 //   qml tests/qml/Harness.qml -- 800 600 scroll    auto-scroll behaviour of the thread, exit 1 on any failure
 //   qml tests/qml/Harness.qml -- 800 600 markdown  adversarial cases for Markdown.js, exit 1 on any failure
+//   states locked | inbox | backup: keys sealed and locked; the inbox; an account's recovery phrase
 //   state markdown-shot: a thread whose posts use every Markdown feature, for screenshots
 Window {
     id: win
@@ -45,8 +46,10 @@ Window {
         property string myLabel: "Alice"
         property string myKey: "8b0adc2e41f07a9d3c5e6b1a2f4d8c9e0b7a6f5e4d3c2b1a0f9e8d7c6b5a6747"
         property string accountsJson: JSON.stringify([
-            { label: "Alice", key: myKey, selected: true, posts: 12 },
-            { label: "Work", key: "43ca10be77f0e2d9a8b6c4e2f0a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e353a0", selected: false, posts: 3 }])
+            { label: "Alice", key: myKey, selected: true, posts: 12, backedUp: true, handle: myKey.substring(0, 16) },
+            { label: "Work", key: "43ca10be77f0e2d9a8b6c4e2f0a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e353a0", selected: false, posts: 3, backedUp: false, handle: "43ca10be77f0e2d9" }])
+        property string keysJson: JSON.stringify({ protected: win.state !== "list" && win.state !== "backup", unlocked: win.state !== "locked" })
+        property int inboxUnread: win.state === "list" ? 0 : 2
         property string rotationJson: JSON.stringify({ maxPosts: 0, maxDays: 30 })
         property int outboxCount: win.state === "offline" ? 1 : 0
         property string historyStatus: win.state === "offline" ? "History: no store node reachable, asking peers · Storage ready"
@@ -144,6 +147,31 @@ Window {
         function rotateAccount() { return "" }
         function setRotation() { return "" }
         function saveSnapshot() { return "" }
+        function unlock(p) { return p === "right" ? "" : "wrong passphrase" }
+        function lockKeys() { return "" }
+        function setPassphrase(c, n) { return "" }
+        function recoveryPhrase(label, pass) {
+            return "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth title"
+        }
+        function restoreAccount(label, words) { return "" }
+        function markInboxRead() { return "" }
+        function inbox() {
+            return JSON.stringify({ handle: myKey.substring(0, 16), unread: 2, items: [
+                post("r7", "Ghost", "6d6bb1fa0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d861a", "alias", false, 3,
+                     "Tried it on Linux too: same error, same fix. Thanks for writing it up.",
+                     { why: "topic", unread: true, topicId: "t2", topicTitle: "Basecamp 0.3.0 RC: what broke for you?" }),
+                post("r8", "43ca…53a0", "43ca10be77f0e2d9a8b6c4e2f0a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e353a0", "identity", false, 30,
+                     "@" + myKey.substring(0, 16) + " you ran this last week, did the reset keep your memberships?",
+                     { why: "mention", unread: true, topicId: "t1", topicTitle: "When does testnet v0.3 land?" }),
+                post("r9", "anonymous", "6b79c6d4e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5", "anonymous", false, 1500,
+                     "Same for me after your reply: removing the old package first fixed it.",
+                     { why: "after", unread: false, topicId: "t3", topicTitle: "LEZ wallet 1.1.1 update fails to install" })] })
+        }
+        function myPosts() {
+            return JSON.stringify([
+                post("t2", "Alice", myKey, "identity", true, 180, "Dogfooding the RC this week.", { title: "Basecamp 0.3.0 RC: what broke for you?", topicId: "t2", topicTitle: "Basecamp 0.3.0 RC: what broke for you?" }),
+                post("r3", "Alice", myKey, "identity", true, 2, "Rotated my key before posting this.", { topicId: "t1", topicTitle: "When does testnet v0.3 land?" })])
+        }
         // What the view asked to open, in order (a click calls this).
         property var opened: []
         function openLink(url) { opened.push(url); console.log("click opens " + url); return "" }
@@ -456,7 +484,9 @@ Window {
             if (win.state === "anonymous") replyAs.mode = 2
             var popups = m.data.filter(function (o) { return o.title !== undefined && o.open !== undefined })
             if (win.state === "newtopic") popups.filter(function (p) { return p.title === "New topic" })[0].open()
-            if (win.state === "accounts") popups.filter(function (p) { return p.title === "Accounts" })[0].open()
+            if (win.state === "accounts" || win.state === "backup") popups.filter(function (p) { return p.title === "Accounts" })[0].open()
+            if (win.state === "inbox") popups.filter(function (p) { return p.title === "Inbox" })[0].open()
+            if (win.state === "backup") m.showPhrase("Alice")
             if (win.state === "scroll") { scrollCases(m); return }
             if (win.args[3] !== "live") shot.start()
         }

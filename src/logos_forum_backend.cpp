@@ -35,6 +35,8 @@
 #endif
 
 #include "forum/dns.h"
+#include "forum/inbox.h"
+#include "forum/recovery.h"
 #include "forum/rln.h"
 
 #include "logos_sdk.h"
@@ -63,7 +65,10 @@ void log(const std::string& m) {
         QFile::rename(g_logPath, g_logPath + QStringLiteral(".1"));
     }
     QFile f(g_logPath);
-    if (f.open(QIODevice::Append | QIODevice::Text)) f.write((line + "\n").c_str());
+    if (f.open(QIODevice::Append | QIODevice::Text)) {
+        f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);   // like forum.db: its owner's alone
+        f.write((line + "\n").c_str());
+    }
 }
 
 uint64_t now_ms() { return static_cast<uint64_t>(QDateTime::currentMSecsSinceEpoch()); }
@@ -348,10 +353,14 @@ void LogosForumBackend::bootstrap() {
     };
 
     // Accounts: the first run makes one, so posting works straight away.
-    accounts_ = store_->accounts();
-    if (const auto sel = store_->selected_label()) selectedLabel_ = q(*sel);
-    if (accounts_.empty()) createAccount(QString());
-    else if (!selected()) selectedLabel_ = q(accounts_.front().label);
+    // Sealed with a passphrase, they stay locked until the user unlocks them.
+    keys_ = std::make_unique<forum::Keystore>(*store_);
+    accounts_ = keys_->accounts();
+    if (const auto sel = keys_->selected_label()) selectedLabel_ = q(*sel);
+    if (accounts_.empty() && !keys_->is_protected()) createAccount(QString());
+    else if (!selected() && !accounts_.empty()) selectedLabel_ = q(accounts_.front().label);
+    log(std::string("account keys: ") + (keys_->is_protected() ? "sealed with a passphrase, locked" : "no passphrase"));
+    publishKeys();
     publishAccounts();
     publishOutbox();
     postsAtLastSnapshot_ = store_->count();
@@ -1107,9 +1116,10 @@ QString LogosForumBackend::compose(bool topic, const QString& target, const QStr
     if (mode != 2) {
         as = selected();
         if (!as) return QStringLiteral("error: no account selected");
+        if (const QString why = keysLocked(); !why.isEmpty()) return QStringLiteral("error: ") + why;
         if (rotation_.due(*as, now_ms())) {
             forum::rotate(*as, now_ms());
-            store_->save_account(*as, true);
+            keys_->save(*as, true);
             store_->scrub();
             log("rotated account " + as->label + " by policy");
         }
@@ -1118,8 +1128,9 @@ QString LogosForumBackend::compose(bool topic, const QString& target, const QStr
     const std::string id = topic ? engine_->post_topic(as, s(title.trimmed()), s(text), a, now_ms())
                                  : engine_->post_reply(as, s(target), s(text), a, now_ms());
     if (id.empty()) return QStringLiteral("error: the post could not be saved on this device");
+    if (!as) anonThisSession_.insert(id);   // memory only, for the inbox
     if (as) {
-        store_->save_account(*as, true);
+        keys_->save(*as, true);
         publishAccounts();
     }
     publishOutbox();
@@ -1180,6 +1191,13 @@ QString dump(const QJsonDocument& d) { return QString::fromUtf8(d.toJson(QJsonDo
 
 } // namespace
 
+// For logos_forum_accounts.cpp, which shows posts the same way.
+QJsonObject forumPostJson(const Post& p, const std::string& id, const std::vector<Account>& mine,
+                          const QHash<QString, int>& outbox) {
+    return postJson(p, id, mine, outbox);
+}
+void forumLog(const std::string& m) { log(m); }
+
 QString LogosForumBackend::listTopics() {
     if (!store_) return QStringLiteral("[]");
     QHash<QString, int> outbox;
@@ -1188,7 +1206,7 @@ QString LogosForumBackend::listTopics() {
     for (const auto& t : store_->topics(s(forumName()))) {
         // Kept from before dates were checked: not pinned above everything.
         if (t.topic.ts_ms > now_ms() + forum::Engine::kMaxClockSkewMs) continue;
-        QJsonObject o = postJson(t.topic, t.id, accounts_, outbox);
+        QJsonObject o = postJson(t.topic, t.id, selectedView(), outbox);
         o.insert("replies", t.replies);
         o.insert("last", static_cast<double>(t.last_activity_ms));
         // New to this user: activity since they last opened the topic, and
@@ -1206,10 +1224,10 @@ QString LogosForumBackend::thread(QString topicId) {
     for (const auto& o : store_->outbox()) outbox.insert(q(o.id), o.attempts);
     QJsonObject out;
     const auto t = store_->get(s(topicId));
-    out.insert("topic", t && t->kind == Kind::Topic ? QJsonValue(postJson(*t, s(topicId), accounts_, outbox))
+    out.insert("topic", t && t->kind == Kind::Topic ? QJsonValue(postJson(*t, s(topicId), selectedView(), outbox))
                                                      : QJsonValue(QJsonValue::Null));
     QJsonArray replies;
-    for (const auto& r : store_->replies(s(topicId))) replies.append(postJson(r, r.id(), accounts_, outbox));
+    for (const auto& r : store_->replies(s(topicId))) replies.append(postJson(r, r.id(), selectedView(), outbox));
     out.insert("replies", replies);
     return dump(QJsonDocument(out));
 }
@@ -1262,6 +1280,7 @@ void LogosForumBackend::postArrivedSoon(const QString& id, const QString& topicI
         arrivalsScheduled_ = false;
         // A few: one signal each, so an open topic refreshes and is marked read.
         // Many (an import): one signal with no topic, and the view refreshes once.
+        publishInbox();
         if (arrivals_.size() <= 3)
             for (auto it = arrivals_.begin(); it != arrivals_.end(); ++it) emit postArrived(it.value(), it.key());
         else
@@ -1279,7 +1298,9 @@ void LogosForumBackend::publishAccounts() {
                                {"key", q(forum::short_key(a.key.pk))},
                                {"posts", static_cast<int>(a.posts)},
                                {"created", static_cast<double>(a.created_ms)},
-                               {"selected", q(a.label) == selectedLabel_}});
+                               {"selected", q(a.label) == selectedLabel_},
+                               {"backedUp", a.backed_up},
+                               {"handle", q(forum::mention_handle(a.key.pk))}});
     setAccountsJson(dump(QJsonDocument(arr)));
     const Account* sel = selected();
     setMyLabel(sel ? q(sel->label) : QString());
@@ -1287,10 +1308,12 @@ void LogosForumBackend::publishAccounts() {
     setRotationJson(dump(QJsonDocument(QJsonObject{
         {"maxPosts", static_cast<int>(rotation_.max_posts)},
         {"maxDays", static_cast<int>(rotation_.max_age_ms / 86400000ull)}})));
+    publishInbox();   // the inbox is the selected account's
 }
 
 QString LogosForumBackend::createAccount(QString label) {
     if (!store_) return QStringLiteral("the forum is still starting");
+    if (keys_ && keys_->is_protected() && !keys_->is_unlocked()) return QStringLiteral("unlock your keys first");
     label = label.trimmed();
     if (label.isEmpty()) {
         for (int n = static_cast<int>(accounts_.size()) + 1;; ++n) {
@@ -1303,7 +1326,7 @@ QString LogosForumBackend::createAccount(QString label) {
     for (const auto& a : accounts_)
         if (q(a.label) == label) return QStringLiteral("an account called \"%1\" already exists").arg(label);
     Account a{s(label), forum::Keypair::generate(), now_ms(), 0};
-    store_->save_account(a, true);
+    keys_->save(a, true);
     accounts_.push_back(a);
     selectedLabel_ = label;
     publishAccounts();
@@ -1314,7 +1337,7 @@ QString LogosForumBackend::selectAccount(QString label) {
     for (const auto& a : accounts_)
         if (q(a.label) == label) {
             selectedLabel_ = label;
-            store_->save_account(a, true);
+            keys_->save(a, true);
             publishAccounts();
             return QString();
         }
@@ -1323,6 +1346,7 @@ QString LogosForumBackend::selectAccount(QString label) {
 
 QString LogosForumBackend::deleteAccount(QString label) {
     if (accounts_.size() <= 1) return QStringLiteral("keep at least one account");
+    if (keys_->is_protected() && !keys_->is_unlocked()) return QStringLiteral("unlock your keys first");
     auto it = std::find_if(accounts_.begin(), accounts_.end(), [&](const Account& a) { return q(a.label) == label; });
     if (it == accounts_.end()) return QStringLiteral("no such account");
     sodium_memzero(it->key.sk.data(), it->key.sk.size());
@@ -1331,7 +1355,7 @@ QString LogosForumBackend::deleteAccount(QString label) {
     accounts_.erase(it);
     if (!selected()) {
         selectedLabel_ = q(accounts_.front().label);
-        store_->save_account(accounts_.front(), true);
+        keys_->save(accounts_.front(), true);
     }
     publishAccounts();
     return QString();
@@ -1340,8 +1364,9 @@ QString LogosForumBackend::deleteAccount(QString label) {
 QString LogosForumBackend::rotateAccount() {
     Account* a = selected();
     if (!a) return QStringLiteral("no account selected");
+    if (const QString why = keysLocked(); !why.isEmpty()) return why;
     forum::rotate(*a, now_ms());
-    store_->save_account(*a, true);
+    keys_->save(*a, true);
     store_->scrub();
     publishAccounts();
     return QString();
@@ -1418,7 +1443,10 @@ void LogosForumBackend::saveSettings() {
     if (!gifterSetting_.isEmpty()) out.insert(QStringLiteral("gifter"), gifterSetting_);
     if (dnsSetting_.isArray() || dnsSetting_.isString()) out.insert("dns", dnsSetting_);  // set by hand, kept as written
     QFile f(dataDir() + QStringLiteral("/settings.json"));
-    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) f.write(QJsonDocument(out).toJson());
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        f.write(QJsonDocument(out).toJson());
+    }
 }
 
 QString LogosForumBackend::useStorePeers(QString peers) {

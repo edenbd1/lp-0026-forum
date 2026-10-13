@@ -29,6 +29,7 @@
 #include "delivery_transport.h"
 #include "forum/engine.h"
 #include "forum/identity.h"
+#include "forum/keystore.h"
 #include "forum/store.h"
 #include "logos_ui_plugin_context.h"
 #include "rep_logos_forum_source.h"
@@ -55,6 +56,15 @@ public:
     QString useStorePeers(QString peers) override;
     QString retryMembership() override;
     QString openLink(QString url) override;
+
+    QString unlock(QString passphrase) override;
+    QString lockKeys() override;
+    QString setPassphrase(QString current, QString next) override;
+    QString recoveryPhrase(QString label, QString passphrase) override;
+    QString restoreAccount(QString label, QString words) override;
+    QString inbox() override;
+    QString myPosts() override;
+    QString markInboxRead() override;
 
 protected:
     void onContextReady() override;
@@ -110,6 +120,16 @@ private:
     std::unique_ptr<DeliveryTransport> net_;
     std::unique_ptr<forum::Engine> engine_;
     std::vector<forum::Account> accounts_;
+    // Keys at rest (sealed with a passphrase, or not), and for this session
+    // only, the anonymous posts written here: never saved, so nothing on disk
+    // says which anonymous posts were ours; used to keep them out of the inbox.
+    std::unique_ptr<forum::Keystore> keys_;
+    std::set<std::string> anonThisSession_;
+    void publishKeys();
+    void publishInbox();
+    void reloadAccounts();
+    QString keysLocked() const;   // why an account cannot sign now, or ""
+    std::vector<forum::Account> selectedView();   // the selected account's key and label only
     QString selectedLabel_;
     forum::RotationPolicy rotation_;
     QHash<QString, double> readUpTo_;  // topic id -> last activity the user has seen
