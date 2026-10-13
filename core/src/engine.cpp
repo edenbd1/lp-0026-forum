@@ -199,7 +199,10 @@ std::string Engine::compose(Post p, Account* as, const std::string& alias, uint6
     const Post signed_post = as ? author_as(*as, std::move(p), alias) : author_anonymously(std::move(p));
     const std::string id = signed_post.id();
     if (!store_.enqueue(id, encode(signed_post), now_ms)) return {};  // could not be kept to send: refuse it
-    const bool stored = store_.put(signed_post, now_ms);
+    // Stored as received a moment after its date, like a post from the
+    // network: a "received" equal to the date to the millisecond would mark,
+    // in forum.db, every post written here, anonymous ones included.
+    const bool stored = store_.put(signed_post, now_ms + 1 + randombytes_uniform(1500));
     if (stored) counted_ = false;  // our own post changes what a want is compared with
     if (stored && on_post) on_post(signed_post, id);
     return id;

@@ -1080,6 +1080,21 @@ TEST(checking_a_bundle_against_a_pending_answer_costs_linear_work) {
     CHECK(checked < 3 * base);                                   // was about 9 times
 }
 
+TEST(an_anonymous_post_written_here_is_stored_like_one_received) {
+    // A post arriving from the network is stored a moment after its date;
+    // one written here used to be stored at the very millisecond of its date,
+    // which told anyone reading forum.db which anonymous posts were this
+    // install's. Now it is stored a moment later too.
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    const uint64_t now = 1790000000000;
+    for (int i = 0; i < 20; ++i) {
+        const std::string id = ea.post_topic(nullptr, "t" + std::to_string(i), "b", "", now + i * 5000);
+        const uint64_t ts = sa.get(id)->ts_ms;
+        CHECK(sa.newest_ts("Logos Forum", UINT64_MAX >> 1, ts + 1) < ts);   // not received at its own date
+    }
+}
+
 int main() {
     for (auto& t : all()) {
         const int before = failures;
