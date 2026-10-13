@@ -1,10 +1,40 @@
 # End to end, between real nodes
 
+## Where it stands today
+
+The current package (0.3.x, catalog) runs on **logos.dev**. Its latest runs:
+
+- the five-node scenario below, 24/24 on logos.dev
+  ([run 7, 0.3.2](e2e/e2e-full.run7-0.3.2-logos.dev.out));
+- history with every other node offline: a fresh node gets the forum from the
+  store nodes alone, A answering no history request
+  ([0.3.5](e2e/e2e-history-offline-0.3.5.out), on a network that blocks public
+  DNS);
+- snapshots, opt-in: the direct download passes
+  ([0.3.2](e2e/e2e-snapshot-direct-0.3.2.out)); the download over Mix does not
+  yet ([0.3.2](e2e/e2e-snapshot-mix-0.3.2.out): the post arrived over Delivery,
+  not from the snapshot, and the run ends in `FAIL`);
+- logos.test with RLN (opt-in, `main`): the sponsor's registrations are refused
+  by the zone's sequencer (`Incorrect fee`), so no membership is granted
+  ([0.4.0](e2e/e2e-sponsor-0.4.0-logos.test-unfunded.out)).
+
+The sections after the full scenario are older, kept as the record of how the
+design got here: "Two nodes" and "What the network keeps" were run with
+version 0.1 on logos.test, `delivery_module` 0.2.1 and `storage_module` 2.1.2,
+when snapshots were on by default and the logos.test store nodes kept nothing.
+
 ## The full scenario: five nodes, 24 checks
 
-[`scripts/e2e-full.sh`](../scripts/e2e-full.sh) runs five Basecamp nodes on
-logos.test on a forum of its own, drives each through the forum's interface
-and checks every node's store. Two consecutive runs, both 24/24: [run 1](e2e/e2e-full.run1.out), [run 2](e2e/e2e-full.run2.out).
+[`scripts/e2e-full.sh`](../scripts/e2e-full.sh) runs five Basecamp nodes on a
+forum of its own, drives each through the forum's interface and checks every
+node's store. On logos.test with version 0.1, two consecutive runs, both 24/24:
+[run 1](e2e/e2e-full.run1.out), [run 2](e2e/e2e-full.run2.out); since then on
+logos.dev, the default network: [run 4](e2e/e2e-full.run4-0.2.1-logos.dev.out),
+[run 5](e2e/e2e-full.run5-0.3.0-logos.dev.out),
+[run 6](e2e/e2e-full.run6-0.3.1-logos.dev.out),
+[run 7](e2e/e2e-full.run7-0.3.2-logos.dev.out),
+[run 8](e2e/e2e-full.run8-0.4.0-logos.dev.out) (0.4.0, with private forums, the
+passphrase vault, images and reactions in the build).
 
 | Who | What | Checked on the other nodes |
 |---|---|---|
@@ -16,7 +46,7 @@ and checks every node's store. Two consecutive runs, both 24/24: [run 1](e2e/e2e
 | D · offline | posts with no network, closes, reopens online | nobody has it while D is offline; everyone has it after, and D's outbox empties |
 | E · newcomer | a blank install joins at the end | holds exactly the same posts as A |
 
-## Two nodes
+## Two nodes (version 0.1, logos.test)
 
 Two Logos Basecamp 0.3.0 instances on one Mac (`--user-dir` keeps them apart),
 each with `delivery_module` 0.2.1 and `storage_module` 2.1.2 from the official
@@ -37,7 +67,7 @@ Script: [`scripts/e2e-two-nodes.sh`](../scripts/e2e-two-nodes.sh).
 ![A receives B's anonymous reply](e2e/3-a-receives-b-anonymous-reply.png)
 ![All three signing modes, as node A sees them](e2e/5-three-signing-modes.png)
 
-## What the network keeps
+## What the network keeps (logos.test, testnet v0.2)
 
 Before relying on the network's history, we measured it. A Store query to
 each of four logos.test fleet nodes (`node-01.do-ams3`, `node-01.gc-us-central1-a`,
@@ -54,7 +84,9 @@ with its storage node's peer id and addresses. The newcomer dials that node
 directly, downloads the snapshot, and merges it post by post. Every signature
 is checked, so a snapshot carries no authority of its own. Snapshots are
 content-addressed: two peers holding the same posts announce the same CID, and
-it is fetched once. A peer answers at most every 30 seconds.
+it is fetched once. A peer answered at most every 30 seconds then; today a
+peer answers a Delivery request at most once a minute and a Storage request at
+most once every ten minutes, and snapshots are off by default.
 
 From the fresh node's log ([`e2e/node-b-fresh-install.log`](e2e/node-b-fresh-install.log)):
 

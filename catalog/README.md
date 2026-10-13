@@ -17,13 +17,14 @@ The published catalog is
 https://raw.githubusercontent.com/edenbd1/logos-forum-catalog/main/logos-repo.json
 ```
 
-To publish a release: build (metadata.json declares the dependency ranges,
-`delivery_module` ~0.3.0 and `storage_module` ~3.0.0, and the builder writes
-them into the package manifest), then generate the two files:
+To publish a release: build (metadata.json declares the `delivery_module` and
+`storage_module` ranges, and the builder writes them into the package
+manifest), add the runtime-only RLN and gifter dependencies with
+`scripts/pin-deps.py`, then generate the two files:
 
 ```bash
 nix build .#lgx-portable
-cp result/logos-logos_forum-module.lgx logos_forum-0.1.1.lgx
+scripts/pin-deps.py result/logos-logos_forum-module.lgx logos_forum-0.1.1.lgx
 scripts/make-catalog.py \
   --base-url  https://github.com/<owner>/<repo>/releases/download/logos_forum-v0.1.1 \
   --index-url https://raw.githubusercontent.com/<owner>/<repo>/main/catalog/index.json \

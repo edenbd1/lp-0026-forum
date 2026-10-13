@@ -35,6 +35,9 @@
 #endif
 
 #include "forum/dns.h"
+#include "forum/inbox.h"
+#include "forum/recovery.h"
+#include "forum/rln.h"
 
 #include "logos_sdk.h"
 #include "logos_types.h"
@@ -48,6 +51,9 @@ namespace {
 
 // Basecamp does not surface a ui-host's stderr, so the log also goes to
 // forum.log in the forum's data directory, where tests and bug reports read it.
+// It never names a post this install wrote, nor a delivery request id: a log
+// attached to a bug report must not say which posts, anonymous ones included,
+// came from here.
 QString g_logPath;
 void log(const std::string& m) {
     const std::string line = QDateTime::currentDateTime().toString(Qt::ISODateWithMs).toStdString() + " " + m;
@@ -59,7 +65,10 @@ void log(const std::string& m) {
         QFile::rename(g_logPath, g_logPath + QStringLiteral(".1"));
     }
     QFile f(g_logPath);
-    if (f.open(QIODevice::Append | QIODevice::Text)) f.write((line + "\n").c_str());
+    if (f.open(QIODevice::Append | QIODevice::Text)) {
+        f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);   // like forum.db: its owner's alone
+        f.write((line + "\n").c_str());
+    }
 }
 
 uint64_t now_ms() { return static_cast<uint64_t>(QDateTime::currentMSecsSinceEpoch()); }
@@ -100,6 +109,12 @@ bool bool_at(const nlohmann::json& j, const char* k) {
 }
 
 constexpr const char* kDefaultForum = "Logos Forum";
+// The forum's membership sponsor: an open RLN gifter (logos-rln-gifter,
+// LIP-158) run by the forum's author, which registers a membership for any
+// node that asks and pays for it on the registry's zone. gifter/ in this repo.
+constexpr const char* kGifter = "/ip4/88.160.11.28/tcp/24026/p2p/16Uiu2HAm4XsEj65CPBnXZTZbniEE9SEiRtJUmngGuQxQoGFSHxA6";
+// The registry's minimum, and what the sponsor grants: messages per 10-minute epoch.
+constexpr const char* kGiftRate = "100";
 constexpr int kPumpMs = 2000;
 constexpr int kCatchUpMs = 5 * 60 * 1000;
 constexpr int kSnapshotMs = 30 * 60 * 1000;
@@ -204,6 +219,9 @@ template <typename F> void guarded(const char* what, F&& f) {
 
 } // namespace
 
+// For forum_groups.cpp: the same log, which never names a group or a post.
+void forumLog(const std::string& m) { log(m); }
+
 LogosForumBackend::LogosForumBackend() {
     setAppVersion(QStringLiteral(LOGOS_FORUM_VERSION));
     const QString name = qEnvironmentVariable("LOGOS_FORUM_NAME", QString::fromLatin1(kDefaultForum));
@@ -224,6 +242,9 @@ QString LogosForumBackend::dataDir() const {
         ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/logos_forum")
         : userDir + QStringLiteral("/module_data/logos_forum");
     QDir().mkpath(dir);
+    // The store holds secret keys, the log and settings describe what this
+    // install did: the directory is its owner's alone (forum.db is 0600 too).
+    QFile::setPermissions(dir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
     return dir;
 }
 
@@ -247,11 +268,36 @@ void LogosForumBackend::bootstrap() {
         return;
     }
     net_ = std::make_unique<DeliveryTransport>(modules());
-    // Which Logos Delivery network. logos.dev since testnet v0.3: the
-    // logos.test fleet was switched off with the v0.3 launch (2026-09-30) and
-    // logos.dev is the one running. LOGOS_FORUM_PRESET picks another fleet,
-    // its cluster and its store nodes.
-    preset_ = qEnvironmentVariable("LOGOS_FORUM_PRESET", QStringLiteral("logos.dev"));
+    // Which Logos Delivery network. logos.dev by default: it runs no RLN, so
+    // anyone can post with nothing to set up. logos.test, the testnet v0.3
+    // network, is selectable ("network": "logos.test" in settings.json, or
+    // LOGOS_FORUM_PRESET, which wins); there every sender needs an RLN
+    // membership, which the forum's sponsor registers and pays for
+    // (requestGift below).
+    QJsonObject settings;
+    {
+        QFile f(dataDir() + QStringLiteral("/settings.json"));
+        if (f.open(QIODevice::ReadOnly)) settings = QJsonDocument::fromJson(f.readAll()).object();
+    }
+    networkSetting_ = settings.value(QLatin1String("network")).toString();
+    preset_ = qEnvironmentVariable("LOGOS_FORUM_PRESET", networkSetting_);
+    if (preset_ != QLatin1String("logos.dev") && preset_ != QLatin1String("logos.test")) {
+        if (!preset_.isEmpty()) log("unknown network \"" + s(preset_) + "\": using logos.dev");
+        preset_ = QStringLiteral("logos.dev");
+    }
+    // The sponsor: "<multiaddr>/p2p/<peer id>" in settings.json "gifter" or
+    // LOGOS_FORUM_GIFTER (which wins), "off" to pay for a membership yourself.
+    gifterSetting_ = settings.value(QLatin1String("gifter")).toString();
+    {
+        const QString g = qEnvironmentVariable("LOGOS_FORUM_GIFTER", gifterSetting_).trimmed();
+        const QString spec = g.isEmpty() ? QString::fromLatin1(kGifter) : g;
+        const int at = spec.indexOf(QLatin1String("/p2p/"));
+        if (spec != QLatin1String("off") && at > 0) {
+            gifterAddr_ = spec.left(at);
+            gifterPeer_ = spec.mid(at + 5);
+        }
+        log("membership sponsor: " + (gifterPeer_.isEmpty() ? std::string("off") : s(gifterAddr_) + "/p2p/" + s(gifterPeer_)));
+    }
     net_->set_cluster(DeliveryTransport::cluster_of(s(preset_)));
     net_->set_store_peers(DeliveryTransport::default_store_peers(s(preset_)));
     log("network preset " + s(preset_) + ", cluster " + std::to_string(DeliveryTransport::cluster_of(s(preset_))));
@@ -266,23 +312,25 @@ void LogosForumBackend::bootstrap() {
     net_->on_send_result = [this](const std::string& payload, bool sent, const std::string& request,
                                   const std::string& error) {
         guarded("send result", [&]() {
-            const auto p = forum::decode(payload);
+            auto p = forum::decode(payload);
+            if (!p)
+                if (const auto opened = openOwnSealed(payload)) p = forum::decode(*opened);  // a group's post
             if (!p || !engine_) return;  // a history answer or a request: nothing to track
             const std::string id = p->id();
             if (sent) {
-                log("handed " + id.substr(0, 12) + " to delivery as request " + request);
+                log("handed a post to delivery");
                 if (request.empty()) return;
                 // The network may have confirmed it before this reply reached us.
                 if (earlyConfirms_.remove(q(request)) > 0) {
                     engine_->confirm(id);
-                    log("confirmed " + id.substr(0, 12) + " (before its send reply)");
+                    log("confirmed a post (before its send reply)");
                     publishOutbox();
                     emit postStateChanged(q(id), QStringLiteral("sent"), QString());
                     return;
                 }
                 inFlight_.insert(q(request), q(id));
             } else {
-                log("delivery refused " + id.substr(0, 12) + ": " + error);
+                log("delivery refused a post: " + error);
                 if (engine_->requeue(id, error.empty() ? "send failed" : error, now_ms())) publishOutbox();
                 emit postStateChanged(q(id), QStringLiteral("failed"), q(error));
             }
@@ -293,6 +341,8 @@ void LogosForumBackend::bootstrap() {
     // id arrives with the asynchronous send result (on_send_result above).
     g_fetchSnapshots = qEnvironmentVariableIsSet("LOGOS_FORUM_FETCH_SNAPSHOTS") || fetchSnapshots_;
     g_snapshotsOverMix = !qEnvironmentVariableIsSet("LOGOS_FORUM_SNAPSHOTS_DIRECT");
+    media_ = std::make_unique<ForumMedia>(*this);
+    media_->start(g_fetchSnapshots && g_snapshotsOverMix);
     if (g_fetchSnapshots) engine_->on_snapshot = [this](const forum::Announcement& an) { fetchSnapshot(an); };
     log(std::string("history from peers: ") + (g_fetchSnapshots ? "Logos Storage snapshots, then Delivery" : "Delivery only"));
     // Storage-path answers announce this node's storage address: only when the
@@ -302,7 +352,7 @@ void LogosForumBackend::bootstrap() {
         answerRe_ = r.id;
         // Off the delivery event's call stack: answering calls back into modules.
         QTimer::singleShot(0, this, [this]() {
-            if (!lastSnapshotCid_.empty() && postsAtLastSnapshot_ == store_->count())
+            if (!lastSnapshotCid_.empty() && postsAtLastSnapshot_ == store_->count(s(forumName())))
                 engine_->announce_snapshot(lastSnapshotCid_, postsAtLastSnapshot_, now_ms(), answerRe_);  // unchanged: same CID
             else
                 saveSnapshot();
@@ -310,13 +360,18 @@ void LogosForumBackend::bootstrap() {
     };
 
     // Accounts: the first run makes one, so posting works straight away.
-    accounts_ = store_->accounts();
-    if (const auto sel = store_->selected_label()) selectedLabel_ = q(*sel);
-    if (accounts_.empty()) createAccount(QString());
-    else if (!selected()) selectedLabel_ = q(accounts_.front().label);
+    // Sealed with a passphrase, they stay locked until the user unlocks them.
+    keys_ = std::make_unique<forum::Keystore>(*store_);
+    accounts_ = keys_->accounts();
+    if (const auto sel = keys_->selected_label()) selectedLabel_ = q(*sel);
+    if (accounts_.empty() && !keys_->is_protected()) createAccount(QString());
+    else if (!selected() && !accounts_.empty()) selectedLabel_ = q(accounts_.front().label);
+    log(std::string("account keys: ") + (keys_->is_protected() ? "sealed with a passphrase, locked" : "no passphrase"));
+    publishKeys();
     publishAccounts();
+    initGroups();
     publishOutbox();
-    postsAtLastSnapshot_ = store_->count();
+    postsAtLastSnapshot_ = store_->count(s(forumName()));
     setNodeReady(true);  // composing needs only the local store
 
     wireDelivery();
@@ -326,12 +381,14 @@ void LogosForumBackend::bootstrap() {
     connect(&activityTimer_, &QTimer::timeout, this, [this]() { logActivity(); });
     activityTimer_.start(qEnvironmentVariableIntValue("LOGOS_FORUM_ACTIVITY_MS") > 0
                              ? qEnvironmentVariableIntValue("LOGOS_FORUM_ACTIVITY_MS") : 3600000);  // override for tests
+    rlnTimer_.setSingleShot(true);
+    connect(&rlnTimer_, &QTimer::timeout, this, [this]() { pollMembership(); });
     connect(&pumpTimer_, &QTimer::timeout, [this]() { pump(); });
     pumpTimer_.start(kPumpMs);
     connect(&historyTimer_, &QTimer::timeout, [this]() { runCatchUp("periodic"); });
     historyTimer_.start(kCatchUpMs);
     if (g_fetchSnapshots) connect(&snapshotTimer_, &QTimer::timeout, [this]() {
-        if (store_ && store_->count() != postsAtLastSnapshot_) saveSnapshot();
+        if (store_ && store_->count(s(forumName())) != postsAtLastSnapshot_) saveSnapshot();
     });
     snapshotTimer_.start(kSnapshotMs);
 }
@@ -355,12 +412,20 @@ void LogosForumBackend::wireDelivery() {
     });
     d.on("messageReceived", [this](const QVariantList& data) {
         if (data.size() < 3 || !engine_) return;
-        if (data.at(1).toString() != contentTopic()) return;  // another app's traffic
+        // Delivery says whether it recovered the message from the store
+        // ("history") or saw it published ("live"): the budget it is charged to.
+        const bool history = data.value(3).toString() == QLatin1String("history");
+        if (data.at(1).toString() != contentTopic()) {  // a private forum's, or another app's traffic
+            guarded("received message", [&]() { routeGroupMessage(data.at(1).toString(), data.at(2).toByteArray().toStdString(), history); });
+            return;
+        }
         guarded("received message", [&]() {
             const std::string payload = data.at(2).toByteArray().toStdString();
-            const size_t before = store_->count();
-            engine_->receive(payload, now_ms());
-            const size_t added = store_->count() - before;
+            // What it added, from the engine: counting the store before and
+            // after would cost two queries for any message anyone sends.
+            const uint64_t before = engine_->posts_received();
+            engine_->receive(payload, now_ms(), history ? forum::Origin::History : forum::Origin::Live);
+            const size_t added = static_cast<size_t>(engine_->posts_received() - before);
             countActivity(payload, added > 0 && payload.find("\"logos-forum-snapshot\"") == std::string::npos);
             if (payload.find("\"logos-forum-snapshot\"") != std::string::npos) {
                 log("received a history bundle: " + std::to_string(added) + " new");
@@ -380,7 +445,7 @@ void LogosForumBackend::wireDelivery() {
             const QString why = data.value(1).toString();
             // An RLN network refuses a node without a membership: say what to do.
             setStatus(why.contains(QLatin1String("membership"), Qt::CaseInsensitive)
-                ? QStringLiteral("This network needs an RLN membership: register one in Basecamp's RLN membership app, then restart")
+                ? QStringLiteral("This network needs an RLN membership: see the note below")
                 : QStringLiteral("Node failed to start: %1").arg(why));
             return;
         }
@@ -409,35 +474,50 @@ void LogosForumBackend::wireDelivery() {
         }
         const QString id = it.value();
         inFlight_.remove(request);
+        if (quotaHeld_.remove(id) && quotaHeld_.isEmpty() && rlnPhase_ == QLatin1String("quota"))
+            setRln(QStringLiteral("active"), QString());
         if (engine_) engine_->confirm(s(id));
-        log("confirmed " + s(id).substr(0, 12) + " (" + how + ")");
+        log(std::string("confirmed a post (") + how + ")");
         publishOutbox();
         emit postStateChanged(id, QStringLiteral("sent"), QString());
     };
     d.on("messagePropagated", [confirmed](const QVariantList& data) { confirmed(data, "propagated"); });
     d.on("messageSent", [confirmed](const QVariantList& data) { confirmed(data, "sent"); });
-    // RLN (rate-limiting nullifiers) comes with the network preset: on a
-    // network that runs it, the node needs an active RLN membership (registered
-    // once through Basecamp's RLN membership app), and each epoch allows only
-    // so many messages. Neither is the forum's to configure; it says where it
-    // stands and what a held message is waiting for.
+    // RLN (rate-limiting nullifiers) comes with the network preset: on
+    // logos.test (opt-in) every sender needs an active RLN membership, and
+    // each 600 s epoch allows only so many messages. Delivery loads the RLN
+    // modules when they are installed (they are optional, not the forum's
+    // dependencies, so logos.dev users never download them);
+    // liblogos_rln_module then registers a membership by itself once its LEZ
+    // account holds the fee. The forum only watches: it says where the
+    // membership stands and what a user has to do, and reading never waits.
     d.on("rlnStateChanged", [this](const QVariantList& data) {
         const QString state = data.value(0).toString(), message = data.value(1).toString();
         log("rln: " + s(state) + (message.isEmpty() ? "" : " (" + s(message) + ")"));
-        rlnState_ = state == QLatin1String("Ready") ? QStringLiteral("RLN ready")
-                  // The detail is technical (it is in forum.log); say what it means.
-                  : state == QLatin1String("Failed")
-                      ? (message.contains(QLatin1String("liblogos_rln_module"))
-                             ? QStringLiteral("RLN unavailable: this network needs the RLN modules and an RLN membership")
-                             : QStringLiteral("RLN unavailable: this network needs an RLN membership (Basecamp's RLN membership app)"))
-                  : state == QLatin1String("Initializing") ? QStringLiteral("RLN starting…") : QString();
-        refreshStatus();
+        if (state == QLatin1String("Disabled")) {
+            setRln(QString(), QString());
+        } else if (state == QLatin1String("Initializing")) {
+            if (rlnPhase_.isEmpty()) setRln(QStringLiteral("starting"), QString());
+        } else if (state == QLatin1String("Ready")) {
+            if (rlnPhase_.isEmpty() || rlnPhase_ == QLatin1String("starting") || rlnPhase_ == QLatin1String("missing"))
+                setRln(QStringLiteral("starting"), QString());
+            pollMembership();
+        } else if (state == QLatin1String("Failed")) {
+            // The bridge could not reach liblogos_rln_module: it is not
+            // installed, or Basecamp did not load it.
+            const bool absent = message.contains(QLatin1String("object_unavailable"))
+                || message.contains(QLatin1String("liblogos_rln_module"))
+                || message.contains(QLatin1String("bridge unavailable"));
+            setRln(absent ? QStringLiteral("missing") : QStringLiteral("failed"), message);
+        }
     });
     d.on("messageQueued", [this](const QVariantList& data) {
         const QString request = data.value(0).toString();
         const auto it = inFlight_.constFind(request);
         if (it == inFlight_.constEnd()) return;  // not ours
-        log("held by the RLN rate limit: " + s(it.value()).substr(0, 12) + " (goes out when the epoch's quota refills)");
+        log("held a post for the RLN rate limit (it goes out when the epoch's quota refills)");
+        quotaHeld_.insert(it.value());
+        if (rlnPhase_ == QLatin1String("active")) setRln(QStringLiteral("quota"), QString());
         emit postStateChanged(it.value(), QStringLiteral("queued"), QStringLiteral("rate limit"));
     });
     d.on("messageError", [this](const QVariantList& data) {
@@ -447,7 +527,7 @@ void LogosForumBackend::wireDelivery() {
         const QString id = it.value();
         const QString why = data.value(2).toString();
         inFlight_.remove(request);
-        log("lost " + s(id).substr(0, 12) + ": " + s(why));
+        log("lost a post: " + s(why));
         // Accepted locally, then lost: back in the outbox, retried with back-off.
         if (engine_ && engine_->requeue(s(id), s(why), now_ms())) publishOutbox();
         emit postStateChanged(id, QStringLiteral("failed"), why);
@@ -529,6 +609,7 @@ void LogosForumBackend::subscribe() {
             log("subscribed on attempt " + std::to_string(subscribeAttempts_));
             subscribed_ = true;
             refreshStatus();
+            subscribeGroups();
             return;
         }
         // Usually the node is still bootstrapping; that passes. Posting is not
@@ -543,13 +624,483 @@ void LogosForumBackend::refreshStatus() {
     if (!subscribed_) return;
     // A node with no peers still accepts sends; say so rather than "Connected".
     const QString base = connectionState_.isEmpty() ? QStringLiteral("Joined, waiting for peers") : connectionState_;
-    setStatus(rlnState_.isEmpty() ? base : base + QStringLiteral(" · ") + rlnState_);
+    const QString rln = rlnShort();
+    const QString net = preset_ == QLatin1String("logos.dev") ? QString() : QStringLiteral(" · ") + preset_;
+    setStatus(base + net + (rln.isEmpty() ? QString() : QStringLiteral(" · ") + rln));
+}
+
+
+// ─── RLN membership ─────────────────────────────────────────────────────────
+
+namespace {
+
+// Registry ids as delivery names them, and where each one's LEZ zone is: the
+// account that pays for a membership has to be funded on that zone.
+QString zoneOf(const QString& registry) {
+    if (registry.endsWith(QLatin1String("841312e989c77e3f6f58a5d880a8e25b950b8b5ffba2f39748fa44622c20c893")))
+        return QStringLiteral("the LEZ testnet zone of the RLN registry (sequencer http://209.38.241.182:3240)");
+    return QStringLiteral("the LEZ zone of registry %1").arg(registry);
+}
+
+// LEZ wallets name public accounts in base58 ("Public/<base58>"); the RLN
+// module reports its payer in hex.
+QString base58(const QString& hex) {
+    static const char* A = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    const QByteArray bytes = QByteArray::fromHex(hex.toLatin1());
+    if (bytes.size() != 32) return hex;
+    std::vector<unsigned char> digits;  // base 58, least significant first
+    for (unsigned char b : bytes) {
+        int carry = b;
+        for (auto& d : digits) {
+            carry += d * 256;
+            d = static_cast<unsigned char>(carry % 58);
+            carry /= 58;
+        }
+        while (carry) {
+            digits.push_back(static_cast<unsigned char>(carry % 58));
+            carry /= 58;
+        }
+    }
+    QString out;
+    for (unsigned char b : bytes) {
+        if (b) break;
+        out += QLatin1Char('1');
+    }
+    for (auto it = digits.rbegin(); it != digits.rend(); ++it) out += QLatin1Char(A[*it]);
+    return out;
+}
+
+// A module reply may arrive as a map, a JSON string, or a JSON string inside
+// a string; all mean the same object.
+QJsonObject replyObject(const QVariant& v) {
+    if (v.typeId() == QMetaType::QVariantMap) return QJsonObject::fromVariantMap(v.toMap());
+    QByteArray raw = v.typeId() == QMetaType::QByteArray ? v.toByteArray() : v.toString().toUtf8();
+    for (int i = 0; i < 2; ++i) {
+        const QJsonDocument doc = QJsonDocument::fromJson(raw);
+        if (doc.isObject()) {
+            const QJsonObject o = doc.object();
+            // A LogosResult that crossed as a map.
+            if (o.contains(QLatin1String("success")) && o.contains(QLatin1String("value"))) {
+                const QJsonValue inner = o.value(QLatin1String("value"));
+                if (inner.isObject()) return inner.toObject();
+                raw = inner.toString().toUtf8();
+                continue;
+            }
+            return o;
+        }
+        if (raw.startsWith('"')) {
+            raw = QJsonDocument::fromJson("[" + raw + "]").array().at(0).toString().toUtf8();
+            continue;
+        }
+        break;
+    }
+    return {};
+}
+
+QString grouped(const QString& digits) {
+    QString out;
+    for (int i = 0; i < digits.size(); ++i) {
+        if (i > 0 && (digits.size() - i) % 3 == 0) out += QLatin1Char(',');
+        out += digits.at(i);
+    }
+    return out;
+}
+
+} // namespace
+
+void LogosForumBackend::setRln(const QString& phase, const QString& detail) {
+    if (phase == rlnPhase_ && detail == rlnDetail_) return;
+    if (phase != rlnPhase_) log("rln membership: " + s(phase.isEmpty() ? QStringLiteral("not used on this network") : phase)
+                                + (detail.isEmpty() ? "" : " (" + s(detail) + ")"));
+    rlnPhase_ = phase;
+    rlnDetail_ = detail;
+    publishRln();
+    refreshStatus();
+}
+
+QString LogosForumBackend::rlnShort() const {
+    if (rlnPhase_.isEmpty()) return {};
+    if (rlnPhase_ == QLatin1String("active")) return QStringLiteral("RLN membership active");
+    if (rlnPhase_ == QLatin1String("quota")) return QStringLiteral("RLN rate limit reached, posts held");
+    if (rlnPhase_ == QLatin1String("gifting")) return QStringLiteral("getting an RLN membership from the sponsor");
+    if (rlnPhase_ == QLatin1String("gift-failed")) return QStringLiteral("no RLN membership yet: posting waits");
+    if (rlnPhase_ == QLatin1String("funding")) return QStringLiteral("no RLN membership yet: posting waits");
+    if (rlnPhase_ == QLatin1String("registering") || rlnPhase_ == QLatin1String("pending"))
+        return QStringLiteral("RLN membership registering");
+    if (rlnPhase_ == QLatin1String("missing")) return QStringLiteral("RLN modules not installed: posting waits");
+    if (rlnPhase_ == QLatin1String("failed") || rlnPhase_ == QLatin1String("lapsed"))
+        return QStringLiteral("RLN membership unavailable: posting waits");
+    return QStringLiteral("RLN starting…");
+}
+
+void LogosForumBackend::publishRln() {
+    QString title, what;
+    const QString payer = base58(rlnPayer_);
+    const bool sponsored = !gifterPeer_.isEmpty();
+    if (rlnPhase_ == QLatin1String("active")) {
+        title = QStringLiteral("RLN membership active");
+        what = QStringLiteral("Posts carry a rate-limit proof. %1 messages per 10-minute epoch.")
+                   .arg(rlnRate_ > 0 ? QString::number(rlnRate_) : QStringLiteral("A fixed number of"));
+    } else if (rlnPhase_ == QLatin1String("quota")) {
+        title = QStringLiteral("Rate limit reached for this epoch");
+        what = QStringLiteral("This node has used its RLN messages for the current 10-minute epoch. "
+                              "Held posts go out by themselves when the next epoch starts.");
+    } else if (rlnPhase_ == QLatin1String("gifting")) {
+        title = QStringLiteral("Getting you a membership from the forum's sponsor…");
+        what = QStringLiteral("logos.test accepts a post only with a rate-limit proof, which needs an RLN "
+                              "membership. The forum's sponsor registers one for this node and pays for it: "
+                              "there is nothing to do and nothing to pay. It takes a few minutes. Reading works "
+                              "meanwhile; your posts wait in the outbox and go out once it is active.");
+    } else if (rlnPhase_ == QLatin1String("gift-failed")) {
+        title = QStringLiteral("The sponsor could not give a membership yet");
+        const qint64 wait = giftRetryAt_ > 0 ? (giftRetryAt_ - static_cast<qint64>(now_ms())) / 60000 + 1 : 0;
+        what = QStringLiteral("%1. Trying again %2. Reading works; your posts wait in the outbox.")
+                   .arg(giftError_.isEmpty() ? QStringLiteral("No answer") : giftError_,
+                        wait > 1 ? QStringLiteral("in %1 minutes").arg(wait) : QStringLiteral("in a minute"));
+    } else if (rlnPhase_ == QLatin1String("funding")) {
+        title = QStringLiteral("Posting needs an RLN membership");
+        what = QStringLiteral("This network accepts a post only with a rate-limit proof, which needs an RLN "
+                              "membership. The forum's sponsor is off (\"gifter\": \"off\" in settings.json), so "
+                              "this node registers one by itself once the account below holds %1 "
+                              "native units on %2 (it holds %3). Fund it with a transfer on that zone or a "
+                              "deposit from the Logos blockchain; the price is %4 units, the rest is a fee reserve "
+                              "and comes back unspent. Reading and history work meanwhile; your posts wait in "
+                              "the outbox and go out once the membership is active.")
+                   .arg(grouped(rlnNeeds_), zoneOf(rlnRegistry_), grouped(rlnHolds_.isEmpty() ? QStringLiteral("0") : rlnHolds_),
+                        grouped(rlnPrice_.isEmpty() ? QStringLiteral("?") : rlnPrice_));
+    } else if (rlnPhase_ == QLatin1String("registering") || rlnPhase_ == QLatin1String("pending")) {
+        title = QStringLiteral("Registering the RLN membership");
+        what = sponsored ? QStringLiteral("The forum's sponsor has sent your membership to the chain; it confirms in a "
+                                          "few minutes. Your posts wait in the outbox until then.")
+                         : QStringLiteral("The registration is on its way to the chain; it confirms in a few minutes. "
+                                          "Your posts wait in the outbox until then.");
+    } else if (rlnPhase_ == QLatin1String("wallet") || rlnPhase_ == QLatin1String("starting")) {
+        title = QStringLiteral("Setting up the RLN membership");
+        what = QStringLiteral("The RLN module is opening its LEZ wallet and reading the registry. "
+                              "Reading works meanwhile.");
+    } else if (rlnPhase_ == QLatin1String("missing")) {
+        title = QStringLiteral("RLN modules missing");
+        what = QStringLiteral("logos.test needs the RLN modules, which Basecamp installs with the forum. Reinstall "
+                              "Logos Forum from its catalog (it brings liblogos_rln_module, liblogos_lez_rln_module, "
+                              "libp2p_module and rln_gifter_module), then restart Basecamp. %1 Reading works "
+                              "meanwhile; posts wait in the outbox.").arg(rlnDetail_);
+    } else if (rlnPhase_ == QLatin1String("lapsed")) {
+        title = QStringLiteral("RLN membership no longer usable");
+        what = QStringLiteral("The membership is %1. %2 Posts wait in the outbox.")
+                   .arg(rlnDetail_, sponsored ? QStringLiteral("The forum asks its sponsor for a new one.")
+                                              : QStringLiteral("Restart Basecamp and the node registers a new one once its account is funded."));
+    } else if (rlnPhase_ == QLatin1String("failed")) {
+        title = QStringLiteral("RLN membership unavailable");
+        what = QStringLiteral("%1. Reading works; posts wait in the outbox.").arg(rlnDetail_);
+    }
+    setRlnJson(QString::fromUtf8(QJsonDocument(QJsonObject{
+        {"on", !rlnPhase_.isEmpty()},
+        {"phase", rlnPhase_},
+        {"title", title},
+        {"detail", what},
+        {"payer", rlnPhase_ == QLatin1String("funding") ? payer : QString()},
+        {"needs", rlnNeeds_},
+        {"holds", rlnHolds_},
+        {"retry", rlnPhase_ == QLatin1String("gift-failed")},
+    }).toJson(QJsonDocument::Compact)));
+}
+
+namespace {
+// liblogos_rln_module's reply, through a module client: the object, or an
+// {"error":{class,kind,message}} envelope.
+QString rlnError(const QJsonObject& o) {
+    const QJsonObject err = o.value(QLatin1String("error")).toObject();
+    if (err.isEmpty()) return o.value(QLatin1String("error")).toString();
+    return err.value(QLatin1String("message")).toString(err.value(QLatin1String("kind")).toString(QStringLiteral("error")));
+}
+} // namespace
+
+void LogosForumBackend::pollMembership() {
+    if (rlnPolling_ || rlnPhase_.isEmpty() || rlnPhase_ == QLatin1String("missing")) return;
+    rlnPolling_ = true;
+    const auto again = [this]() {
+        rlnPolling_ = false;
+        // Often until it is usable, then now and then to notice a lapse.
+        const bool settled = rlnPhase_ == QLatin1String("active") || rlnPhase_ == QLatin1String("quota");
+        rlnTimer_.start(settled ? 5 * 60 * 1000 : 15000);
+    };
+    const auto ask = [this, again]() {
+        auto* client = modules().api ? modules().api->getClient(QStringLiteral("liblogos_rln_module")) : nullptr;
+        if (!client) {
+            rlnPolling_ = false;
+            setRln(QStringLiteral("missing"), QStringLiteral("no client for liblogos_rln_module"));
+            return;
+        }
+        // Every membership this node holds on the registry, read rather than
+        // get_membership_state: once a sponsored request has failed, the
+        // failed record and its successor make the state call ambiguous.
+        client->invokeRemoteMethodAsync(
+            QStringLiteral("liblogos_rln_module"), QStringLiteral("get_memberships"),
+            QVariantList{rlnRegistry_}, [this, client, again](QVariant v) {
+                const QJsonObject o = replyObject(v);
+                bool asked = false;
+                guarded("rln memberships", [&]() {
+                    if (o.contains(QLatin1String("memberships")) && !gifterPeer_.isEmpty()) {
+                        membershipsAnswered(o);
+                        return;
+                    }
+                    // Sponsor off, or no answer yet: the module's own view,
+                    // with what its provisioning waits for.
+                    asked = true;
+                    client->invokeRemoteMethodAsync(
+                        QStringLiteral("liblogos_rln_module"), QStringLiteral("get_membership_state"),
+                        QVariantList{rlnRegistry_, rlnIdentifier_}, [this, again](QVariant v2) {
+                            guarded("rln membership state", [&]() { membershipAnswered(replyObject(v2)); });
+                            again();
+                        });
+                });
+                if (!asked) again();
+            });
+    };
+    if (!rlnRegistry_.isEmpty()) return ask();
+    // Which registry and application scope the node proves against: delivery
+    // knows, from its preset.
+    modules().delivery_module.rlnStateAsync([this, ask](LogosResult r) {
+        const QJsonObject o = replyObject(r.value);
+        rlnRegistry_ = o.value(QLatin1String("registryId")).toString();
+        rlnIdentifier_ = o.value(QLatin1String("rlnIdentifier")).toString();
+        if (rlnRegistry_.isEmpty()) {
+            rlnPolling_ = false;
+            log("rln: delivery named no registry (" + s(QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact))) + ")");
+            rlnTimer_.start(15000);
+            return;
+        }
+        log("rln registry " + s(rlnRegistry_) + ", scope " + s(rlnIdentifier_));
+        ask();
+    });
+}
+
+void LogosForumBackend::membershipsAnswered(const QJsonObject& o) {
+    // The records that back delivery's scope: registered for it, or for no
+    // scope at all (registry-wide).
+    bool usable = false, pending = false;
+    QString failedReason, lapsedState;
+    qint64 newestFailed = -1;
+    for (const auto& v : o.value(QLatin1String("memberships")).toArray()) {
+        const QJsonObject m = v.toObject();
+        const QString scope = m.value(QLatin1String("rln_identifier")).toString();
+        if (!scope.isEmpty() && scope.compare(rlnIdentifier_, Qt::CaseInsensitive) != 0) continue;
+        const QString st = m.value(QLatin1String("state")).toString();
+        if (st == QLatin1String("active") || st == QLatin1String("grace_period")) {
+            usable = true;
+            rlnRate_ = m.value(QLatin1String("rate_limit")).toInt(rlnRate_);
+        } else if (st == QLatin1String("pending")) {
+            pending = true;
+        } else if (st == QLatin1String("failed")) {
+            const qint64 at = static_cast<qint64>(m.value(QLatin1String("submitted_at")).toDouble());
+            if (at > newestFailed) {
+                newestFailed = at;
+                failedReason = m.value(QLatin1String("failed_reason")).toString();
+            }
+        } else if (!st.isEmpty()) {
+            lapsedState = st;
+        }
+    }
+    if (usable) {
+        giftFailures_ = 0;
+        giftRetryAt_ = 0;
+        if (rlnPhase_ != QLatin1String("quota")) setRln(QStringLiteral("active"), QString());
+        return;
+    }
+    if (pending) return setRln(QStringLiteral("pending"), QString());
+    if (gifting_) return;
+    // Nothing usable: ask the sponsor, now or at the next retry.
+    if (!failedReason.isEmpty() && rlnPhase_ == QLatin1String("pending")) {
+        // The request this node made went through and then failed.
+        if (failedReason.startsWith(QLatin1String("gifter_failed: "))) failedReason = failedReason.mid(15);
+        return giftFailed(failedReason);
+    }
+    if (!lapsedState.isEmpty() && rlnPhase_ == QLatin1String("active"))
+        log("rln: the membership is " + s(lapsedState) + "; asking the sponsor for a new one");
+    if (giftRetryAt_ > static_cast<qint64>(now_ms())) {
+        if (rlnPhase_ != QLatin1String("gift-failed")) setRln(QStringLiteral("gift-failed"), giftError_);
+        else publishRln();  // the countdown
+        return;
+    }
+    requestGift();
+}
+
+QString LogosForumBackend::retryMembership() {
+    if (rlnPhase_ != QLatin1String("gift-failed")) return QStringLiteral("nothing to retry");
+    if (gifterPeer_.isEmpty()) return QStringLiteral("the sponsor is off");
+    giftRetryAt_ = 0;
+    requestGift();
+    return {};
+}
+
+void LogosForumBackend::requestGift() {
+    if (gifting_ || gifterPeer_.isEmpty() || rlnRegistry_.isEmpty()) return;
+    gifting_ = true;
+    log("rln: asking the sponsor " + s(gifterPeer_).substr(0, 16) + "… for a membership");
+    setRln(QStringLiteral("gifting"), QString());
+    if (libp2pUp_) return giftRegister();
+    // The request goes out through this node's own libp2p node: a plain one,
+    // dialling out only. libp2p_module's replies are relayed by
+    // rln_gifter_module.libp2p_call (they do not cross a module client as
+    // values), and "already" means another app brought it up first.
+    const QString cfg = QStringLiteral(
+        "{\"addrs\":[\"/ip4/127.0.0.1/tcp/0\"],\"transport\":\"tcp\",\"maxConnections\":16,"
+        "\"maxInConnections\":8,\"maxOutConnections\":8,\"maxConnsPerPeer\":1,"
+        "\"mountGossipsub\":false,\"mountKad\":false,\"mountServiceDiscovery\":false}");
+    giftLibp2p(QStringLiteral("createNode"), cfg, 0, [this](QString err) {
+        if (!err.isEmpty()) return giftFailed(QStringLiteral("could not start the peer-to-peer node (%1)").arg(err));
+        giftLibp2p(QStringLiteral("start"), QString(), 0, [this](QString err2) {
+            if (!err2.isEmpty()) return giftFailed(QStringLiteral("could not start the peer-to-peer node (%1)").arg(err2));
+            libp2pUp_ = true;
+            giftRegister();
+        });
+    });
+}
+
+void LogosForumBackend::giftLibp2p(const QString& method, const QString& arg, int attempt,
+                                   std::function<void(QString)> done) {
+    auto* client = modules().api ? modules().api->getClient(QStringLiteral("rln_gifter_module")) : nullptr;
+    if (!client) {
+        gifting_ = false;
+        setRln(QStringLiteral("missing"), QStringLiteral("rln_gifter_module is not loaded."));
+        return;
+    }
+    QJsonArray args;
+    if (!arg.isEmpty()) args.append(arg);
+    const QString call = QString::fromUtf8(QJsonDocument(QJsonObject{{"method", method}, {"args", args}}).toJson(QJsonDocument::Compact));
+    client->invokeRemoteMethodAsync(
+        QStringLiteral("rln_gifter_module"), QStringLiteral("libp2p_call"), QVariantList{call},
+        [this, method, arg, attempt, done](QVariant v) {
+            // {"success","value","error"}, possibly as a JSON string in a
+            // string. Not replyObject: it unwraps "value", null on success.
+            QByteArray raw = v.typeId() == QMetaType::QByteArray ? v.toByteArray() : v.toString().toUtf8();
+            QJsonObject o;
+            for (int i = 0; i < 2 && o.isEmpty(); ++i) {
+                const QJsonDocument doc = QJsonDocument::fromJson(raw);
+                if (doc.isObject()) o = doc.object();
+                else if (raw.startsWith('"')) raw = QJsonDocument::fromJson("[" + raw + "]").array().at(0).toString().toUtf8();
+                else break;
+            }
+            if (o.isEmpty() && v.typeId() == QMetaType::QVariantMap) o = QJsonObject::fromVariantMap(v.toMap());
+            QString err = o.value(QLatin1String("error")).toString();
+            if (o.isEmpty()) err = QStringLiteral("no reply");
+            if (o.value(QLatin1String("success")).toBool(false)) err.clear();
+            if (err.contains(QLatin1String("already"))) err.clear();
+            // The first calls can race libp2p_module's start-up.
+            const bool racy = err.contains(QLatin1String("token")) || err.contains(QLatin1String("Invalid response"))
+                || err.contains(QLatin1String("not recognized")) || err.contains(QLatin1String("not connected"))
+                || err == QLatin1String("no reply");
+            if (!err.isEmpty() && racy && attempt < 8) {
+                QTimer::singleShot(1500, this, [this, method, arg, attempt, done]() { giftLibp2p(method, arg, attempt + 1, done); });
+                return;
+            }
+            log("rln: libp2p " + s(method) + (err.isEmpty() ? " ok" : ": " + s(err)));
+            done(err);
+        });
+}
+
+void LogosForumBackend::giftRegister() {
+    auto* client = modules().api ? modules().api->getClient(QStringLiteral("liblogos_rln_module")) : nullptr;
+    if (!client) {
+        gifting_ = false;
+        setRln(QStringLiteral("missing"), QStringLiteral("no client for liblogos_rln_module"));
+        return;
+    }
+    // Delegated registration (RLN Membership Allocation Protocol): the RLN
+    // module makes the identity, keeps its secret, and sends only the
+    // commitment to the sponsor through rln_gifter_module; the sponsor
+    // registers it and pays. The membership is then this node's like any
+    // other, and delivery proves with it.
+    const QJsonArray opts{
+        QJsonObject{{"key", "rate_limit"}, {"value", kGiftRate}},
+        QJsonObject{{"key", "delegated"}, {"value", "true"}},
+        QJsonObject{{"key", "gifter_peer_id"}, {"value", gifterPeer_}},
+        QJsonObject{{"key", "gifter_multiaddr"}, {"value", gifterAddr_}},
+    };
+    client->invokeRemoteMethodAsync(
+        QStringLiteral("liblogos_rln_module"), QStringLiteral("register_membership"),
+        QVariantList{rlnRegistry_, rlnIdentifier_, QString::fromUtf8(QJsonDocument(opts).toJson(QJsonDocument::Compact))},
+        [this](QVariant v) {
+            guarded("rln sponsored registration", [&]() {
+                const QJsonObject o = replyObject(v);
+                const QString err = o.isEmpty() ? QStringLiteral("the RLN module did not answer") : rlnError(o);
+                if (!err.isEmpty()) return giftFailed(err);
+                gifting_ = false;
+                const QString st = o.value(QLatin1String("state")).toString();
+                log("rln: sponsored membership requested, " + s(st.isEmpty() ? QStringLiteral("pending") : st)
+                    + " (commitment " + s(o.value(QLatin1String("credential")).toObject()
+                                             .value(QLatin1String("identity_commitment")).toString().left(16)) + "…)");
+                if (st == QLatin1String("active") || st == QLatin1String("grace_period")) setRln(QStringLiteral("active"), st);
+                else setRln(QStringLiteral("pending"), QString());
+                rlnTimer_.start(15000);
+            });
+        }, Timeout(60000));
+}
+
+void LogosForumBackend::giftFailed(const QString& reason) {
+    gifting_ = false;
+    // The sponsor's account could not pay (the sequencer refused its fee).
+    const QString why = reason.contains(QLatin1String("could not submit the registration"))
+        ? QStringLiteral("The sponsor cannot pay for a membership right now (%1)").arg(reason)
+        : reason;
+    ++giftFailures_;
+    static const int backoffMin[] = {1, 3, 10, 30};
+    const int minutes = backoffMin[std::min(giftFailures_, 4) - 1];
+    giftRetryAt_ = static_cast<qint64>(now_ms()) + minutes * 60000ll;
+    giftError_ = why;
+    log("rln: sponsored membership failed (" + s(why) + "); retry in " + std::to_string(minutes) + " min");
+    setRln(QStringLiteral("gift-failed"), why);
+    rlnTimer_.start(15000);
+}
+
+void LogosForumBackend::membershipAnswered(const QJsonObject& o) {
+    if (o.isEmpty()) {
+        setRln(QStringLiteral("wallet"), QString());
+        return;
+    }
+    const QJsonObject err = o.value(QLatin1String("error")).toObject();
+    if (!err.isEmpty()) {
+        const QString cls = err.value(QLatin1String("class")).toString();
+        const QString msg = err.value(QLatin1String("message")).toString();
+        log("rln membership state: " + s(cls) + ": " + s(msg));
+        if (cls == QLatin1String("permanent")) setRln(QStringLiteral("failed"), msg);
+        else if (rlnPhase_ != QLatin1String("active")) setRln(QStringLiteral("wallet"), QString());
+        return;
+    }
+    const QString state = o.value(QLatin1String("state")).toString();
+    rlnRate_ = o.value(QLatin1String("rate_limit")).toInt(rlnRate_);
+    if (state == QLatin1String("active") || state == QLatin1String("grace_period")) {
+        if (rlnPhase_ != QLatin1String("quota")) setRln(QStringLiteral("active"), state);
+        return;
+    }
+    if (state == QLatin1String("pending")) return setRln(QStringLiteral("pending"), QString());
+    if (state != QLatin1String("unknown") && !state.isEmpty()) return setRln(QStringLiteral("lapsed"), state);
+    // No membership yet: what the module's own provisioning is waiting on.
+    const QJsonObject prov = o.value(QLatin1String("provisioning")).toObject();
+    const QString step = prov.value(QLatin1String("step")).toString();
+    const QString detail = prov.value(QLatin1String("detail")).toString();
+    if (step == QLatin1String("awaiting_funding")) {
+        if (const auto f = forum::parse_funding_detail(s(detail))) {
+            rlnPayer_ = q(f->payer);
+            rlnNeeds_ = q(f->needs);
+            rlnPrice_ = q(f->price);
+            rlnHolds_ = q(f->holds);
+        }
+        setRln(QStringLiteral("funding"), detail);
+    } else if (step == QLatin1String("registering") || step == QLatin1String("done")) {
+        setRln(QStringLiteral("registering"), detail);
+    } else if (step == QLatin1String("refused")) {
+        setRln(QStringLiteral("failed"), detail);
+    } else {
+        setRln(QStringLiteral("wallet"), detail);
+    }
 }
 
 void LogosForumBackend::pump() {
     if (!engine_) return;
     guarded("pump", [&]() {
         engine_->tick(now_ms());  // lets a pending history answer go out once its wait has passed
+        pumpGroups();
         if (engine_->pump(now_ms()) > 0 || outboxCount() != static_cast<int>(store_->outbox().size())) publishOutbox();
     });
 }
@@ -567,13 +1118,14 @@ Account* LogosForumBackend::selected() {
 }
 
 QString LogosForumBackend::compose(bool topic, const QString& target, const QString& text, const QString& title,
-                                   int mode, const QString& alias) {
+                                   int mode, const QString& alias, const std::string& manifest) {
     if (!engine_) return QStringLiteral("error: the forum is still starting");
     if (mode < 0 || mode > 2) return QStringLiteral("error: unknown posting mode");
     if (topic && title.trimmed().isEmpty()) return QStringLiteral("error: a topic needs a title");
-    if (text.trimmed().isEmpty()) return QStringLiteral("error: nothing to post");
+    if (text.trimmed().isEmpty() && manifest.empty()) return QStringLiteral("error: nothing to post");
     if (mode == 1 && alias.trimmed().isEmpty()) return QStringLiteral("error: choose an alias");
-    if (text.toUtf8().size() > static_cast<int>(forum::kMaxBody)) return QStringLiteral("error: the post is too long");
+    if (text.toUtf8().size() + (manifest.empty() ? 0 : 112) > static_cast<int>(forum::kMaxBody))  // 112: the image line
+        return QStringLiteral("error: the post is too long");
     if (title.toUtf8().size() > static_cast<int>(forum::kMaxTitle)) return QStringLiteral("error: the title is too long");
     if (alias.toUtf8().size() > static_cast<int>(forum::kMaxAlias)) return QStringLiteral("error: the alias is too long");
 
@@ -581,19 +1133,23 @@ QString LogosForumBackend::compose(bool topic, const QString& target, const QStr
     if (mode != 2) {
         as = selected();
         if (!as) return QStringLiteral("error: no account selected");
+        if (const QString why = keysLocked(); !why.isEmpty()) return QStringLiteral("error: ") + why;
         if (rotation_.due(*as, now_ms())) {
             forum::rotate(*as, now_ms());
-            store_->save_account(*as, true);
+            keys_->save(*as, true);
             store_->scrub();
             log("rotated account " + as->label + " by policy");
         }
     }
     const std::string a = mode == 1 ? s(alias.trimmed()) : std::string();
-    const std::string id = topic ? engine_->post_topic(as, s(title.trimmed()), s(text), a, now_ms())
-                                 : engine_->post_reply(as, s(target), s(text), a, now_ms());
+    forum::Engine* e = currentEngine();  // the public forum, or the private one shown
+    if (!e) return QStringLiteral("error: this private forum is no longer joined");
+    const std::string id = topic ? e->post_topic(as, s(title.trimmed()), s(text), a, now_ms(), manifest)
+                                 : e->post_reply(as, s(target), s(text), a, now_ms(), manifest);
     if (id.empty()) return QStringLiteral("error: the post could not be saved on this device");
+    if (!as) anonThisSession_.insert(id);   // memory only, for the inbox
     if (as) {
-        store_->save_account(*as, true);
+        keys_->save(*as, true);
         publishAccounts();
     }
     publishOutbox();
@@ -622,7 +1178,12 @@ QJsonObject postJson(const Post& p, const std::string& id, const std::vector<Acc
         if (a.key.pk == p.author) own = true;
     switch (p.mode) {
     case Mode::Anonymous: author = QStringLiteral("anonymous"); break;
-    case Mode::Alias: author = q(p.alias); break;
+    case Mode::Alias: {
+        // Shown next to other text: nothing in it may reorder or hide that.
+        const std::string shown = forum::display_alias(p.alias);
+        author = shown.empty() ? QStringLiteral("(blank alias)") : q(shown);
+        break;
+    }
     case Mode::Identity: {
         author = q(forum::short_key(p.author));
         for (const auto& a : mine)
@@ -635,7 +1196,7 @@ QJsonObject postJson(const Post& p, const std::string& id, const std::vector<Acc
     return QJsonObject{
         {"id", q(id)},
         {"title", q(p.title)},
-        {"body", q(p.body)},
+        {"body", q(forum::shown_body(p.body))},  // without the image line, shown as images
         {"author", author},
         {"authorKey", q(forum::to_hex(p.author.data(), p.author.size()))},
         {"mode", p.mode == Mode::Identity ? "identity" : p.mode == Mode::Alias ? "alias" : "anonymous"},
@@ -649,15 +1210,24 @@ QString dump(const QJsonDocument& d) { return QString::fromUtf8(d.toJson(QJsonDo
 
 } // namespace
 
+// For logos_forum_accounts.cpp, which shows posts the same way.
+QJsonObject forumPostJson(const Post& p, const std::string& id, const std::vector<Account>& mine,
+                          const QHash<QString, int>& outbox) {
+    return postJson(p, id, mine, outbox);
+}
+
 QString LogosForumBackend::listTopics() {
     if (!store_) return QStringLiteral("[]");
     QHash<QString, int> outbox;
     for (const auto& o : store_->outbox()) outbox.insert(q(o.id), o.attempts);
     QJsonArray out;
-    for (const auto& t : store_->topics(s(forumName()))) {
+    const auto rows = moderation_ ? moderation_->visible(s(selectedLabel_), store_->topics(currentForumId()))
+                                  : store_->topics(currentForumId());
+    for (const auto& t : rows) {
         // Kept from before dates were checked: not pinned above everything.
         if (t.topic.ts_ms > now_ms() + forum::Engine::kMaxClockSkewMs) continue;
-        QJsonObject o = postJson(t.topic, t.id, accounts_, outbox);
+        QJsonObject o = postJson(t.topic, t.id, selectedView(), outbox);
+        if (media_) media_->decorate(o, t.topic, t.id, false);
         o.insert("replies", t.replies);
         o.insert("last", static_cast<double>(t.last_activity_ms));
         // New to this user: activity since they last opened the topic, and
@@ -674,11 +1244,22 @@ QString LogosForumBackend::thread(QString topicId) {
     QHash<QString, int> outbox;
     for (const auto& o : store_->outbox()) outbox.insert(q(o.id), o.attempts);
     QJsonObject out;
-    const auto t = store_->get(s(topicId));
-    out.insert("topic", t && t->kind == Kind::Topic ? QJsonValue(postJson(*t, s(topicId), accounts_, outbox))
-                                                     : QJsonValue(QJsonValue::Null));
+    // Only the forum shown: a reply in another forum (a private group, say)
+    // that names this topic is not part of this thread.
+    const std::string forumId = currentForumId();
+    auto t = store_->get(s(topicId));
+    if (t && t->forum != forumId) t.reset();
+    auto full = [&](const Post& p, const std::string& id) {
+        QJsonObject o = postJson(p, id, selectedView(), outbox);
+        if (media_) media_->decorate(o, p, id, true);  // images and reactions
+        return o;
+    };
+    out.insert("topic", t && t->kind == Kind::Topic ? QJsonValue(full(*t, s(topicId))) : QJsonValue(QJsonValue::Null));
     QJsonArray replies;
-    for (const auto& r : store_->replies(s(topicId))) replies.append(postJson(r, r.id(), accounts_, outbox));
+    auto list = store_->replies(s(topicId));
+    list.erase(std::remove_if(list.begin(), list.end(), [&](const Post& r) { return r.forum != forumId; }), list.end());
+    if (moderation_) list = moderation_->visible(s(selectedLabel_), std::move(list));
+    for (const auto& r : list) replies.append(full(r, r.id()));
     out.insert("replies", replies);
     return dump(QJsonDocument(out));
 }
@@ -686,7 +1267,7 @@ QString LogosForumBackend::thread(QString topicId) {
 QString LogosForumBackend::markRead(QString topicId) {
     if (!store_) return QString();
     double last = 0;
-    for (const auto& t : store_->topics(s(forumName())))
+    for (const auto& t : store_->topics(currentForumId()))
         if (q(t.id) == topicId) last = static_cast<double>(t.last_activity_ms);
     readUpTo_.insert(topicId, last);
     saveSettingsSoon();
@@ -731,6 +1312,7 @@ void LogosForumBackend::postArrivedSoon(const QString& id, const QString& topicI
         arrivalsScheduled_ = false;
         // A few: one signal each, so an open topic refreshes and is marked read.
         // Many (an import): one signal with no topic, and the view refreshes once.
+        publishInbox();
         if (arrivals_.size() <= 3)
             for (auto it = arrivals_.begin(); it != arrivals_.end(); ++it) emit postArrived(it.value(), it.key());
         else
@@ -748,7 +1330,9 @@ void LogosForumBackend::publishAccounts() {
                                {"key", q(forum::short_key(a.key.pk))},
                                {"posts", static_cast<int>(a.posts)},
                                {"created", static_cast<double>(a.created_ms)},
-                               {"selected", q(a.label) == selectedLabel_}});
+                               {"selected", q(a.label) == selectedLabel_},
+                               {"backedUp", a.backed_up},
+                               {"handle", q(forum::mention_handle(a.key.pk))}});
     setAccountsJson(dump(QJsonDocument(arr)));
     const Account* sel = selected();
     setMyLabel(sel ? q(sel->label) : QString());
@@ -756,10 +1340,12 @@ void LogosForumBackend::publishAccounts() {
     setRotationJson(dump(QJsonDocument(QJsonObject{
         {"maxPosts", static_cast<int>(rotation_.max_posts)},
         {"maxDays", static_cast<int>(rotation_.max_age_ms / 86400000ull)}})));
+    publishInbox();   // the inbox is the selected account's
 }
 
 QString LogosForumBackend::createAccount(QString label) {
     if (!store_) return QStringLiteral("the forum is still starting");
+    if (keys_ && keys_->is_protected() && !keys_->is_unlocked()) return QStringLiteral("unlock your keys first");
     label = label.trimmed();
     if (label.isEmpty()) {
         for (int n = static_cast<int>(accounts_.size()) + 1;; ++n) {
@@ -772,7 +1358,7 @@ QString LogosForumBackend::createAccount(QString label) {
     for (const auto& a : accounts_)
         if (q(a.label) == label) return QStringLiteral("an account called \"%1\" already exists").arg(label);
     Account a{s(label), forum::Keypair::generate(), now_ms(), 0};
-    store_->save_account(a, true);
+    keys_->save(a, true);
     accounts_.push_back(a);
     selectedLabel_ = label;
     publishAccounts();
@@ -783,7 +1369,7 @@ QString LogosForumBackend::selectAccount(QString label) {
     for (const auto& a : accounts_)
         if (q(a.label) == label) {
             selectedLabel_ = label;
-            store_->save_account(a, true);
+            keys_->save(a, true);
             publishAccounts();
             return QString();
         }
@@ -792,15 +1378,17 @@ QString LogosForumBackend::selectAccount(QString label) {
 
 QString LogosForumBackend::deleteAccount(QString label) {
     if (accounts_.size() <= 1) return QStringLiteral("keep at least one account");
+    if (keys_->is_protected() && !keys_->is_unlocked()) return QStringLiteral("unlock your keys first");
     auto it = std::find_if(accounts_.begin(), accounts_.end(), [&](const Account& a) { return q(a.label) == label; });
     if (it == accounts_.end()) return QStringLiteral("no such account");
     sodium_memzero(it->key.sk.data(), it->key.sk.size());
+    if (moderation_) moderation_->forget(it->label);  // what it muted and hid goes with it
     store_->remove_account(it->label);
     store_->scrub();
     accounts_.erase(it);
     if (!selected()) {
         selectedLabel_ = q(accounts_.front().label);
-        store_->save_account(accounts_.front(), true);
+        keys_->save(accounts_.front(), true);
     }
     publishAccounts();
     return QString();
@@ -809,8 +1397,9 @@ QString LogosForumBackend::deleteAccount(QString label) {
 QString LogosForumBackend::rotateAccount() {
     Account* a = selected();
     if (!a) return QStringLiteral("no account selected");
+    if (const QString why = keysLocked(); !why.isEmpty()) return why;
     forum::rotate(*a, now_ms());
-    store_->save_account(*a, true);
+    keys_->save(*a, true);
     store_->scrub();
     publishAccounts();
     return QString();
@@ -882,9 +1471,15 @@ void LogosForumBackend::saveSettings() {
                         {"readUpTo", readJson()},
                         {"fetchSnapshots", fetchSnapshots_},
                         {"readSince", readSince_}};
-    if (dnsSetting_.isArray() || dnsSetting_.isString()) o.insert("dns", dnsSetting_);  // set by hand, kept as written
+    QJsonObject out = o;
+    if (!networkSetting_.isEmpty()) out.insert(QStringLiteral("network"), networkSetting_);  // the user's choice, kept
+    if (!gifterSetting_.isEmpty()) out.insert(QStringLiteral("gifter"), gifterSetting_);
+    if (dnsSetting_.isArray() || dnsSetting_.isString()) out.insert("dns", dnsSetting_);  // set by hand, kept as written
     QFile f(dataDir() + QStringLiteral("/settings.json"));
-    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) f.write(QJsonDocument(o).toJson());
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        f.write(QJsonDocument(out).toJson());
+    }
 }
 
 QString LogosForumBackend::useStorePeers(QString peers) {
@@ -929,6 +1524,7 @@ void LogosForumBackend::runCatchUp(const char* why) {
     if (!engine_ || catchingUp_) return;
     catchingUp_ = true;
     log(std::string("catch-up starting (") + why + ")");
+    catchUpGroups();
     lastCatchUp_ = QStringLiteral("Fetching missed posts…");
     publishHistory();
     const std::string reason = why;
@@ -937,7 +1533,7 @@ void LogosForumBackend::runCatchUp(const char* why) {
         if (!engine_) return;
         int added = 0;
         for (const auto& m : payloads)
-            if (engine_->receive(m, now_ms())) ++added;
+            if (engine_->receive(m, now_ms(), forum::Origin::History)) ++added;
         const std::string& peer = net_->last_history_peer();
         log("catch-up (" + reason + "): " + std::to_string(payloads.size()) + " messages, " + std::to_string(added) +
             " new, peer " + (peer.empty() ? "none — " + net_->last_history_error() : peer) + ", status " +
@@ -959,10 +1555,10 @@ void LogosForumBackend::runCatchUp(const char* why) {
             // a request sent into an empty mesh is lost. Ask again shortly if
             // nothing has arrived, rather than waiting for the periodic catch-up.
             if (reason == "node started" || reason == "joined running node") {
-                const size_t had = store_->count();
+                const size_t had = store_->count(s(forumName()));
                 for (int delay : {20000, 60000})
                     QTimer::singleShot(delay, this, [this, had]() {
-                        if (!engine_ || store_->count() != had) return;
+                        if (!engine_ || store_->count(s(forumName())) != had) return;
                         engine_->request_history(now_ms(), !g_fetchSnapshots);
                         log("asked peers for history again (nothing arrived yet)");
                     });
@@ -1008,6 +1604,7 @@ void LogosForumBackend::wireStorage() {
     });
     st.onStorageDownloadProgress([this](const QString& payload) {
         const auto j = nlohmann::json::parse(s(payload), nullptr, false);
+        if (media_ && media_->downloadProgress(q(str_at(j, "sessionId")), payload)) return;  // an image
         if (!bool_at(j, "success") || q(str_at(j, "sessionId")) != downloadSession_)
             return;
         const std::string chunk = str_at(j, "chunk");
@@ -1036,6 +1633,7 @@ void LogosForumBackend::wireStorage() {
     });
     st.onStorageDownloadDone([this](const QString& payload) {
         const auto j = nlohmann::json::parse(s(payload), nullptr, false);
+        if (media_ && media_->downloadDone(q(str_at(j, "sessionId")), bool_at(j, "success"), q(str_at(j, "error")))) return;  // an image
         if (!j.is_object() || q(str_at(j, "sessionId")) != downloadSession_) return;
         downloadSession_.clear();
         log("download done: " + s(payload).substr(0, 200) + ", " + std::to_string(downloadBuf_.size()) + " bytes");
@@ -1131,7 +1729,7 @@ QString LogosForumBackend::saveSnapshot() {
     armUploadWatchdog();
     uploadDoc_ = engine_->snapshot();
     uploadOffset_ = 0;
-    uploadPosts_ = store_->count();
+    uploadPosts_ = store_->count(s(forumName()));
     lastSnapshot_ = QStringLiteral("Saving snapshot…");
     publishHistory();
     // Every storage call from here on is asynchronous: a synchronous call made

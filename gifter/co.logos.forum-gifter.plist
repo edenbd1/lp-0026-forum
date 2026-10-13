@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent for the forum's RLN membership sponsor (gifter/run.sh).
+  Rendered by gifter/install.sh: @HOME@ and @PORT@ are substituted, then the
+  result is written to ~/Library/LaunchAgents/co.logos.forum-gifter.plist.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>co.logos.forum-gifter</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>@HOME@/bin/run.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>GIFTER_HOME</key>
+    <string>@HOME@</string>
+    <key>GIFTER_PORT</key>
+    <string>@PORT@</string>
+    <key>PATH</key>
+    <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>@HOME@</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <!-- A crash loop should not spin: at most one restart every 30 s. -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>ExitTimeOut</key>
+  <integer>60</integer>
+  <key>StandardOutPath</key>
+  <string>@HOME@/logs/gifter.log</string>
+  <key>StandardErrorPath</key>
+  <string>@HOME@/logs/gifter.log</string>
+</dict>
+</plist>

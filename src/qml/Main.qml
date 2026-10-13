@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "Markdown.js" as Md
 
 // Logos Forum. The view holds no forum state of its own: it asks the backend
 // for the topic list and the open thread, and asks again whenever the backend
@@ -20,6 +21,27 @@ Item {
     readonly property string rotationJson:  backend ? backend.rotationJson : "{}"
     readonly property int    outboxCount:   backend ? backend.outboxCount : 0
     readonly property string historyStatus: backend ? backend.historyStatus : ""
+    readonly property string rlnJson:       backend ? backend.rlnJson : "{}"
+    readonly property string keysJson:      backend ? backend.keysJson || "{}" : "{}"
+    readonly property int    inboxUnread:   backend ? backend.inboxUnread || 0 : 0
+    // Account keys: {protected, unlocked}. Locked, only anonymous posts can be signed.
+    readonly property var keys: { try { return JSON.parse(keysJson) } catch (e) { return ({}) } }
+    readonly property bool keysLocked: keys.protected === true && keys.unlocked !== true
+    // RLN membership: {on, phase, title, detail, payer, needs, holds}.
+    readonly property var rln: { try { return JSON.parse(rlnJson) } catch (e) { return ({}) } }
+    // Posting waits on the membership (the posts are kept, not refused).
+    readonly property bool rlnBlocks: rln.on === true && rln.phase !== "active" && rln.phase !== "quota"
+    // The forum shown: the public one (id "") or a private one joined from an
+    // invite (ForumSwitcher.qml, PrivateForums.qml).
+    readonly property string forumsJson:    backend && backend.forumsJson !== undefined ? backend.forumsJson : "[]"
+    readonly property string currentForum:  backend && backend.currentForum !== undefined ? backend.currentForum : ""
+    readonly property var forums: { try { var f = JSON.parse(forumsJson); return f.length ? f : [{ id: "", name: forumName, private: false, current: true }] } catch (e) { return [] } }
+    readonly property bool isPrivate: currentForum !== ""
+    readonly property string currentForumName: forumNameOf(currentForum)
+    function forumNameOf(id) { var f = forums.find(function (x) { return x.id === id }); return f ? f.name : forumName }
+    function plainOrError(r) { if (r === "" ) { lastError = ""; return true } lastError = r.replace(/^error: /, ""); return false }
+    function closeThread() { openId = ""; openTopic = null; openReplies = [] }
+    onCurrentForumChanged: { closeThread(); refreshTopics() }
 
     property var topics: []
     property var accounts: []
@@ -82,12 +104,8 @@ Item {
     readonly property int gap: compact ? 10 : 16
 
     property string search: ""
-    function matches(t) {
-        if (search.trim() === "") return true
-        var q = search.toLowerCase()
-        return (t.title + " " + t.body + " " + t.author).toLowerCase().indexOf(q) >= 0
-    }
-    readonly property var shownTopics: topics.filter(matches)
+    // Search runs in the backend, over every stored post (SearchResults.qml).
+    readonly property var shownTopics: topics
     readonly property int unreadCount: topics.filter(function (t) { return t.unread }).length
 
     function log(m) { console.log("[logos_forum qml] " + m) }
@@ -157,6 +175,15 @@ Item {
         var h = (k || "").replace("…", "")
         return h.length > 10 ? h.substring(0, 4) + "…" + h.substring(h.length - 4) : h
     }
+    // Who a topic is by, in the topic list, where there is no badge: someone
+    // else's account by its key, ours by its label, an alias marked as one,
+    // so an alias written like a key ("3694…b945") or "anonymous" cannot pass
+    // for that key or for an anonymous post.
+    function listAuthor(t) {
+        if (t.mode === "identity") return t.mine ? t.author : shortKey(t.authorKey)
+        if (t.mode === "alias") return t.author + " (alias)"
+        return "anonymous"
+    }
     function esc(t) { return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;") }
 
     // Links in text from the network. The whole text is escaped first, so no
@@ -206,6 +233,15 @@ Item {
         if (u === "") { log("refused to open a link: " + href); return }
         call(backend.openLink(u), function (r) { if (r !== "") root.lastError = "The link was not opened: " + r.replace(/^error: /, "") })
     }
+    // "@" and the first 16 hex digits of a key, into the reply box: a mention
+    // reaches that key's owner whatever name they post under.
+    function mention(key) {
+        var m = "@" + String(key || "").substring(0, 16) + " "
+        replyBody.text = replyBody.text === "" || /\s$/.test(replyBody.text) ? replyBody.text + m : replyBody.text + " " + m
+        replyBody.forceActiveFocus(); replyBody.cursorPosition = replyBody.length
+    }
+    // An account's recovery phrase (Accounts… → Back up).
+    function showPhrase(label) { safety.showPhrase(label) }
     function exact(ms) { return Qt.formatDateTime(new Date(ms), "d MMM yyyy, HH:mm") }
     function result(r) {
         // Posting slots return the new id, or "error: …".
@@ -235,6 +271,7 @@ Item {
         // topicId "" means many posts at once (a history import): refresh once.
         function onPostArrived(id, topicId) {
             root.refreshTopics()
+            searchResults.refresh()
             if (root.openId !== "" && (topicId === root.openId || topicId === "")) {
                 root.refreshThread()
                 root.call(root.backend.markRead(root.openId))  // the user is looking at it
@@ -243,10 +280,14 @@ Item {
         function onPostStateChanged(id, state, detail) {
             root.refreshTopics()
             root.refreshThread()
-            if (state === "failed") root.lastError = "A post did not go out (" + detail + "); it will be retried."
+            // Without an RLN membership every send times out: the banner says why.
+            if (state === "failed" && !root.rlnBlocks) root.lastError = "A post did not go out (" + detail + "); it will be retried."
         }
         function onOutboxCountChanged() { root.refreshTopics(); root.refreshThread() }
+        function onReactionsChanged(postId) { reactionRefresh.restart() }
     }
+    // Reactions arrive in bursts: one refresh for a burst.
+    Timer { id: reactionRefresh; interval: 300; onTriggered: root.refreshThread() }
     Component.onCompleted: {
         ready = backend !== null && logos.isViewModuleReady("logos_forum")
         try { accounts = JSON.parse(accountsJson) } catch (e) {}
@@ -262,14 +303,17 @@ Item {
     component Label2: Text { color: root.text; font.pixelSize: 14; wrapMode: Text.WrapAtWordBoundaryOrAnywhere; textFormat: Text.PlainText }
     component Dim: Text { color: root.dim; font.pixelSize: 12; wrapMode: Text.WrapAtWordBoundaryOrAnywhere; textFormat: Text.PlainText }
     // Text from the network with its https links clickable (see linkify).
-    // Text without a link stays plain text, exactly as before.
+    // Text without a link stays plain text, exactly as before. Post bodies
+    // (`markdown`) are rendered by Markdown.js instead: the same escaping and
+    // links, plus bold, italic, code, quotes and lists, and only tags it writes.
     component LinkText: Text {
         id: lt
         property string raw: ""
-        readonly property string html: root.linkify(raw)
+        property bool markdown: false
+        readonly property string html: markdown ? Md.render(raw, { code: root.accent, quote: root.dim, dim: root.dim }) : root.linkify(raw)
         readonly property bool linked: html.indexOf("<a href=") >= 0
-        text: linked ? html : raw
-        textFormat: linked ? Text.StyledText : Text.PlainText
+        text: linked || markdown ? html : raw
+        textFormat: linked || markdown ? Text.StyledText : Text.PlainText
         color: root.text; font.pixelSize: 14; wrapMode: Text.WrapAtWordBoundaryOrAnywhere
         linkColor: root.link
         onLinkActivated: function (href) { root.openLink(href) }
@@ -316,6 +360,14 @@ Item {
             ToolTip.text: post ? "Signature verified against key " + post.authorKey : ""
             HoverHandler { id: keyHover }
         }
+        Text {
+            objectName: "mentionButton"
+            visible: post !== null && post !== undefined && post.mode !== "anonymous" && !post.mine && root.openId !== ""
+            text: "@"; color: root.accent; font.pixelSize: 12; font.bold: true
+            ToolTip.visible: mentionHover.hovered; ToolTip.text: "Mention this key in your reply"
+            HoverHandler { id: mentionHover; cursorShape: Qt.PointingHandCursor }
+            TapHandler { onTapped: root.mention(post.authorKey) }
+        }
         Dim {
             text: post ? "· " + root.when(post.ts) : ""
             ToolTip.visible: timeHover.hovered; ToolTip.text: post ? root.exact(post.ts) : ""
@@ -325,9 +377,16 @@ Item {
             visible: post && post.state !== ""
             // A post the node accepted but the network has not confirmed stays
             // "sending" for a few seconds; after that, say what is going on.
-            text: post ? ((post.state === "sending" && root.now - post.ts < 30000)
-                          ? "· sending…" : "· waiting for the network, will retry") : ""
+            text: !post ? ""
+                : root.rlnBlocks ? "· waiting for an RLN membership"
+                : root.rln.phase === "quota" ? "· held by the rate limit, goes out next epoch"
+                : (post.state === "sending" && root.now - post.ts < 30000) ? "· sending…"
+                : "· waiting for the network, will retry"
             color: root.warn; font.pixelSize: 12
+        }
+        PostActions {
+            app: root; post: parent.post
+            onHidden: if (root.openTopic && post && post.id === root.openTopic.id) root.closeThread()
         }
     }
 
@@ -431,7 +490,10 @@ Item {
         // so it is read in full at any width.
         Dim {
             Layout.fillWidth: true
-            text: modeBox.currentIndex === 2
+            color: root.keysLocked && modeBox.currentIndex !== 2 ? root.warn : root.dim
+            text: root.keysLocked && modeBox.currentIndex !== 2
+                ? "Your keys are locked: unlock them above, or post anonymously."
+                : modeBox.currentIndex === 2
                 ? "Shown as “anonymous”. One-time key: can’t be linked to you."
                 : modeBox.currentIndex === 1
                 ? "Shown as “" + (aliasField.text.trim() || "…") + "”, signed by your key."
@@ -461,12 +523,13 @@ Item {
                     // too short for it; the version takes whatever is left.
                     Text { id: titleText
                            Layout.maximumWidth: Math.ceil(titleMetrics.advanceWidth) + 1; Layout.minimumWidth: 0; Layout.fillWidth: true; elide: Text.ElideRight
-                           text: root.forumName; textFormat: Text.PlainText; color: root.text; font.pixelSize: root.compact ? 18 : 20; font.bold: true
+                           text: root.currentForumName; textFormat: Text.PlainText; color: root.text; font.pixelSize: root.compact ? 18 : 20; font.bold: true
                            TextMetrics { id: titleMetrics; font: titleText.font; text: titleText.text } }
                     Dim { Layout.fillWidth: true; Layout.minimumWidth: implicitWidth; text: "v" + root.appVersion; wrapMode: Text.NoWrap }
                 }
                 Dim { Layout.fillWidth: true; wrapMode: root.phone ? Text.Wrap : Text.NoWrap; elide: Text.ElideRight
-                      text: "No server · every post signed and verified · Logos Delivery + Logos Storage" }
+                      text: root.isPrivate ? "Private · members only · every post signed, then sealed with the invite's key"
+                                           : "No server · every post signed and verified · Logos Delivery + Logos Storage" }
             }
             RowLayout {
                 Layout.fillWidth: root.narrow
@@ -481,9 +544,16 @@ Item {
                     onActivated: function (i) { root.call(root.backend.selectAccount(root.accounts[i].label), root.plain) }
                 }
                 AppButton { text: "Accounts…"; onClicked: accountsDialog.open() }
+                AppButton {
+                    objectName: "inboxButton"
+                    text: root.inboxUnread > 0 ? "Inbox · " + root.inboxUnread : "Inbox"
+                    onClicked: inboxDialog.open()
+                    ToolTip.visible: hovered; ToolTip.text: "Replies to you and mentions of your key"
+                }
                 Item { visible: root.narrow && !root.phone; Layout.fillWidth: true }
             }
         }
+        ForumSwitcher { Layout.fillWidth: true; app: root; dialogs: privateForums }
         // Node status, what is waiting to go out, and where history came from.
         RowLayout {
             Layout.fillWidth: true
@@ -504,6 +574,47 @@ Item {
                       + (root.historyStatus !== "" ? " · " + root.esc(root.historyStatus) : "")
             }
         }
+        // What posting on an RLN network is waiting for, and what to do about
+        // it. Reading never waits on it.
+        Rectangle {
+            Layout.fillWidth: true
+            visible: root.rln.on === true && root.rln.phase !== "active"
+            color: root.raised; radius: 6; border.color: root.rln.phase === "quota" ? root.line : root.warn
+            implicitHeight: rlnCol.implicitHeight + 20
+            ColumnLayout {
+                id: rlnCol
+                anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 10
+                spacing: 6
+                Label2 { Layout.fillWidth: true; text: root.rln.title || ""; font.bold: true; color: root.warn }
+                Dim { Layout.fillWidth: true; text: root.rln.detail || ""; font.pixelSize: 13 }
+                AppButton {
+                    visible: root.rln.retry === true
+                    text: "Try again now"
+                    onClicked: root.call(root.backend.retryMembership())
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: (root.rln.payer || "") !== ""
+                    spacing: 8
+                    Dim { text: "RLN account"; wrapMode: Text.NoWrap }
+                    // Selectable, so it can be copied into a wallet.
+                    TextEdit {
+                        id: payerField
+                        Layout.fillWidth: true
+                        text: root.rln.payer || ""
+                        readOnly: true; selectByMouse: true; textFormat: TextEdit.PlainText
+                        color: root.text; selectionColor: root.accentStrong
+                        font.family: "monospace"; font.pixelSize: 12
+                        wrapMode: TextEdit.WrapAnywhere
+                    }
+                    AppButton {
+                        text: "Copy"
+                        onClicked: { payerField.selectAll(); payerField.copy(); payerField.deselect() }
+                    }
+                }
+            }
+        }
+        LockBanner { app: root; Layout.fillWidth: true; visible: root.keysLocked }
         Text {
             Layout.fillWidth: true; visible: root.lastError !== ""
             text: root.lastError; textFormat: Text.PlainText; color: root.warn; font.pixelSize: 13; wrapMode: Text.WrapAtWordBoundaryOrAnywhere
@@ -544,11 +655,19 @@ Item {
                     AppField {
                         id: searchField
                         Layout.fillWidth: true
-                        placeholderText: "Search topics"
+                        placeholderText: "Search posts on this device"
                         onTextChanged: root.search = text
+                    }
+                    // Typed text: the posts stored here, searched in full (SearchResults.qml).
+                    SearchResults {
+                        id: searchResults
+                        visible: root.search.trim() !== ""
+                        Layout.fillWidth: true; Layout.fillHeight: true
+                        app: root; query: root.search
                     }
                     ListView {
                         id: topicList
+                        visible: root.search.trim() === ""
                         Layout.fillWidth: true; Layout.fillHeight: true
                         clip: true; spacing: 4
                         model: root.shownTopics
@@ -580,15 +699,12 @@ Item {
                                     textFormat: Text.PlainText
                                 }
                                 Dim { Layout.fillWidth: true; elide: Text.ElideRight; maximumLineCount: 1
-                                      text: (modelData.mode === "identity" && !modelData.mine ? root.shortKey(modelData.authorKey) : modelData.author)
+                                      text: root.listAuthor(modelData)
                                             + " · " + modelData.replies + (modelData.replies === 1 ? " reply" : " replies")
                                             + " · " + root.when(modelData.last) }
                                 Dim { visible: modelData.state !== ""; color: root.warn; text: "not sent yet, will retry" }
                             }
                         }
-                        Dim { anchors.centerIn: parent; visible: root.topics.length > 0 && root.shownTopics.length === 0
-                              width: parent.width - 32; horizontalAlignment: Text.AlignHCenter
-                              text: "No topic matches \"" + root.search + "\"." }
                         Dim { anchors.centerIn: parent; width: parent.width - 32; horizontalAlignment: Text.AlignHCenter
                               visible: root.topics.length === 0
                               text: "No topics yet. Start one, or wait a moment: when you join, peers who were here before you send their history." }
@@ -616,7 +732,9 @@ Item {
                         y: Math.max(30, (welcomeScroll.height - implicitHeight) / 2)
                         spacing: 14
                         Text { Layout.fillWidth: true; wrapMode: Text.WrapAtWordBoundaryOrAnywhere; textFormat: Text.PlainText
-                               text: "Welcome to " + root.forumName; color: root.text; font.pixelSize: 18; font.bold: true }
+                               text: "Welcome to " + root.currentForumName; color: root.text; font.pixelSize: 18; font.bold: true }
+                        Label2 { Layout.fillWidth: true; color: root.dim; visible: root.isPrivate
+                                 text: "A private forum. Only people holding its invite can read it: posts are signed as usual, then sealed before they leave this device, on a topic of their own. The network still sees that sealed messages pass, when, and roughly how big." }
                         Label2 { Layout.fillWidth: true; color: root.dim
                                  text: "There is no server here. Posts travel peer to peer over Logos Delivery, history is shared through Logos Storage, and every post is signed. The ✓ next to an author means this app checked the signature itself." }
                         Repeater {
@@ -668,14 +786,18 @@ Item {
                                     font.pixelSize: 18; font.bold: true
                                 }
                                 Byline { post: root.openTopic; visible: root.openTopic !== null; Layout.fillWidth: true }
-                                LinkText { Layout.fillWidth: true; raw: root.openTopic ? root.openTopic.body : "" }
+                                LinkText { Layout.fillWidth: true; markdown: true; raw: root.openTopic ? root.openTopic.body : ""; visible: raw !== "" }
+                                PostImages { Layout.fillWidth: true; app: root; post: root.openTopic }
+                                ReactionBar { Layout.fillWidth: true; app: root; post: root.openTopic }
                                 Rectangle { Layout.fillWidth: true; height: 1; color: root.line }
                                 Repeater {
                                     model: root.openReplies
                                     delegate: ColumnLayout {
                                         Layout.fillWidth: true; spacing: 4
                                         Byline { post: modelData; Layout.fillWidth: true }
-                                        LinkText { Layout.fillWidth: true; raw: modelData.body }
+                                        LinkText { Layout.fillWidth: true; markdown: true; raw: modelData.body; visible: raw !== "" }
+                                        PostImages { Layout.fillWidth: true; app: root; post: modelData }
+                                        ReactionBar { Layout.fillWidth: true; app: root; post: modelData }
                                     }
                                 }
                             }
@@ -723,6 +845,7 @@ Item {
                             color: root.text; placeholderTextColor: root.dim
                             background: Rectangle { color: root.bg; radius: 6; border.color: replyBody.activeFocus ? root.focusRing : root.line }
                         }
+                        Attachments { id: replyImages; objectName: "replyImages"; Layout.fillWidth: true; app: root; anonymous: replyAs.mode === 2 }
                         GridLayout {
                             Layout.fillWidth: true
                             columns: replyArea.width < 470 ? 1 : 2
@@ -735,10 +858,13 @@ Item {
                                       text: replyBody.length + " / 20000"; wrapMode: Text.NoWrap }
                                 AccentButton {
                                     text: "Reply"
-                                    enabled: replyBody.text.trim().length > 0
-                                    onClicked: root.call(root.backend.reply(root.openId, replyBody.text, replyAs.mode, replyAs.alias), function (r) {
+                                    enabled: (replyBody.text.trim().length > 0 || replyImages.tokens.length > 0) && !replyImages.busy
+                                    onClicked: root.call(replyImages.tokens.length > 0
+                                            ? root.backend.replyWithImages(root.openId, replyBody.text, replyAs.mode, replyAs.alias, JSON.stringify(replyImages.tokens))
+                                            : root.backend.reply(root.openId, replyBody.text, replyAs.mode, replyAs.alias), function (r) {
                                         if (root.result(r)) {
                                             replyBody.text = ""
+                                            replyImages.clear(false)
                                             root.scrollToEnd()   // show the reply just posted
                                             root.refreshThread(); root.refreshTopics()
                                         }
@@ -753,6 +879,8 @@ Item {
     }
 
     // ── Dialogs ───────────────────────────────────────────────────────────────
+
+    PrivateForums { id: privateForums; app: root }
 
     Dialog {
         id: newTopic
@@ -772,17 +900,20 @@ Item {
             Dim { Layout.alignment: Qt.AlignRight; visible: topicBody.length > 16000 || topicTitle.length > 160
                   color: topicBody.length > 20000 ? "#e5484d" : root.dim
                   text: "title " + topicTitle.length + " / 200 · body " + topicBody.length + " / 20000" }
+            Attachments { id: topicImages; objectName: "topicImages"; Layout.fillWidth: true; app: root; anonymous: topicAs.mode === 2 }
             SignAs { id: topicAs; Layout.fillWidth: true }
             RowLayout {
               Layout.alignment: Qt.AlignRight
               spacing: 10
-              AppButton { text: "Cancel"; onClicked: newTopic.close() }
+              AppButton { text: "Cancel"; onClicked: { topicImages.clear(true); newTopic.close() } }
               AccentButton {
                 text: "Post"
-                enabled: topicTitle.text.trim().length > 0 && topicBody.text.trim().length > 0
-                onClicked: root.call(root.backend.createTopic(topicTitle.text, topicBody.text, topicAs.mode, topicAs.alias), function (r) {
+                enabled: topicTitle.text.trim().length > 0 && (topicBody.text.trim().length > 0 || topicImages.tokens.length > 0) && !topicImages.busy
+                onClicked: root.call(topicImages.tokens.length > 0
+                        ? root.backend.createTopicWithImages(topicTitle.text, topicBody.text, topicAs.mode, topicAs.alias, JSON.stringify(topicImages.tokens))
+                        : root.backend.createTopic(topicTitle.text, topicBody.text, topicAs.mode, topicAs.alias), function (r) {
                     if (root.result(r)) {
-                        topicTitle.text = ""; topicBody.text = ""
+                        topicTitle.text = ""; topicBody.text = ""; topicImages.clear(false)
                         newTopic.close()
                         // Open it, and show it in the list: a search that hides it is cleared.
                         searchField.text = ""; root.revealTopic = r
@@ -793,6 +924,8 @@ Item {
             }
         }
     }
+
+    InboxDialog { id: inboxDialog; app: root }
 
     Dialog {
         id: accountsDialog
@@ -832,9 +965,12 @@ Item {
                             Dim { visible: modelData.selected; text: "in use"; color: root.ok; wrapMode: Text.NoWrap; Layout.fillWidth: true }
                         }
                         Dim { text: root.shortKey(modelData.key) + " · " + modelData.posts + " posts on this key"; Layout.fillWidth: true }
+                        Dim { visible: modelData.backedUp !== true; color: root.warn; Layout.fillWidth: true
+                              text: modelData.posts > 0 || modelData.selected ? "Not backed up: write down its recovery phrase" : "Not backed up" }
                     }
                     // Only the actions that do something are shown.
                     AppButton { visible: !modelData.selected; text: "Use"; onClicked: root.call(root.backend.selectAccount(modelData.label), root.plain) }
+                    AppButton { text: "Back up"; enabled: !root.keysLocked; onClicked: safety.showPhrase(modelData.label) }
                     AppButton { visible: root.accounts.length > 1; text: "Delete"; onClicked: root.call(root.backend.deleteAccount(modelData.label), root.plain) }
                 }
             }
@@ -843,9 +979,11 @@ Item {
                 AppButton { text: "Create"; onClicked: root.call(root.backend.createAccount(newLabel.text), function (r) { if (root.plain(r)) newLabel.text = "" }) }
             }
             Rectangle { Layout.fillWidth: true; height: 1; color: root.line }
+            AccountSafety { id: safety; app: root; Layout.fillWidth: true }
+            Rectangle { Layout.fillWidth: true; height: 1; color: root.line }
             Label2 { text: "Identity rotation"; font.bold: true }
             Dim { Layout.fillWidth: true
-                  text: "Replace the selected account's key with a fresh one. Nothing links the old key to the new one, so earlier posts stop being attributable to what you post next." }
+                  text: "Replace the selected account's key with a fresh one. Nothing links the old key to the new one, so earlier posts stop being attributable to what you post next. The new key needs a new recovery phrase: the old words restore the old key." }
             AppButton { text: "Rotate now"; onClicked: root.call(root.backend.rotateAccount(), root.plain) }
             Flow {
                 Layout.fillWidth: true; spacing: 8

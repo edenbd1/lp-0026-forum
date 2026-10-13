@@ -24,8 +24,14 @@ logos_module(
     SOURCES
         src/logos_forum_backend.h
         src/logos_forum_backend.cpp
+        src/logos_forum_accounts.cpp
+        src/forum_groups.cpp
         src/delivery_transport.h
         src/delivery_transport.cpp
+        src/image_pipeline.h
+        src/image_pipeline.cpp
+        src/media_backend.h
+        src/media_backend.cpp
     INCLUDE_DIRS
         src
     LINK_LIBRARIES
@@ -34,6 +40,10 @@ logos_module(
 
 target_compile_definitions(${MODULE_NAME}_module_plugin PRIVATE
     LOGOS_FORUM_VERSION="${MODULE_VERSION}")
+
+# Images are decoded and re-encoded with Qt Gui (src/image_pipeline.cpp).
+find_package(Qt6 REQUIRED COMPONENTS Gui)
+target_link_libraries(${MODULE_NAME}_module_plugin PRIVATE Qt6::Gui)
 
 # The system's DNS servers are read from the adapters on Windows.
 if(WIN32)

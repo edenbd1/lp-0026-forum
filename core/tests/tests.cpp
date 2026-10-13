@@ -3,17 +3,35 @@
 #include "forum/dns.h"
 #include "forum/engine.h"
 #include "forum/identity.h"
+#include "forum/group.h"
+#include "forum/intake.h"
+#include "forum/moderation.h"
 #include "forum/store.h"
 #include "forum/post.h"
+#include "forum/rln.h"
+#include "forum/media.h"
+#include "forum/reaction.h"
+#include "forum/search.h"
+
+#include "compat_v036.h"
 
 #include <nlohmann/json.hpp>
+#include <sodium.h>
 
+#include <cstring>
+
+#include <chrono>
 #include <cstdio>
 #include <functional>
 #include <map>
 #include <memory>
 #include <string>
 #include <vector>
+
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 using namespace forum;
 
@@ -608,6 +626,22 @@ TEST(a_replayed_partial_bundle_does_not_silence_the_answerers) {
     CHECK(answered);
 }
 
+TEST(the_funding_detail_is_read_without_a_regex) {
+    // As logged in a real run (docs/e2e/e2e-history-offline-0.4.0-logos.test-unfunded.out).
+    const std::string payer = "605134f405356b008c981d10d518fb0eab27cc9ee08580251a2ece452e6e61ec";
+    const auto f = parse_funding_detail(payer + " needs 182800000 native (1000000 price + 181800000 fee reserve); it holds 0");
+    CHECK(f && f->payer == payer && f->needs == "182800000" && f->price == "1000000" &&
+          f->reserve == "181800000" && f->holds == "0");
+    const auto unknown = parse_funding_detail(payer + " needs 5 native (1 price + 4 fee reserve)");
+    CHECK(unknown && unknown->needs == "5" && unknown->holds.empty());
+    CHECK(!parse_funding_detail(payer.substr(1) + " needs 5 native (1 price + 4 fee reserve)"));   // short payer
+    CHECK(!parse_funding_detail(payer + "a needs 5 native (1 price + 4 fee reserve)"));            // long payer
+    CHECK(!parse_funding_detail(payer + " needs  native (1 price + 4 fee reserve)"));              // no amount
+    CHECK(!parse_funding_detail(payer + " needs 5 native (1 price + 4 fee reserve"));              // cut short
+    CHECK(!parse_funding_detail("waiting for the wallet"));
+    CHECK(!parse_funding_detail(""));
+}
+
 TEST(a_flood_of_unsigned_wants_costs_one_count_per_window) {
     // A want is unsigned and free to make, so it must not cost the receiver a
     // store query each: thousands within a second are answered from one count.
@@ -939,6 +973,736 @@ TEST(the_system_servers_come_first_then_deliverys_own) {
     CHECK((split_dns_list(" 10.16.0.1, 192.168.1.1;;2001:db8::1 ") == std::vector<std::string>{"10.16.0.1", "192.168.1.1", "2001:db8::1"}));
     CHECK(split_dns_list(" , ").empty());
 }
+
+#ifndef _WIN32
+TEST(the_store_file_is_readable_by_its_owner_only) {
+    // forum.db holds every account's secret key: no other user of the machine
+    // may read it, whatever the umask, and a file made by an older version is
+    // tightened when it is opened.
+    char dir[] = "/tmp/forum-perm-XXXXXX";
+    CHECK(mkdtemp(dir) != nullptr);
+    const std::string path = std::string(dir) + "/forum.db";
+    auto mode = [](const std::string& f) { struct stat st{}; return stat(f.c_str(), &st) == 0 ? int(st.st_mode & 0777) : -1; };
+    {
+        Store s(path);
+        s.save_account(Account{"me", Keypair::generate()}, true);
+        CHECK(mode(path) == 0600);
+        CHECK(mode(path + "-wal") == 0600);                    // the log the key is written to first
+    }
+    chmod(path.c_str(), 0644);
+    chmod((path + "-wal").c_str(), 0644);
+    { Store again(path); CHECK(mode(path) == 0600); CHECK(mode(path + "-wal") == 0600); }
+    for (const char* f : {"/forum.db", "/forum.db-wal", "/forum.db-shm"}) unlink((std::string(dir) + f).c_str());
+    rmdir(dir);
+}
+#endif
+
+static std::string want(const std::string& id, uint64_t since, uint64_t until = 0) {
+    nlohmann::json w{{"logos-forum-want", 1}, {"forum", "Logos Forum"}, {"have", 0}, {"via", "delivery"}, {"since", since}, {"id", id}};
+    if (until) { w["until"] = until; w["until_id"] = ""; }
+    return w.dump();
+}
+
+TEST(a_request_for_nothing_does_not_silence_a_node) {
+    // An unsigned request for a range that holds nothing (dated in the far
+    // future, or below the oldest post) is answered with nothing, and must not
+    // cost the cooldown: one such request a minute would otherwise keep every
+    // node from answering anyone.
+    Bus bus; FakeNet a(bus), b(bus), x(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
+    ea.jitter = [] { return uint64_t{0}; };
+    Account alice{"alice", Keypair::generate()};
+    for (int i = 0; i < 20; ++i) { Post p = topic("t" + std::to_string(i)); p.ts_ms = 1'000'000 + i; sa.put(author_as(alice, p), 1); }
+    const uint64_t t = 10'000'000;
+    a.now = b.now = x.now = t;
+    x.send("", want("e1", 4'000'000'000'000'000ull));
+    x.send("", want("e2", 0, 1));
+    ea.tick(t); ea.pump(t);
+    a.now = b.now = t + 5000;
+    eb.request_history(t + 5000, true);
+    ea.tick(t + 5000); ea.pump(t + 5000);
+    CHECK(sb.count() == 20);
+}
+
+TEST(unsigned_requests_cannot_keep_a_newcomer_from_being_answered) {
+    // A stranger sends a narrow request (the newest post only) just before
+    // each of B's: it must neither hold the slot against B's wider request nor,
+    // once answered, make A drop B's request during the cooldown.
+    Bus bus; FakeNet a(bus), b(bus), x(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
+    ea.jitter = [] { return uint64_t{2000}; };
+    eb.jitter = [] { return uint64_t{2000}; };
+    Account alice{"alice", Keypair::generate()};
+    for (int i = 0; i < 40; ++i) { Post p = topic("t" + std::to_string(i)); p.ts_ms = 1'000'000 + i * 1000; sa.put(author_as(alice, p), 1); }
+    const uint64_t t0 = 10'000'000;
+    int n = 0;
+    for (uint64_t t = t0; t < t0 + 1800000; t += 5000) {
+        a.now = b.now = x.now = t;
+        x.send("", want("x" + std::to_string(n++), 1'000'000 + 39 * 1000));
+        if ((t - t0) % 300000 == 0) eb.request_history(t, true);
+        ea.tick(t); ea.pump(t); eb.tick(t); eb.pump(t);
+    }
+    CHECK(sb.count() == 40);
+}
+
+TEST(a_request_during_the_cooldown_is_answered_when_it_ends) {
+    // A stranger's narrow request is answered first; B asks ten seconds
+    // later, while A is cooling down. A keeps B's request and answers it once
+    // the minute is over, instead of dropping it until B asks again.
+    Bus bus; FakeNet a(bus), b(bus), x(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
+    ea.jitter = [] { return uint64_t{0}; };
+    Account alice{"alice", Keypair::generate()};
+    for (int i = 0; i < 40; ++i) { Post p = topic("t" + std::to_string(i)); p.ts_ms = 1'000'000 + i * 1000; sa.put(author_as(alice, p), 1); }
+    const uint64_t t = 10'000'000;
+    a.now = b.now = x.now = t;
+    x.send("", want("x1", 1'000'000 + 39 * 1000));             // the newest post only
+    ea.tick(t); ea.pump(t);
+    CHECK(sb.count() == 1);
+    a.now = b.now = t + 10000;
+    eb.request_history(t + 10000, true);
+    for (uint64_t u = t + 10000; u <= t + 65000; u += 5000) { a.now = b.now = u; ea.tick(u); ea.pump(u); }
+    CHECK(sb.count() == 40);
+}
+
+TEST(checking_a_bundle_against_a_pending_answer_costs_linear_work) {
+    // While an answer waits, every bundle naming the same request is compared
+    // with what our first page would carry. A stranger can replay a full
+    // bundle of valid posts as often as they like, so that comparison must
+    // cost about what reading the bundle costs, not bundle size × page size.
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    ea.jitter = [] { return uint64_t{1'000'000}; };
+    Account alice{"alice", Keypair::generate()}, eve{"eve", Keypair::generate()};
+    for (int i = 0; i < 400; ++i) { Post p = topic("t" + std::to_string(i), "b"); p.ts_ms = 1000 + i; sa.put(author_as(alice, p), 1); }
+    ea.receive(R"({"logos-forum-want":1,"forum":"Logos Forum","have":0,"via":"delivery","since":0,"id":"r1"})", 10);
+    nlohmann::json doc{{"logos-forum-snapshot", 1}, {"forum", "Logos Forum"}, {"re", "r1"}, {"posts", nlohmann::json::array()}};
+    for (int i = 0; i < 500; ++i) { Post p = topic("x", std::to_string(i)); p.ts_ms = 5; doc["posts"].push_back(encode(author_as(eve, p))); }
+    const std::string matching = doc.dump();
+    doc["re"] = "someone-else";
+    const std::string other = doc.dump();
+    ea.receive(other, 20);                                       // stored once; replays from here on
+    auto time = [&](const std::string& m) {
+        const auto t = std::chrono::steady_clock::now();
+        for (int k = 0; k < 3; ++k) ea.receive(m, 30);
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - t).count();
+    };
+    const double base = time(other), checked = time(matching);
+    CHECK(checked < 3 * base);                                   // was about 9 times
+}
+
+TEST(an_anonymous_post_written_here_is_stored_like_one_received) {
+    // A post arriving from the network is stored a moment after its date;
+    // one written here used to be stored at the very millisecond of its date,
+    // which told anyone reading forum.db which anonymous posts were this
+    // install's. Now it is stored a moment later too.
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    const uint64_t now = 1790000000000;
+    for (int i = 0; i < 20; ++i) {
+        const std::string id = ea.post_topic(nullptr, "t" + std::to_string(i), "b", "", now + i * 5000);
+        const uint64_t ts = sa.get(id)->ts_ms;
+        CHECK(sa.newest_ts("Logos Forum", UINT64_MAX >> 1, ts + 1) < ts);   // not received at its own date
+    }
+}
+
+TEST(an_alias_cannot_hide_or_reorder_what_is_shown_next_to_it) {
+    // An alias is any 40 bytes its author chose. Shown to others it loses the
+    // characters that would reorder or hide the text after it (bidi controls,
+    // zero-width and other invisible characters, controls, line breaks), and
+    // runs of spaces become one.
+    CHECK(display_alias("Ghost") == "Ghost");
+    CHECK(display_alias("  Night   owl ") == "Night owl");
+    CHECK(display_alias("\xE2\x80\xAE" "evil") == "evil");                       // U+202E right-to-left override
+    CHECK(display_alias("a\xE2\x81\xA6" "b\xE2\x81\xA9") == "ab");                // U+2066 / U+2069 isolates
+    CHECK(display_alias("bo\xE2\x80\x8B" "b") == "bob");                         // U+200B zero width space
+    CHECK(display_alias("x\xEF\xBB\xBFy\xC2\xADz") == "xyz");                     // U+FEFF, U+00AD soft hyphen
+    CHECK(display_alias("one\ntwo\r\n\tthree") == "one two three");
+    CHECK(display_alias("a\xE2\x80\xA8" "b") == "a b");                          // U+2028 line separator
+    CHECK(display_alias("\x1b[31mred") == "[31mred");                            // ESC
+    CHECK(display_alias("caf\xC3\xA9 \xE6\x97\xA5\xE6\x9C\xAC \xD7\xA9\xD7\x9C\xD7\x95\xD7\x9D") ==
+          "caf\xC3\xA9 \xE6\x97\xA5\xE6\x9C\xAC \xD7\xA9\xD7\x9C\xD7\x95\xD7\x9D");   // real text, Hebrew included, untouched
+    CHECK(display_alias("ok\xFF\xC3") == "ok");                                   // not UTF-8
+    CHECK(display_alias("\xE2\x80\x8B\xE2\x80\x8B").empty());                     // nothing visible left
+    CHECK(display_alias("\xF3\xA0\x80\x81tag") == "tag");                         // U+E0001 language tag
+}
+
+TEST(what_a_message_added_is_known_without_counting_the_store) {
+    // The plugin reports what each message added. Counting the store before
+    // and after would cost two queries per message, for any message a
+    // stranger sends; the engine keeps the number instead.
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    Account alice{"alice", Keypair::generate()};
+    const std::string one = encode(author_as(alice, topic("one")));
+    CHECK(ea.posts_received() == 0);
+    ea.receive(one, 1);
+    ea.receive(one, 2);                                         // a duplicate adds nothing
+    ea.receive(R"({"logos-forum-want":1,"forum":"Logos Forum","have":0,"id":"w"})", 3);
+    CHECK(ea.posts_received() == 1);
+    nlohmann::json doc{{"logos-forum-snapshot", 1}, {"forum", "Logos Forum"}, {"posts", {one}}};
+    for (int i = 0; i < 3; ++i) doc["posts"].push_back(encode(author_as(alice, topic("b" + std::to_string(i)))));
+    ea.receive(doc.dump(), 4);
+    CHECK(ea.posts_received() == 4 && sa.count() == 4);
+    ea.post_topic(&alice, "mine", "b", "", 5);                  // our own posts are not received
+    CHECK(ea.posts_received() == 4);
+}
+
+TEST(a_deeply_nested_or_oversized_message_is_dropped_without_harm) {
+    // Anyone can put any bytes on the topic, up to the network's 150 KiB per
+    // message: nesting that deep must not exhaust the stack (the parser and
+    // the destructor are iterative), and a post over its limits is refused.
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    CHECK(!ea.receive(std::string(150 * 1024, '['), 1));
+    std::string objects;
+    for (int i = 0; i < 25000; ++i) objects += "{\"logos-forum-snapshot\":";
+    CHECK(!ea.receive(objects, 2));
+    std::string closed = std::string(50000, '[') + std::string(50000, ']');
+    CHECK(!ea.receive(closed, 3));
+    Account x{"x", Keypair::generate()};
+    Post big = topic("t", std::string(kMaxBody + 1, 'x'));
+    big.author = x.key.pk; sign(big, x.key.sk);
+    CHECK(!ea.receive(encode(big), 4));
+    CHECK(sa.count() == 0);
+}
+
+// ------------------------------------------------ images on Logos Storage
+
+static ImageRef image(const std::string& full, const std::string& cid = "zDvZRwzm1aWdqbbPPbdjQKtX2oZyTFGz6vVyqUEe8tqb3zoP5xaa") {
+    ImageRef r; r.cid = cid; r.sha256 = sha256_hex(full); r.bytes = full.size(); r.w = 1200; r.h = 800;
+    r.type = "image/jpeg"; r.thumb = std::string(3000, '\xAB'); return r;
+}
+
+TEST(a_post_with_images_carries_a_signed_manifest) {
+    Bus bus; FakeNet a(bus), b(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
+    Account alice{"alice", Keypair::generate()};
+    const std::string full = "the full image's bytes";
+    const std::string m = make_manifest({image(full)});
+    CHECK(!m.empty());
+    const std::string id = ea.post_topic(&alice, "Look", "my cat", "", 10, m);
+    CHECK(!id.empty());
+    ea.pump(10);
+    const auto got = sb.get(id);
+    CHECK(got && shown_body(got->body) == "my cat");               // the text as typed
+    CHECK(eb.manifest(id) == m);                                     // the manifest arrived with it
+    const auto imgs = manifest_images(got->body, eb.manifest(id));
+    CHECK(imgs && imgs->size() == 1 && (*imgs)[0].cid == image(full).cid && (*imgs)[0].thumb == image(full).thumb);
+    CHECK(imgs && image_bytes_match(full, (*imgs)[0]));
+    // Its id is that of its signed bytes alone, as for any post.
+    Post copy = *got; copy.att.clear();
+    CHECK(copy.id() == id);
+}
+
+TEST(a_post_without_images_encodes_and_signs_exactly_as_in_0_3) {
+    // No "att" key, the same signed bytes, the same id: a 0.3.6 node reads
+    // it exactly as before, and computes the same id.
+    Account alice{"alice", Keypair::generate()};
+    const Post p = author_as(alice, topic("plain", "no images here"));
+    const std::string wire = encode(p);
+    CHECK(wire.find("\"att\"") == std::string::npos);
+    std::string body, id;
+    CHECK(v036::decode(wire, &body, &id));
+    CHECK(body == "no images here" && id == p.id());
+    // And the domain of the signed bytes is still the 0.3 one.
+    const auto bytes = p.signing_bytes();
+    CHECK(std::string(bytes.begin() + 4, bytes.begin() + 4 + 19) == "logos-forum:post:v1");
+}
+
+TEST(a_0_3_peer_verifies_a_post_with_images_and_shows_its_line) {
+    Account alice{"alice", Keypair::generate()};
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    const std::string id = ea.post_topic(&alice, "Look", "my cat", "", 10, make_manifest({image("x")}));
+    ea.pump(10);
+    const std::string wire = bus.log.back();
+    CHECK(wire.find("\"att\"") != std::string::npos);
+    std::string body, old_id;
+    CHECK(v036::decode(wire, &body, &old_id));             // 0.3.6 verifies it…
+    CHECK(old_id == id);                                     // …under the same id…
+    CHECK(body.rfind("my cat\n\n[Images on Logos Storage: 1, manifest sha256:", 0) == 0);  // …and shows a line of text
+    const auto o = v036::receive({wire}, 20);
+    CHECK(o.accepted == 1 && o.stored == 1 && o.sent.empty());
+    // What it passes on has no manifest; this version still takes it, and
+    // the copy with the manifest completes it later.
+    CHECK(o.relayed.size() == 1 && o.relayed[0].find("\"att\"") == std::string::npos);
+    Bus bus2; FakeNet c(bus2); Store sc(":memory:");
+    Engine ec(sc, c, "Logos Forum"); c.engine = &ec;
+    int refreshed = 0;
+    ec.on_post = [&](const Post&, const std::string&) { ++refreshed; };
+    CHECK(ec.receive(o.relayed[0], 30) && ec.manifest(id).empty());
+    CHECK(!ec.receive(wire, 31));                            // not a new post…
+    CHECK(!ec.manifest(id).empty() && refreshed == 2);       // …but its images are now known
+}
+
+TEST(only_the_signed_manifest_is_kept) {
+    Account alice{"alice", Keypair::generate()};
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    const std::string real = make_manifest({image("real")});
+    const std::string id = ea.post_topic(&alice, "Look", "x", "", 10, real);
+    ea.pump(10);
+    auto j = nlohmann::json::parse(bus.log.back());
+    // A relay swaps in its own manifest (another CID, same count): the hash
+    // in the signed line no longer matches, so it is dropped and the post kept.
+    j["att"] = make_manifest({image("swapped", "zDvZRwzm1aWdqbbPPbdjQKtX2oZyTFGz6vVyqUEe8tqb3zoXXXXX")});
+    Check why;
+    const auto p = decode(j.dump(), &why);
+    CHECK(p && why == Check::Ok && p->att.empty() && p->id() == id);
+    Bus bus2; FakeNet b(bus2); Store sb(":memory:");
+    Engine eb(sb, b, "Logos Forum"); b.engine = &eb;
+    CHECK(eb.receive(j.dump(), 20) && eb.manifest(id).empty());
+    // A wrong type, or a manifest on a post that signs none, is dropped too.
+    j["att"] = 42;
+    CHECK(decode(j.dump()) && decode(j.dump())->att.empty());
+    const Post plain = author_as(alice, topic("plain", "text"));
+    auto k = nlohmann::json::parse(encode(plain));
+    k["att"] = real;
+    CHECK(decode(k.dump()) && decode(k.dump())->att.empty());
+    // And a signed line naming a hash, with the wrong number of images.
+    CHECK(!manifest_images(with_image_line("x", real).replace(with_image_line("x", real).size() - 84, 1, "2"), real));
+}
+
+TEST(a_downloaded_image_is_shown_only_if_it_hashes_to_the_signed_sha256) {
+    const std::string full(5000, 'i');
+    const ImageRef ref = image(full);
+    CHECK(image_bytes_match(full, ref));
+    std::string flipped = full; flipped[4999] ^= 1;
+    CHECK(!image_bytes_match(flipped, ref));                 // one bit
+    CHECK(!image_bytes_match(full + "x", ref));              // one byte more
+    CHECK(!image_bytes_match(full.substr(1), ref));          // one byte less
+    CHECK(!image_bytes_match("", ref));
+    ImageRef big = ref; big.bytes = kMaxImageBytes + 1;
+    CHECK(!image_bytes_match(std::string(kMaxImageBytes + 1, 'i'), big));  // over the cap, whatever its hash
+}
+
+TEST(image_manifests_are_capped) {
+    std::vector<ImageRef> five(5, image("x"));
+    CHECK(make_manifest(five).empty());                                 // at most four images
+    CHECK(!make_manifest(std::vector<ImageRef>(4, image("x"))).empty());
+    ImageRef r = image("x");
+    r.thumb = std::string(kMaxThumbBytes + 1, 't');
+    CHECK(make_manifest({r}).empty());                                  // thumbnail over its cap
+    r = image("x"); r.bytes = kMaxImageBytes + 1;
+    CHECK(make_manifest({r}).empty());                                  // full image over its cap
+    r = image("x"); r.w = kMaxImageSide + 1;
+    CHECK(make_manifest({r}).empty());                                  // dimensions over their cap
+    r = image("x"); r.type = "image/svg+xml";
+    CHECK(make_manifest({r}).empty());                                  // only JPEG and PNG
+    r = image("x"); r.cid = "../../etc/passwd";
+    CHECK(make_manifest({r}).empty());                                  // a CID is letters and digits
+    CHECK(is_valid_cid("zDvZRwzm1aWdqbbPPbdjQKtX2oZyTFGz6vVyqUEe8tqb3zoP5xaa") && !is_valid_cid("short") &&
+          !is_valid_cid(std::string(129, 'a')) && !is_valid_cid("https://example.org/x"));
+    // A forged manifest over the caps is refused by readers even when signed.
+    nlohmann::json j{{"v", 1}, {"images", nlohmann::json::array()}};
+    j["images"].push_back({{"cid", r.cid.empty() ? "x" : image("x").cid}, {"sha256", sha256_hex("x")}, {"bytes", kMaxImageBytes + 1},
+                           {"w", 10}, {"h", 10}, {"type", "image/jpeg"}, {"thumb", "AAAA"}});
+    const std::string forged = j.dump();
+    CHECK(!manifest_images(with_image_line("t", forged), forged));
+    j["images"][0]["bytes"] = 10;
+    j["images"][0]["thumb"] = std::string((kMaxThumbBytes + 3) / 3 * 4 + 4, 'A');  // decodes past the thumbnail cap
+    const std::string fat = j.dump();
+    CHECK(!manifest_images(with_image_line("t", fat), fat));
+    // Every image post stays well under the network's 150 KiB per message.
+    Account alice{"alice", Keypair::generate()};
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    std::vector<ImageRef> four;
+    for (int i = 0; i < 4; ++i) { ImageRef x = image("x" + std::to_string(i)); x.thumb = std::string(kMaxThumbBytes, char(i)); four.push_back(x); }
+    ea.post_topic(&alice, std::string(kMaxTitle, 't'), std::string(kMaxBody - 200, 'b'), "", 10, make_manifest(four));
+    ea.pump(10);
+    CHECK(bus.log.size() == 1 && bus.log[0].size() < 100 * 1024);
+    // A body with no room left for the line is refused rather than cut.
+    CHECK(ea.post_topic(&alice, "t", std::string(kMaxBody - 50, 'b'), "", 11, make_manifest({image("x")})).empty());
+}
+
+TEST(an_image_in_a_private_group_is_stored_sealed) {
+    GroupKey k{}; for (size_t i = 0; i < k.size(); ++i) k[i] = static_cast<uint8_t>(i);
+    GroupKey other = k; other[0] ^= 1;
+    const std::string plain = "\xFF\xD8 a picture of the meeting room whiteboard" + std::string(10000, 'p');
+    const std::string sealed = seal_image(k, "g:0123", plain);
+    CHECK(!sealed.empty() && sealed.find("whiteboard") == std::string::npos);
+    CHECK(sealed.size() % 4096 == 41 % 4096 && sealed.size() <= sealed_image_size(plain.size()));   // padded to 4 KiB
+    CHECK(open_image(k, "g:0123", sealed) == plain);
+    CHECK(!open_image(other, "g:0123", sealed));             // another group's key
+    CHECK(!open_image(k, "g:4567", sealed));                 // moved to another group
+    std::string flipped = sealed; flipped[flipped.size() / 2] ^= 1;
+    CHECK(!open_image(k, "g:0123", flipped));                // one bit changed
+    CHECK(!open_image(k, "g:0123", sealed.substr(0, sealed.size() - 1)));
+    CHECK(!open_image(k, "g:0123", plain));                  // an unsealed image is not accepted in a group
+    CHECK(seal_image(k, "g:0123", plain) != sealed);          // a fresh nonce each time
+    CHECK(seal_image(k, "g:0123", std::string(kMaxImageBytes + 1, 'x')).empty());
+    // Opened, it is checked against the manifest like any image.
+    ImageRef ref = image(plain);
+    CHECK(image_bytes_match(*open_image(k, "g:0123", sealed), ref));
+}
+
+TEST(history_carries_the_manifests) {
+    Account alice{"alice", Keypair::generate()};
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    const std::string m = make_manifest({image("x")});
+    const std::string id = ea.post_topic(&alice, "Look", "x", "", 10, m);
+    // In a Storage snapshot…
+    Bus bus2; FakeNet b(bus2); Store sb(":memory:");
+    Engine eb(sb, b, "Logos Forum"); b.engine = &eb;
+    CHECK(eb.import_snapshot(ea.snapshot(), 20) == 1 && eb.manifest(id) == m);
+    // …and in Delivery bundles.
+    Bus bus3; FakeNet c(bus3); Store sc(":memory:");
+    Engine ec(sc, c, "Logos Forum"); c.engine = &ec;
+    for (const auto& bundle : ea.bundles(0, "re")) ec.receive(bundle, 30);
+    CHECK(ec.manifest(id) == m);
+}
+
+TEST(who_has_a_cid_costs_the_receiver_a_bounded_amount) {
+    // Anyone can ask "who has CID X", unsigned and for free. However many
+    // arrive, a node looks up at most a bucket's worth, and answers each CID
+    // at most once per ten minutes, through the paced send queue.
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    const std::string cid = image("x").cid;
+    ea.add_own_image(cid);
+    ea.set_storage_provider("16Uiu2HAmPeer", {"/ip4/8.8.8.8/tcp/4001"});
+    const std::string want = nlohmann::json{{"logos-forum-image-want", 1}, {"forum", "Logos Forum"}, {"cid", cid}, {"id", "q"}}.dump();
+    const std::string other = nlohmann::json{{"logos-forum-image-want", 1}, {"forum", "Logos Forum"}, {"cid", "zNotOursAtAllNotOursAtAll"}, {"id", "q"}}.dump();
+    for (int i = 0; i < 10000; ++i) CHECK(!ea.receive(i % 2 ? want : other, 1000));   // 10,000 in one millisecond
+    CHECK(ea.image_lookups() == static_cast<uint64_t>(Engine::kImageWantBurst));
+    CHECK(ea.image_answers() == 1);
+    ea.pump(1000);
+    CHECK(bus.log.size() == 1 && bus.log[0].find("logos-forum-image-at") != std::string::npos);
+    // A minute later the bucket has refilled a little, the CID is still cooling down.
+    for (int i = 0; i < 1000; ++i) ea.receive(want, 61000);
+    CHECK(ea.image_lookups() <= Engine::kImageWantBurst + Engine::kImageWantsPerMinute + 1);
+    CHECK(ea.image_answers() == 1);
+    // Ten minutes on, one more answer.
+    ea.receive(want, 1000 + Engine::kImageAnswerEveryMs);
+    CHECK(ea.image_answers() == 2);
+    CHECK(sa.count() == 0);
+    // A node with no storage address to give answers nothing at all.
+    Bus bus2; FakeNet b(bus2); Store sb(":memory:");
+    Engine eb(sb, b, "Logos Forum"); b.engine = &eb;
+    eb.add_own_image(cid);
+    eb.receive(want, 1);
+    CHECK(eb.image_answers() == 0);
+}
+
+TEST(only_an_answer_to_our_own_image_request_is_followed) {
+    Bus bus; FakeNet a(bus), b(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
+    const std::string cid = image("x").cid;
+    eb.add_own_image(cid);
+    eb.set_storage_provider("16Uiu2HAmBob", {"/ip4/8.8.8.8/tcp/4001"});
+    std::vector<std::string> found;
+    ea.on_image_provider = [&](const std::string& c, const std::string& peer, const std::vector<std::string>&) { found.push_back(c + "@" + peer); };
+    // An unsolicited answer is ignored.
+    ea.receive(nlohmann::json{{"logos-forum-image-at", 1}, {"forum", "Logos Forum"}, {"cid", cid}, {"re", "nope"}, {"peer", "evil"}}.dump(), 1);
+    CHECK(found.empty());
+    CHECK(!ea.request_image(cid, 10).empty());
+    CHECK(ea.request_image(cid, 20).empty());                 // once a minute per CID
+    eb.pump(10);
+    CHECK(found.size() == 1 && found[0] == cid + "@16Uiu2HAmBob");
+    eb.pump(20);
+    CHECK(found.size() == 1);                                   // once
+}
+
+// ------------------------------------------------ reactions
+
+static Reaction reaction(Account& who, const std::string& target, int emoji, bool on, uint64_t ts) {
+    Reaction r; r.forum = "Logos Forum"; r.target = target; r.emoji = emoji; r.on = on; r.ts_ms = ts; r.author = who.key.pk;
+    sign(r, who.key.sk); return r;
+}
+
+TEST(a_reaction_is_signed_counted_once_per_key_and_can_be_withdrawn) {
+    Bus bus; FakeNet a(bus), b(bus); Store sa(":memory:"), sb(":memory:");
+    Engine ea(sa, a, "Logos Forum"), eb(sb, b, "Logos Forum"); a.engine = &ea; b.engine = &eb;
+    Account alice{"alice", Keypair::generate()}, bob{"bob", Keypair::generate()};
+    const std::string t = ea.post_topic(&alice, "Hi", "x", "", 10);
+    ea.pump(10);
+    CHECK(!eb.react(bob, t, 0, true, 100).empty());
+    eb.pump(100);
+    CHECK(ea.reactions().counts(t)[0] == 1 && eb.reactions().counts(t)[0] == 1);
+    // The same reaction again, from the network: still one.
+    ea.receive(bus.log.back(), 101);
+    CHECK(ea.reactions().counts(t)[0] == 1);
+    // Withdrawn: a newer signed "off".
+    eb.react(bob, t, 0, false, 200);
+    eb.pump(200 + 60000);
+    CHECK(ea.reactions().counts(t)[0] == 0);
+    // A replay of the older "on" does not bring it back.
+    ea.receive(encode(reaction(bob, t, 0, true, 150)), 300);
+    CHECK(ea.reactions().counts(t)[0] == 0);
+    // Two keys, two emoji.
+    eb.react(bob, t, 4, true, 400);
+    ea.react(alice, t, 4, true, 400);
+    eb.pump(400 + 120000); ea.pump(400 + 120000);
+    CHECK(ea.reactions().counts(t)[4] == 2 && eb.reactions().counts(t)[4] == 2);
+    // Toggling back on after a clock that went back still wins.
+    eb.react(bob, t, 0, true, 50);
+    eb.pump(400 + 180000);
+    CHECK(ea.reactions().counts(t)[0] == 1);
+    CHECK(sa.count() == 1 && sb.count() == 1);                // reactions are never posts
+}
+
+TEST(a_forged_or_misdirected_reaction_is_dropped) {
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    Account alice{"alice", Keypair::generate()}, mallory{"mallory", Keypair::generate()};
+    const std::string t = ea.post_topic(&alice, "Hi", "x", "", 10);
+    Reaction forged = reaction(mallory, t, 1, true, 20);
+    forged.author = alice.key.pk;                              // claims alice
+    CHECK(!ea.receive(encode(forged), 20) && ea.reactions().counts(t)[1] == 0);
+    Reaction edited = reaction(alice, t, 1, true, 20);
+    edited.emoji = 2;                                           // changed after signing
+    CHECK(!ea.receive(encode(edited), 21) && ea.reactions().counts(t)[2] == 0);
+    // On a post we do not hold, in another forum, or an emoji outside the set.
+    CHECK(ea.reactions().receive(reaction(alice, std::string(64, 'a'), 0, true, 22), 22) == Reactions::Outcome::UnknownPost);
+    // A post of another forum in the same file (a private group's): a public
+    // reaction cannot count on it, and the public engine will not send one.
+    Post secret = topic("group only", "x"); secret.forum = "g:0123456789abcdef0123456789abcdef"; secret = author_as(alice, secret);
+    sa.put(secret, 22);
+    CHECK(ea.reactions().receive(reaction(alice, secret.id(), 0, true, 22), 22) == Reactions::Outcome::UnknownPost);
+    CHECK(ea.react(alice, secret.id(), 0, true, 22).empty());
+    ea.pump(1000000);
+    for (const auto& m : bus.log) CHECK(m.find(secret.id()) == std::string::npos);
+    Reaction other = reaction(alice, t, 0, true, 23); other.forum = "Elsewhere"; sign(other, alice.key.sk);
+    ea.receive(encode(other), 23);
+    CHECK(ea.reactions().counts(t)[0] == 0);
+    auto j = nlohmann::json::parse(encode(reaction(alice, t, 0, true, 24)));
+    j["emoji"] = 5;
+    CHECK(!decode_reaction(j.dump()));
+    j["emoji"] = "👍";
+    CHECK(!decode_reaction(j.dump()));
+    // Dated far ahead, it would outlast every later state: refused.
+    const uint64_t now = 1790000000000ull;
+    ea.receive(encode(reaction(alice, t, 3, true, now + Engine::kMaxClockSkewMs + 1)), now);
+    CHECK(ea.reactions().counts(t)[3] == 0);
+    CHECK(sa.count() == 2);
+}
+
+TEST(reactions_are_rate_limited_on_arrival_before_and_after_the_signature) {
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    Account alice{"alice", Keypair::generate()};
+    const std::string t = ea.post_topic(&alice, "Hi", "x", "", 10);
+    // A flood of junk-signed reactions from fresh keys: the topic's budget
+    // bounds how many signatures are even checked.
+    for (int i = 0; i < 5000; ++i) {
+        Account k{"k", Keypair::generate()};
+        Reaction r = reaction(k, t, i % kEmojiCount, true, 100);
+        r.sig[0] ^= 1;
+        ea.receive(encode(r), 1000);
+        if (i == 999) break;                                   // keygen is the slow part; 1,000 is plenty
+    }
+    CHECK(ea.reactions().verified() == static_cast<uint64_t>(Reactions::kTopicBurst));
+    // One key, valid signatures, many targets: its own limit.
+    Bus bus2; FakeNet b(bus2); Store sb(":memory:");
+    Engine eb(sb, b, "Logos Forum"); b.engine = &eb;
+    std::vector<std::string> posts;
+    for (int i = 0; i < 40; ++i) posts.push_back(eb.post_topic(&alice, "t" + std::to_string(i), "x", "", 10));
+    Account spammer{"s", Keypair::generate()};
+    int stored = 0;
+    for (const auto& p : posts)
+        for (int e = 0; e < kEmojiCount; ++e)
+            if (eb.reactions().receive(reaction(spammer, p, e, true, 100), 5000) == Reactions::Outcome::Stored) ++stored;
+    CHECK(stored == static_cast<int>(Reactions::kKeyBurst));
+    // Once its allowance is spent, the key's further reactions are dropped
+    // before their signature is checked, so one key cannot spend the topic's
+    // budget either…
+    CHECK(eb.reactions().verified() <= Reactions::kKeyBurst + 1);
+    // …and another key is not affected by the first one's flood.
+    Account honest{"h", Keypair::generate()};
+    CHECK(eb.reactions().receive(reaction(honest, posts[0], 0, true, 100), 5000) == Reactions::Outcome::Stored);
+    // Limits are on arrival time: dating reactions later changes nothing.
+    int late = 0;
+    for (int e = 0; e < kEmojiCount; ++e)
+        if (eb.reactions().receive(reaction(spammer, posts[38], e, true, 999999 + e), 5000) == Reactions::Outcome::Stored) ++late;
+    CHECK(late == 0);
+    // A minute later the key may react again, a little.
+    CHECK(eb.reactions().receive(reaction(spammer, posts[39], 4, true, 100), 65000) == Reactions::Outcome::Stored);
+    // A forger cannot spend someone else's allowance: bad signatures under
+    // the honest key leave it able to react.
+    for (int i = 0; i < 100; ++i) {
+        Reaction f = reaction(honest, posts[1 + i % 30], i % kEmojiCount, true, 100);
+        f.sig[5] ^= 1;
+        eb.reactions().receive(f, 70000 + i * 1000);
+    }
+    CHECK(eb.reactions().receive(reaction(honest, posts[2], 1, true, 100), 200000) == Reactions::Outcome::Stored);
+}
+
+TEST(reactions_from_history_have_an_hourly_budget) {
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    Account alice{"alice", Keypair::generate()};
+    std::vector<std::string> posts;
+    for (int i = 0; i < 2; ++i) posts.push_back(ea.post_topic(&alice, "t" + std::to_string(i), "x", "", 10));
+    // A snapshot full of reactions, replayed: its reactions are charged to
+    // the history budget before their signatures are checked.
+    nlohmann::json doc{{"logos-forum-snapshot", 1}, {"forum", "Logos Forum"}, {"posts", nlohmann::json::array()}, {"reactions", nlohmann::json::array()}};
+    Account k{"k", Keypair::generate()};
+    for (int i = 0; i < 500; ++i) doc["reactions"].push_back(encode(reaction(k, posts[i % 2], i % kEmojiCount, true, 100 + i)));
+    const std::string d = doc.dump();
+    for (int i = 0; i < 20; ++i) ea.import_snapshot(d, 1000);
+    CHECK(ea.reactions().verified() == static_cast<uint64_t>(Reactions::kHistoryPerHour));
+    // The same document as a live bundle nobody asked for: the live limits.
+    Bus bus2; FakeNet b(bus2); Store sb(":memory:");
+    Engine eb(sb, b, "Logos Forum"); b.engine = &eb;
+    for (const auto& p : posts) eb.receive(encode(*sa.get(p)), 1);
+    eb.receive(d, 1000);
+    CHECK(eb.reactions().verified() <= Reactions::kKeyBurst + 1);
+}
+
+TEST(the_per_key_table_stays_bounded) {
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    Account alice{"alice", Keypair::generate()};
+    const std::string t = ea.post_topic(&alice, "Hi", "x", "", 10);
+    // Spread over time so the topic budget lets them all through.
+    uint64_t now = 0;
+    for (size_t i = 0; i < Reactions::kMaxTrackedKeys + 50; ++i) {
+        Account k{"k", Keypair::generate()};
+        now += 600;
+        ea.reactions().receive(reaction(k, t, 0, true, 1), now);
+    }
+    CHECK(ea.reactions().counts(t)[0] == static_cast<int>(Reactions::kMaxTrackedKeys + 50));
+    CHECK(ea.reactions().tracked_keys() == Reactions::kMaxTrackedKeys);   // the oldest are forgotten
+}
+
+TEST(history_carries_reactions_and_a_0_3_peer_ignores_them) {
+    Bus bus; FakeNet a(bus); Store sa(":memory:");
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    Account alice{"alice", Keypair::generate()}, bob{"bob", Keypair::generate()};
+    const std::string t = ea.post_topic(&alice, "Hi", "x", "", 10);
+    ea.react(bob, t, 1, true, 20);
+    ea.react(alice, t, 2, true, 20);
+    const auto bundles = ea.bundles(0, "re");
+    CHECK(bundles.size() == 1 && bundles[0].find("logos-forum-reaction") != std::string::npos);
+    Bus bus2; FakeNet b(bus2); Store sb(":memory:");
+    Engine eb(sb, b, "Logos Forum"); b.engine = &eb;
+    eb.receive(bundles[0], 30);
+    CHECK(eb.reactions().counts(t)[1] == 1 && eb.reactions().counts(t)[2] == 1);
+    Store sc(":memory:"); Bus bus3; FakeNet c(bus3);
+    Engine ec(sc, c, "Logos Forum"); c.engine = &ec;
+    CHECK(ec.import_snapshot(ea.snapshot(), 40) == 1 && ec.reactions().counts(t)[1] == 1);
+    // 0.3.6 takes the posts of the same bundle and snapshot, and nothing else.
+    const auto o = v036::receive({bundles[0], ea.snapshot()}, 50);
+    CHECK(o.stored == 1 && o.sent.empty());
+}
+
+TEST(a_0_3_peer_drops_reactions_and_image_requests_without_cost) {
+    Account alice{"alice", Keypair::generate()};
+    const Post p = author_as(alice, topic());
+    const std::string id = p.id();
+    const std::string r = encode(reaction(alice, id, 0, true, 10));
+    CHECK(!v036::decode(r));                                  // not a post to it
+    const std::string want = nlohmann::json{{"logos-forum-image-want", 1}, {"forum", "Logos Forum"}, {"cid", image("x").cid}, {"id", "q"}}.dump();
+    const std::string at = nlohmann::json{{"logos-forum-image-at", 1}, {"forum", "Logos Forum"}, {"cid", image("x").cid}, {"re", "q"}, {"peer", "p"}}.dump();
+    std::vector<std::string> msgs{encode(p)};
+    for (int i = 0; i < 200; ++i) { msgs.push_back(r); msgs.push_back(want); msgs.push_back(at); }
+    const auto o = v036::receive(msgs, 20);
+    CHECK(o.accepted == 1 && o.stored == 1);                  // the post, and nothing stored for the rest
+    CHECK(o.sent.empty());                                    // and nothing sent in reply
+    CHECK(o.bodies.size() == 1 && o.bodies[0] == "First post");
+}
+
+// ------------------------------------------------ search
+
+static std::vector<std::string> titles(const std::vector<SearchHit>& hits) {
+    std::vector<std::string> out;
+    for (const auto& h : hits) out.push_back(h.title);
+    return out;
+}
+
+TEST(search_finds_stored_posts_by_title_and_body) {
+    for (bool fts : {true, false}) {
+        Bus bus; FakeNet a(bus); Store sa(":memory:");
+        Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+        Account alice{"alice", Keypair::generate()};
+        const std::string t1 = ea.post_topic(&alice, "Testnet reset", "Will LEZ state be wiped?", "", 10);
+        ea.post_topic(&alice, "Basecamp release", "The storage module changed its API", "", 11);
+        const std::string r1 = ea.post_reply(&alice, t1, "Deployments will not carry over the reset.", "", 12);
+        // Built after the posts: it indexes what is already stored.
+        Search s(sa, fts);
+        CHECK(s.fts() == fts);
+        auto hits = s.find("Logos Forum", "reset");
+        CHECK(hits.size() == 2);
+        bool reply = false;
+        for (const auto& h : hits) if (h.id == r1) reply = h.topic_id == t1 && h.kind == Kind::Reply;
+        CHECK(reply);
+        CHECK(titles(s.find("Logos Forum", "storage api")) == std::vector<std::string>{"Basecamp release"});   // every word
+        CHECK(s.find("Logos Forum", "storage reset").empty());
+        CHECK(s.find("Logos Forum", "basec").size() == 1);           // the word being typed is a prefix
+        // Posts arriving later are indexed as they are stored.
+        Post later = author_as(alice, topic("Wallet update fails", "Removing the old one fixed it"));
+        ea.receive(encode(later), 20);
+        CHECK(s.find("Logos Forum", "wallet").size() == 1);
+        // Other forums in the same file are not searched.
+        Post other = author_as(alice, topic("reset elsewhere", "x")); other.forum = "Other"; sign(other, alice.key.sk);
+        sa.put(other, 21);
+        CHECK(s.find("Logos Forum", "reset").size() == 2);
+    }
+}
+
+TEST(search_input_is_text_never_query_syntax) {
+    for (bool fts : {true, false}) {
+        Store sa(":memory:");
+        Search s(sa, fts);
+        Account alice{"alice", Keypair::generate()};
+        Bus bus; FakeNet a(bus);
+        Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+        ea.post_topic(&alice, "Quotes \"inside\" and 100% sure_ok", "a OR b NEAR(x y) title:z -minus ^caret c++ *star*", "", 10);
+        ea.post_topic(&alice, "Unrelated", "plain text here", "", 11);
+        // Each of these is FTS5 syntax or a LIKE wildcard. None may error,
+        // match everything, or reach another column.
+        for (const char* q : {"\"", "\"\"\"", "NEAR(", "NEAR(x y)", "a OR", "OR", "AND", "NOT", "*", "**", "-", "-minus",
+                              "title:z", "body:plain", "^caret", "(", ")", "{a b}", "%", "_", "\\", "100%", "sure_ok",
+                              "'; DROP TABLE posts; --", "\x01\x02", "c++", "x\"y"}) {
+            const auto hits = s.find("Logos Forum", q);
+            for (const auto& h : hits) CHECK(h.title != "Unrelated");
+        }
+        CHECK(s.find("Logos Forum", "100%").size() == 1);
+        CHECK(s.find("Logos Forum", "%").size() <= 1 && s.find("Logos Forum", "_").size() <= 1);  // not a wildcard
+        CHECK(s.find("Logos Forum", "body:plain").empty());       // not a column filter
+        CHECK(s.find("Logos Forum", "plain").size() == 1);
+        CHECK(s.find("Logos Forum", "OR").size() == 1);           // the word "OR", not an operator
+        CHECK(sa.count() == 2);                                   // and the table is still there
+        CHECK(s.find("Logos Forum", "").empty() && s.find("Logos Forum", "   \t").empty());
+        CHECK(s.find("Logos Forum", std::string(100000, 'a') + " plain").empty());     // cut, not slowed
+    }
+    CHECK(fts_query("a \"b") == "\"a\" \"\"\"b\"*");
+    CHECK(fts_query("NEAR(x") == "\"NEAR(x\"*");
+}
+
+TEST(search_skips_the_image_line_muted_authors_and_hidden_posts) {
+    Store sa(":memory:");
+    Search s(sa);
+    Bus bus; FakeNet a(bus);
+    Engine ea(sa, a, "Logos Forum"); a.engine = &ea;
+    Account alice{"alice", Keypair::generate()}, muted{"muted", Keypair::generate()};
+    ea.post_topic(&alice, "Cat", "my cat", "", 10, make_manifest({image("x")}));
+    ea.post_topic(&muted, "Cat too", "another cat", "", 11);
+    CHECK(s.find("Logos Forum", "manifest").empty() && s.find("Logos Forum", "storage").empty());
+    CHECK(s.find("Logos Forum", "cat").size() == 2);
+    Moderation mod(sa);
+    mod.mute("me", muted.key.pk, 1);
+    auto hide = [&](const SearchHit& h) {
+        return mod.is_muted("me", h.author) || mod.is_hidden("me", h.id) || mod.is_hidden("me", h.topic_id);
+    };
+    const auto hits = s.find("Logos Forum", "cat", 50, hide);
+    CHECK(hits.size() == 1 && hits[0].title == "Cat");
+    // A hidden thread hides its replies from search too.
+    const std::string t = sa.topics("Logos Forum")[0].topic.title == "Cat" ? sa.topics("Logos Forum")[0].id : sa.topics("Logos Forum")[1].id;
+    ea.post_reply(&alice, t, "the cat replies", "", 12);
+    CHECK(s.find("Logos Forum", "replies", 50, hide).size() == 1);
+    mod.hide("me", t, 2);
+    CHECK(s.find("Logos Forum", "cat", 50, hide).empty() && s.find("Logos Forum", "replies", 50, hide).empty());
+    CHECK(s.find("Logos Forum", "cat", 50).size() == 3);         // another account's reader sees them all
+}
+
+#include "accounts_tests.inc"
+#include "intake_tests.inc"
+#include "moderation_tests.inc"
+#include "group_tests.inc"
 
 int main() {
     for (auto& t : all()) {

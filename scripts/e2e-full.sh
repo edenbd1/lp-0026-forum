@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The full scenario, on real Basecamp nodes joined to logos.test, driven through
+# The full scenario, on real Basecamp nodes joined to the forum's network (logos.dev by default), driven through
 # the forum's own interface and checked in every node's own store.
 #
 #   A · Alice      topic as her account            → B, C, D store it, same author key
@@ -12,12 +12,17 @@
 #   E · newcomer   a blank install joins at the end → recovers every post
 #
 # macOS; Basecamp 0.3.0, cliclick, sqlite3, Accessibility permission.
-#   scripts/e2e-full.sh <logos_forum.lgx> <delivery_module.lgx> <storage_module.lgx>
+#   scripts/e2e-full.sh <logos_forum.lgx> <delivery_module.lgx> <storage_module.lgx> \
+#       <liblogos_rln_module.lgx> <liblogos_lez_rln_module.lgx> <libp2p_module.lgx> <rln_gifter_module.lgx>
+#
+# On logos.test (opt-in, LOGOS_FORUM_PRESET=logos.test) each posting node needs an RLN membership from the
+# forum's sponsor by itself: see scripts/e2e-rln.sh (E2E_RLN_HOME, E2E_GIFTER_ACCOUNT).
 set -euo pipefail
 # Every node runs on this machine, so they may name and dial local addresses
 # (LOGOS_FORUM_LOCAL_PEERS); on the real network only public ones are used.
 BASECAMP=${BASECAMP:-$HOME/Applications/LogosBasecamp-0.3.0.app/Contents/MacOS/LogosBasecamp}
 here=$(cd "$(dirname "$0")" && pwd)
+. "$here/e2e-rln.sh"
 FORUM="e2e-full-$(date +%s)"
 R=/tmp/forum-full
 A=$R-a B=$R-b C=$R-c D=$R-d E=$R-e
@@ -38,10 +43,15 @@ click_ax() {
   [ -n "$pos" ] || return 1
   front "$1"; IFS=, read -r x y w h <<< "$pos"; cliclick "c:$((x + w / 2)),$((y + h / 2))"
 }
+open_first_topic() {  # the most recently active topic: the first row, just under the search field
+  front "$1"; local pos; pos=$(ui "$1" 'get {position, size} of (first text field of group 1 of window 1 whose description is "Search posts on this device")' | tr -d ' ')
+  IFS=, read -r x y w h <<< "$pos"; cliclick "c:$((x + 60)),$((y + h + 30))"
+}
 click_in_window() { front "$1"; local pos; pos=$(ui "$1" 'get position of window 1' | tr -d ' '); IFS=, read -r x y <<< "$pos"; cliclick "c:$((x + $2)),$((y + $3))"; }
 key() { osascript -e "tell application \"System Events\" to key code $1"; }
 db() { sqlite3 "$1/module_data/logos_forum/forum.db" "$2" 2> /dev/null || true; }
 start() {  # start <dir> [offline]
+  rln_restore "$1"
   if [ "${2:-}" = offline ]; then
     (LOGOS_FORUM_LOCAL_PEERS=1 LOGOS_FORUM_NAME="$FORUM" sandbox-exec -f "$R-offline.sb" "$BASECAMP" --user-dir "$1" > "$1.log" 2>&1 &)
   else
@@ -56,7 +66,7 @@ start() {  # start <dir> [offline]
 }
 stop() { pkill -f "user-dir $1\$" || true; for _ in $(seq 20); do pgrep -f "user-dir $1\$" > /dev/null || break; sleep 1; done; pkill -f "$1/" || true; sleep 1; }
 # Never leave a node behind: one left running fills the disk with its logs.
-cleanup() { for d in $A $B $C $D $E; do stop "$d"; done; }
+cleanup() { for d in $A $B $C $D $E; do stop "$d"; rln_save "$d"; done; }
 trap cleanup EXIT
 wait_for() { local t=$1 what=$2; shift 2; for _ in $(seq "$t"); do "$@" && { ok "$what"; return; }; sleep 1; done; fail "$what"; }
 has_posts() { [ "$(db "$1" "select count(*) from posts")" -ge "$2" ]; }
@@ -105,7 +115,7 @@ new_topic() {  # new_topic <pid> <title> <body> <mode> [alias]
   sleep 0.5; click_ax "$1" 'button "Post" of group 1 of window 1' || fail "no Post button"; sleep 2
 }
 reply_top() {  # reply_top <pid> <body> <mode> [alias]: reply to the most recently active topic
-  click_in_window "$1" 200 250; sleep 1.5
+  open_first_topic "$1"; sleep 1.5
   ui "$1" "set value of text field -1 of group 1 of window 1 to \"$2\"" > /dev/null
   pick_mode "$1" "$3"
   [ "$3" = 1 ] && ui "$1" "set value of text field -1 of group 1 of window 1 to \"$4\"" > /dev/null
@@ -115,7 +125,8 @@ new_account() {  # new_account <pid> <label> <user dir>: created and selected, c
   local i
   for i in 1 2 3; do
     open_dialog "$1" "Accounts…" 'button "Create"'
-    ui "$1" "set value of text field -1 of group 1 of window 1 to \"$2\"" > /dev/null; sleep 0.3
+    # By its name: the dialog also holds the passphrase and restore fields.
+    ui "$1" "set value of (first text field of group 1 of window 1 whose description is \"new account name\") to \"$2\"" > /dev/null; sleep 0.3
     click_ax "$1" 'button "Create" of group 1 of window 1' || fail "no Create button"; sleep 1.5
     click_ax "$1" 'button "Close" of group 1 of window 1'; sleep 0.6
     [ "$(db "$3" "select count(*) from accounts where label='$2' and selected=1")" = 1 ] && return 0
@@ -142,6 +153,7 @@ echo "forum: $FORUM"
 
 pa=$(start $A); pb=$(start $B); pc=$(start $C); pd=$(start $D)
 ok "four nodes joined the forum"
+for d in $A $B $C $D; do rln_ready $d; done
 
 # ── Alice: a topic under her account
 new_account $pa "Alice" $A

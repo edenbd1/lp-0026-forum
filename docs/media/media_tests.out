@@ -1,0 +1,11 @@
+ok   a_phone_jpeg_loses_its_gps_exif_xmp_comment_and_icc_profile
+ok   exif_orientation_is_applied_before_the_metadata_goes
+ok   png_text_icc_and_exif_chunks_are_not_carried_over
+ok   only_png_jpeg_and_webp_are_decoded_whatever_the_name
+ok   input_is_capped_in_bytes_before_any_decoding
+ok   a_header_announcing_too_many_pixels_is_refused_before_decoding
+ok   the_full_image_and_the_thumbnail_are_within_their_caps
+ok   what_the_view_is_given_is_always_re_encoded_here
+ok   only_a_regular_file_is_read
+
+9 tests, 0 failure(s)

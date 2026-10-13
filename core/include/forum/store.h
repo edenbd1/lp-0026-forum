@@ -29,6 +29,30 @@ struct TopicRow {
     uint64_t last_activity_ms = 0;
 };
 
+// A post with the time this install stored it.
+struct Stored {
+    Post post;
+    std::string id;
+    uint64_t received_ms = 0;
+};
+
+// Bytes that held a secret: zeroed before the memory is given back, also when
+// a vector grows and moves its contents.
+template <class T> struct WipingAllocator {
+    using value_type = T;
+    WipingAllocator() = default;
+    template <class U> WipingAllocator(const WipingAllocator<U>&) {}
+    T* allocate(size_t n) { return static_cast<T*>(::operator new(n * sizeof(T))); }
+    void deallocate(T* p, size_t n);
+    template <class U> bool operator==(const WipingAllocator<U>&) const { return true; }
+};
+using SecretBytes = std::vector<uint8_t, WipingAllocator<uint8_t>>;
+void wipe_bytes(void* p, size_t n);
+template <class T> void WipingAllocator<T>::deallocate(T* p, size_t n) {
+    wipe_bytes(p, n * sizeof(T));
+    ::operator delete(p);
+}
+
 struct OutboxItem {
     std::string id;
     std::string payload;  // the encoded post
@@ -48,6 +72,8 @@ public:
     // True if the post was new; false if its id was already stored.
     bool put(const Post& p, uint64_t received_ms);
     bool has(const std::string& id) const;
+    // Whether the store holds a post of `forum` signed by `author`.
+    bool has_author(const std::string& forum, const PublicKey& author) const;
     std::optional<Post> get(const std::string& id) const;
 
     // Topics of a forum, most recently active first.
@@ -98,13 +124,66 @@ public:
     // Record a failure and schedule the next try with exponential back-off.
     void failed(const std::string& id, const std::string& error, uint64_t now_ms);
 
-    void save_account(const Account& a, bool selected);
+    // Writes the key in plain text: refused (false) once the keys are sealed
+    // with a passphrase (keystore.h), so no code path can put a plain key
+    // back next to sealed ones.
+    bool save_account(const Account& a, bool selected);
     std::vector<Account> accounts() const;
     std::optional<std::string> selected_label() const;
     void remove_account(const std::string& label);
     // Flush the write-ahead log into the database so a replaced or deleted key
     // does not linger in it (deleted content is zeroed: secure_delete is on).
     void scrub();
+
+    // ── Keys at rest: the raw rows, for keystore.h ─────────────────────────
+    struct AccountRow {
+        std::string label;
+        PublicKey pk{};
+        SecretBytes secret;   // 64 bytes in plain text, or a sealed blob
+        uint64_t created_ms = 0;
+        uint32_t posts = 0;
+        bool selected = false;
+        bool backed_up = false;
+    };
+    std::vector<AccountRow> account_rows() const;
+    // Insert or replace by label, secret as given.
+    bool put_account_row(const AccountRow& r);
+    // Everything but the secret, for a row that exists with this key.
+    bool update_account_info(const Account& a, bool selected);
+    // Small named values (the passphrase's salt and check value).
+    std::optional<SecretBytes> meta(const std::string& key) const;
+    bool set_meta(const std::string& key, const SecretBytes& value);
+    bool erase_meta(const std::string& key);
+    // Rewrite the file and flush its log, so overwritten keys leave no copy.
+    void compact();
+    // Several writes as one, rolled back unless commit() is called.
+    class Txn {
+    public:
+        explicit Txn(Store& s);
+        ~Txn();
+        bool commit();
+        Txn(const Txn&) = delete;
+        Txn& operator=(const Txn&) = delete;
+    private:
+        Store& s_;
+        bool open_ = false, nested_ = false;
+    };
+
+    // ── Replies to you, your posts (inbox.h) ────────────────────────────────
+    // Posts by `author` in a forum, newest first, at most `limit`.
+    std::vector<Stored> by_author(const std::string& forum, const PublicKey& author, size_t limit) const;
+    // Posts not by `me` that reply in a topic `me` started, reply after `me`
+    // replied in a topic, or carry `needle` (lower case) in their title or
+    // body. Newest received first, at most `limit`.
+    std::vector<Stored> inbox_candidates(const std::string& forum, const PublicKey& me, const std::string& needle,
+                                         size_t limit) const;
+    // How far an account has read its inbox (received time), by label.
+    uint64_t inbox_read(const std::string& label) const;
+    void set_inbox_read(const std::string& label, uint64_t received_ms);
+    // The open database, for the parts of the core that keep tables of their
+    // own in the same file (moderation, groups, attachments, reactions, the
+    // search index).
+    sqlite3* handle() const { return db_; }
 
 private:
     sqlite3* db_ = nullptr;

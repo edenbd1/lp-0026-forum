@@ -27,6 +27,30 @@ class LogosForum
     // across restarts. `unread` in listTopics is activity after that point.
     SLOT(QString markRead(QString topicId))
 
+    // ── Private forums ────────────────────────────────────────────────────────
+    // The public forum has id ""; a private group, the id from forumsJson.
+    // listTopics, thread, createTopic and reply act on the selected forum.
+    // A group's posts are sealed before they reach the network, on a topic
+    // public nodes never subscribe to. Each returns "" or "error: …", except
+    // createGroup and groupInvite, which return the invite
+    // (logosforum://join/…) or "error: …".
+    SLOT(QString selectForum(QString id))
+    SLOT(QString createGroup(QString name))
+    SLOT(QString joinGroup(QString invite))
+    // Leaving deletes the group's secret and posts from this device.
+    SLOT(QString leaveGroup(QString id))
+    SLOT(QString groupInvite(QString id))
+
+    // ── Moderation, for this reader only ──────────────────────────────────────
+    // By key (64 hex characters, as authorKey) or post id; stored on this
+    // device for the selected account, never sent. moderationList:
+    // {muted:[{key,at}], hidden:[{id,at,title}]}.
+    SLOT(QString muteAuthor(QString key))
+    SLOT(QString unmuteAuthor(QString key))
+    SLOT(QString hidePost(QString id))
+    SLOT(QString unhidePost(QString id))
+    SLOT(QString moderationList())
+
     // ── Accounts ──────────────────────────────────────────────────────────────
     // Accounts are Ed25519 keys kept in this install's store. Each slot returns
     // "" or an error, and re-publishes accountsJson / myLabel / myKey.
@@ -45,8 +69,13 @@ class LogosForum
     // newcomer can load everything from before the network's store window.
     SLOT(QString saveSnapshot())
     // Store nodes to query, as multiaddrs separated by spaces or new lines.
-    // Empty restores the logos.test fleet.
+    // Empty restores the preset's fleet.
     SLOT(QString useStorePeers(QString peers))
+
+    // ── RLN membership ────────────────────────────────────────────────────────
+    // Ask the forum's sponsor for a membership now instead of at the next
+    // scheduled retry. Returns "" or why not.
+    SLOT(QString retryMembership())
 
     // ── Links ─────────────────────────────────────────────────────────────────
     // Open an https link from a post in the system browser, on the reader's
@@ -55,6 +84,64 @@ class LogosForum
     // with a host is refused. Returns "" or "error: …".
     SLOT(QString openLink(QString url))
 
+    // ── Images (Logos Storage) ────────────────────────────────────────────────
+    // Attach a picked file (a file:// URL from the view's file dialog). It is
+    // decoded under caps, rebuilt from its pixels (no EXIF, GPS, XMP, comment
+    // or ICC profile survives), re-encoded, and uploaded to this node's Logos
+    // Storage without being announced. Returns {token,thumb,w,h,bytes,type}
+    // or "error: …"; imageUploaded(token, "ready"|"failed", detail) follows.
+    SLOT(QString attachImage(QString fileUrl))
+    // Forget an attached image that was not posted (removed from Storage).
+    SLOT(QString discardImage(QString token))
+    // As createTopic/reply, with attached images (`tokens`: a JSON array).
+    // Not with mode 2 (anonymous): this node serves the images, and its
+    // Storage peer id would link the post to it.
+    SLOT(QString createTopicWithImages(QString title, QString body, int mode, QString alias, QString tokens))
+    SLOT(QString replyWithImages(QString topicId, QString body, int mode, QString alias, QString tokens))
+    // Fetch image `index` of a post from Logos Storage, on the reader's click.
+    // imageState(postId, index, "loading"|"ready"|"failed", detail) follows;
+    // "ready" only once the bytes hash to the SHA-256 the author signed.
+    SLOT(QString loadImage(QString postId, int index))
+    // A loaded image, re-encoded here, as a data: URL ("" if not loaded).
+    SLOT(QString fullImage(QString postId, int index))
+
+    // ── Reactions ─────────────────────────────────────────────────────────────
+    // Toggle reaction `emoji` (0 👍 1 ❤️ 2 🎉 3 👀 4 ✅) on a post, signed by
+    // the selected account. Returns "" or "error: …".
+    SLOT(QString react(QString postId, int emoji))
+
+    // ── Search ────────────────────────────────────────────────────────────────
+    // Full-text search over stored, verified posts:
+    // [{id,topicId,kind,title,snippet,author,ts}], best first.
+    SLOT(QString search(QString query))
+
+    // ── Keys at rest ──────────────────────────────────────────────────────────
+    // With a passphrase, account keys are sealed in forum.db (Argon2id,
+    // XChaCha20-Poly1305) and unlocked once per session; reading and posting
+    // anonymously work while locked. Each returns "" or why not.
+    SLOT(QString unlock(QString passphrase))
+    SLOT(QString lockKeys())
+    // `current` is "" while there is none; `next` "" removes the passphrase.
+    SLOT(QString setPassphrase(QString current, QString next))
+
+    // ── Backup ────────────────────────────────────────────────────────────────
+    // The 24 words of an account's current key, or "error: …". Asks for the
+    // passphrase again when there is one. Never logged.
+    SLOT(QString recoveryPhrase(QString label, QString passphrase))
+    // A new account from 24 words: the same key as the one written down.
+    // Returns "" or why not.
+    SLOT(QString restoreAccount(QString label, QString words))
+
+    // ── Replies to you ────────────────────────────────────────────────────────
+    // For the selected account only, matched by its key, never by a name:
+    // {handle, unread, items:[{…post, why, unread, topicId, topicTitle}]}, why
+    // = "topic" (a reply to your topic) | "after" (after your reply) |
+    // "mention" ("@" + your handle).
+    SLOT(QString inbox())
+    // The selected account's own posts (account or alias, never anonymous).
+    SLOT(QString myPosts())
+    SLOT(QString markInboxRead())
+
     PROP(QString status="Starting…" READONLY)
     PROP(bool nodeReady=false READONLY)
     PROP(QString forumName="" READONLY)
@@ -62,7 +149,7 @@ class LogosForum
     PROP(QString appVersion="" READONLY)
     PROP(QString myLabel="" READONLY)
     PROP(QString myKey="" READONLY)
-    // [{label,key,posts,created,selected}]
+    // [{label,key,posts,created,selected,backedUp,handle}]
     PROP(QString accountsJson="[]" READONLY)
     // {maxPosts,maxDays}
     PROP(QString rotationJson="{}" READONLY)
@@ -71,6 +158,22 @@ class LogosForum
     // One line on history: last catch-up, last snapshot, storage state.
     PROP(QString historyStatus="" READONLY)
     PROP(QString storePeers="" READONLY)
+    // RLN membership, on a network that runs RLN (logos.test):
+    // {on, phase, title, detail, payer, needs, holds, retry}. `on` is false
+    // where the network runs none. phase: starting | wallet | gifting |
+    // gift-failed | funding | registering | pending | active | quota | lapsed |
+    // failed | missing. `payer` (base58, while funding, with the sponsor off)
+    // is the LEZ account that would pay for the membership; `retry` is true
+    // when retryMembership() can do something.
+    PROP(QString rlnJson="{}" READONLY)
+    // {protected, unlocked}: whether keys are sealed with a passphrase, and
+    // whether they are unlocked this session.
+    PROP(QString keysJson="{}" READONLY)
+    // Unread replies and mentions for the selected account.
+    PROP(int inboxUnread=0 READONLY)
+    // [{id,name,private,current}]: the public forum first, then joined groups.
+    PROP(QString forumsJson="[]" READONLY)
+    PROP(QString currentForum="" READONLY)
 
     // A post was stored — ours or a peer's. `topicId` is the thread it belongs
     // to (its own id for a topic).
@@ -78,4 +181,8 @@ class LogosForum
     // One of our own posts changed delivery state: "sent", "failed" (it goes
     // back in the outbox and is retried), with a reason in `detail`.
     SIGNAL(postStateChanged(QString id, QString state, QString detail))
+    SIGNAL(imageUploaded(QString token, QString state, QString detail))
+    SIGNAL(imageState(QString postId, int index, QString state, QString detail))
+    // Reaction counts under a post changed.
+    SIGNAL(reactionsChanged(QString postId))
 }

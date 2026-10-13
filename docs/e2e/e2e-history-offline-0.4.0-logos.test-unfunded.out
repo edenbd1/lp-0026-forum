@@ -1,0 +1,15 @@
+# scripts/e2e-history-offline.sh, forum 0.4.0 on logos.test (default), 2026-10-01 19:23 CEST
+# packages: logos_forum 0.4.0, delivery_module 0.3.0, storage_module 3.0.0, liblogos_rln_module 0.10.0, liblogos_lez_rln_module 4.2.1
+# Both posting nodes come up, RLN Ready, and their RLN module waits for its LEZ payer to be funded on the
+# registry's zone (sequencer http://209.38.241.182:3240). No funds there, no E2E_FUND: the run stops before posting.
+ok   both nodes joined the forum
+FAIL: forum-e2e-a: no RLN membership; fund 7UyxcBR4jbSkyxsafJ4uDyCRzX8hAzCATWaVdd6ad7QF with 182800000 native units on the registry's zone, or set E2E_FUND
+
+# node A forum.log (RLN lines)
+2026-10-01T19:23:23.957 network preset logos.test, cluster 2
+2026-10-01T19:23:26.567 rln: Initializing
+2026-10-01T19:23:26.567 rln membership: starting
+2026-10-01T19:23:26.572 rln: Ready
+2026-10-01T19:23:26.573 rln registry logos:testnet:841312e989c77e3f6f58a5d880a8e25b950b8b5ffba2f39748fa44622c20c893, scope 5e269b6a19fce081f5808b13442dcbc3522197638dd38df5a28bc4e55236b977
+2026-10-01T19:23:26.576 rln membership: wallet
+2026-10-01T19:23:41.098 rln membership: funding (605134f405356b008c981d10d518fb0eab27cc9ee08580251a2ece452e6e61ec needs 182800000 native (1000000 price + 181800000 fee reserve); it holds 0)

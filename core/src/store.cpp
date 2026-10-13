@@ -1,11 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #include "forum/store.h"
 
+#include <sodium.h>
 #include <sqlite3.h>
 
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
+
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace forum {
 namespace {
@@ -52,6 +59,7 @@ CREATE TABLE IF NOT EXISTS posts (
   ts INTEGER NOT NULL, author BLOB NOT NULL, sig BLOB NOT NULL, received INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS posts_topic ON posts(topic_id);
 CREATE INDEX IF NOT EXISTS posts_forum ON posts(forum, kind);
+CREATE INDEX IF NOT EXISTS posts_author ON posts(author);
 CREATE TABLE IF NOT EXISTS outbox (
   id TEXT PRIMARY KEY, payload TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
   next_try INTEGER NOT NULL, last_error TEXT NOT NULL DEFAULT '');
@@ -59,6 +67,18 @@ CREATE TABLE IF NOT EXISTS accounts (
   label TEXT PRIMARY KEY, pk BLOB NOT NULL, sk BLOB NOT NULL, created INTEGER NOT NULL,
   posts INTEGER NOT NULL, selected INTEGER NOT NULL DEFAULT 0);
 )sql";
+
+// Accounts' keys at rest, their backup state and inbox position; who wrote
+// what, for the inbox. Each statement runs on its own: ALTER fails harmlessly
+// on a store that already has the column.
+const char* kAccountsSchema = R"sql(
+CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v BLOB NOT NULL);
+CREATE INDEX IF NOT EXISTS posts_author ON posts(author);
+)sql";
+const char* kAccountsColumns[] = {
+    "ALTER TABLE accounts ADD COLUMN backed_up INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE accounts ADD COLUMN inbox_read INTEGER NOT NULL DEFAULT 0",
+};
 
 Post row_to_post(const Stmt& q) {
     Post p;
@@ -86,12 +106,27 @@ uint64_t backoff_ms(int attempts) {
 }
 
 Store::Store(const std::string& path) {
+#ifndef _WIN32
+    // The file holds every account's secret key: readable by its owner only.
+    // Created that way (SQLite gives its -wal and -shm files the database's
+    // own mode), and tightened if an older version left it readable by others.
+    if (!path.empty() && path != ":memory:" && path.rfind("file:", 0) != 0) {
+        const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        if (fd >= 0) {
+            ::fchmod(fd, 0600);
+            ::close(fd);
+        }
+        for (const char* side : {"-wal", "-shm", "-journal"}) ::chmod((path + side).c_str(), 0600);
+    }
+#endif
     if (sqlite3_open(path.c_str(), &db_) != SQLITE_OK)
         throw std::runtime_error(std::string("cannot open store: ") + path);
     exec("PRAGMA journal_mode=WAL;");
     // Deleted content (a rotated or deleted account's key) is overwritten.
     exec("PRAGMA secure_delete=ON;");
     exec(kSchema);
+    exec(kAccountsSchema);
+    for (const char* sql : kAccountsColumns) sqlite3_exec(db_, sql, nullptr, nullptr, nullptr);
     // Stores from before resends were counted.
     sqlite3_exec(db_, "ALTER TABLE outbox ADD COLUMN resends INTEGER NOT NULL DEFAULT 0", nullptr, nullptr, nullptr);
     // Once, on upgrade: secure_delete only zeroes pages freed from now on, so
@@ -141,6 +176,12 @@ bool Store::put(const Post& p, uint64_t received_ms) {
 bool Store::has(const std::string& id) const {
     Stmt q(db_, "SELECT 1 FROM posts WHERE id=?");
     q.text(1, id);
+    return q.step();
+}
+
+bool Store::has_author(const std::string& forum, const PublicKey& author) const {
+    Stmt q(db_, "SELECT 1 FROM posts WHERE author=? AND forum=? LIMIT 1");
+    q.blob(1, author.data(), author.size()).text(2, forum);
     return q.step();
 }
 
@@ -243,6 +284,9 @@ void Store::sent(const std::string& id) {
     Stmt q(db_, "DELETE FROM outbox WHERE id=?");
     q.text(1, id);
     q.step();
+    // The outbox copy said this install wrote the post (an anonymous one
+    // too): zeroed in the file by secure_delete, and flushed out of the log.
+    if (sqlite3_changes(db_) > 0) scrub();
 }
 
 int Store::awaiting(const std::string& id, uint64_t now_ms, uint64_t window_ms) {
@@ -278,26 +322,30 @@ void Store::failed(const std::string& id, const std::string& error, uint64_t now
     u.step();
 }
 
-void Store::save_account(const Account& a, bool selected) {
-    if (selected) sqlite3_exec(db_, "UPDATE accounts SET selected=0", nullptr, nullptr, nullptr);
-    Stmt q(db_, "INSERT INTO accounts VALUES (?,?,?,?,?,?) ON CONFLICT(label) DO UPDATE SET "
-                "pk=excluded.pk, sk=excluded.sk, created=excluded.created, posts=excluded.posts, "
-                "selected=MAX(selected, excluded.selected)");
-    q.text(1, a.label).blob(2, a.key.pk.data(), 32).blob(3, a.key.sk.data(), 64)
-        .i64(4, static_cast<int64_t>(a.created_ms)).i64(5, a.posts).i64(6, selected ? 1 : 0);
-    q.step();
+bool Store::save_account(const Account& a, bool selected) {
+    if (meta("kdf")) return false;  // sealed keys: only keystore.h writes them
+    AccountRow r;
+    r.label = a.label;
+    r.pk = a.key.pk;
+    r.secret.assign(a.key.sk.begin(), a.key.sk.end());
+    r.created_ms = a.created_ms;
+    r.posts = a.posts;
+    r.selected = selected;
+    r.backed_up = a.backed_up;
+    return put_account_row(r);
 }
 
 std::vector<Account> Store::accounts() const {
-    Stmt q(db_, "SELECT label,pk,sk,created,posts FROM accounts ORDER BY created, label");
+    Stmt q(db_, "SELECT label,pk,sk,created,posts,backed_up FROM accounts ORDER BY created, label");
     std::vector<Account> out;
     while (q.step()) {
         Account a;
         a.label = q.str(0);
         q.arr(1, a.key.pk);
-        q.arr(2, a.key.sk);
+        q.arr(2, a.key.sk);  // a sealed key is not 64 bytes: left zero
         a.created_ms = static_cast<uint64_t>(q.num(3));
         a.posts = static_cast<uint32_t>(q.num(4));
+        a.backed_up = q.num(5) != 0;
         out.push_back(std::move(a));
     }
     return out;
@@ -313,6 +361,129 @@ void Store::remove_account(const std::string& label) {
     Stmt q(db_, "DELETE FROM accounts WHERE label=?");
     q.text(1, label);
     q.step();
+}
+
+// ─── Keys at rest ───────────────────────────────────────────────────────────
+
+void wipe_bytes(void* p, size_t n) {
+    if (p && n) sodium_memzero(p, n);
+}
+
+std::vector<Store::AccountRow> Store::account_rows() const {
+    Stmt q(db_, "SELECT label,pk,sk,created,posts,selected,backed_up FROM accounts ORDER BY created, label");
+    std::vector<AccountRow> out;
+    while (q.step()) {
+        AccountRow r;
+        r.label = q.str(0);
+        q.arr(1, r.pk);
+        const auto* b = static_cast<const uint8_t*>(sqlite3_column_blob(q.s, 2));
+        if (b) r.secret.assign(b, b + sqlite3_column_bytes(q.s, 2));
+        r.created_ms = static_cast<uint64_t>(q.num(3));
+        r.posts = static_cast<uint32_t>(q.num(4));
+        r.selected = q.num(5) != 0;
+        r.backed_up = q.num(6) != 0;
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+bool Store::put_account_row(const AccountRow& r) {
+    if (r.selected) sqlite3_exec(db_, "UPDATE accounts SET selected=0", nullptr, nullptr, nullptr);
+    Stmt q(db_, "INSERT INTO accounts(label,pk,sk,created,posts,selected,backed_up) VALUES (?,?,?,?,?,?,?) "
+                "ON CONFLICT(label) DO UPDATE SET pk=excluded.pk, sk=excluded.sk, created=excluded.created, "
+                "posts=excluded.posts, selected=MAX(selected, excluded.selected), backed_up=excluded.backed_up");
+    q.text(1, r.label).blob(2, r.pk.data(), 32).blob(3, r.secret.data(), r.secret.size())
+        .i64(4, static_cast<int64_t>(r.created_ms)).i64(5, r.posts).i64(6, r.selected ? 1 : 0)
+        .i64(7, r.backed_up ? 1 : 0);
+    return q.run();
+}
+
+bool Store::update_account_info(const Account& a, bool selected) {
+    if (selected) sqlite3_exec(db_, "UPDATE accounts SET selected=0", nullptr, nullptr, nullptr);
+    Stmt q(db_, "UPDATE accounts SET created=?, posts=?, backed_up=?, selected=MAX(selected,?) WHERE label=? AND pk=?");
+    q.i64(1, static_cast<int64_t>(a.created_ms)).i64(2, a.posts).i64(3, a.backed_up ? 1 : 0).i64(4, selected ? 1 : 0)
+        .text(5, a.label).blob(6, a.key.pk.data(), 32);
+    return q.run() && sqlite3_changes(db_) == 1;
+}
+
+std::optional<SecretBytes> Store::meta(const std::string& key) const {
+    Stmt q(db_, "SELECT v FROM meta WHERE k=?");
+    q.text(1, key);
+    if (!q.step()) return std::nullopt;
+    const auto* b = static_cast<const uint8_t*>(sqlite3_column_blob(q.s, 0));
+    SecretBytes v;
+    if (b) v.assign(b, b + sqlite3_column_bytes(q.s, 0));
+    return v;
+}
+
+bool Store::set_meta(const std::string& key, const SecretBytes& value) {
+    Stmt q(db_, "INSERT INTO meta(k,v) VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v");
+    q.text(1, key).blob(2, value.data(), value.size());
+    return q.run();
+}
+
+bool Store::erase_meta(const std::string& key) {
+    Stmt q(db_, "DELETE FROM meta WHERE k=?");
+    q.text(1, key);
+    return q.run();
+}
+
+void Store::compact() {
+    sqlite3_exec(db_, "VACUUM", nullptr, nullptr, nullptr);
+    scrub();
+}
+
+Store::Txn::Txn(Store& s) : s_(s) {
+    nested_ = !sqlite3_get_autocommit(s_.db_);  // inside a Batch: part of its commit
+    open_ = !nested_ && sqlite3_exec(s_.db_, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) == SQLITE_OK;
+}
+bool Store::Txn::commit() {
+    if (nested_) return true;
+    if (!open_) return false;
+    open_ = false;
+    if (sqlite3_exec(s_.db_, "COMMIT", nullptr, nullptr, nullptr) == SQLITE_OK) return true;
+    sqlite3_exec(s_.db_, "ROLLBACK", nullptr, nullptr, nullptr);
+    return false;
+}
+Store::Txn::~Txn() {
+    if (open_) sqlite3_exec(s_.db_, "ROLLBACK", nullptr, nullptr, nullptr);
+}
+
+// ─── Replies to you, your posts ─────────────────────────────────────────────
+
+std::vector<Stored> Store::by_author(const std::string& forum, const PublicKey& author, size_t limit) const {
+    Stmt q(db_, (std::string("SELECT ") + kCols + ",received FROM posts WHERE forum=? AND author=? "
+                 "ORDER BY ts DESC, id LIMIT ?").c_str());
+    q.text(1, forum).blob(2, author.data(), 32).i64(3, static_cast<int64_t>(limit));
+    std::vector<Stored> out;
+    while (q.step()) out.push_back({row_to_post(q), q.str(0), static_cast<uint64_t>(q.num(11))});
+    return out;
+}
+
+std::vector<Stored> Store::inbox_candidates(const std::string& forum, const PublicKey& me, const std::string& needle,
+                                            size_t limit) const {
+    Stmt q(db_, (std::string("SELECT ") + kCols + ",received FROM posts p WHERE forum=?1 AND author<>?2 AND ("
+                 " (kind=1 AND topic_id IN (SELECT id FROM posts WHERE forum=?1 AND kind=0 AND author=?2))"
+                 " OR (kind=1 AND ts > (SELECT MIN(m.ts) FROM posts m WHERE m.topic_id=p.topic_id AND m.kind=1"
+                 "                      AND m.author=?2 AND m.forum=?1))"
+                 " OR (length(?3) > 0 AND (instr(lower(body), ?3) > 0 OR instr(lower(title), ?3) > 0)))"
+                 " ORDER BY received DESC, id LIMIT ?4").c_str());
+    q.text(1, forum).blob(2, me.data(), 32).text(3, needle).i64(4, static_cast<int64_t>(limit));
+    std::vector<Stored> out;
+    while (q.step()) out.push_back({row_to_post(q), q.str(0), static_cast<uint64_t>(q.num(11))});
+    return out;
+}
+
+uint64_t Store::inbox_read(const std::string& label) const {
+    Stmt q(db_, "SELECT inbox_read FROM accounts WHERE label=?");
+    q.text(1, label);
+    return q.step() ? static_cast<uint64_t>(q.num(0)) : 0;
+}
+
+void Store::set_inbox_read(const std::string& label, uint64_t received_ms) {
+    Stmt q(db_, "UPDATE accounts SET inbox_read=? WHERE label=?");
+    q.i64(1, static_cast<int64_t>(received_ms)).text(2, label);
+    q.run();
 }
 
 } // namespace forum

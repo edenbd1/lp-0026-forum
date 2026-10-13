@@ -27,8 +27,13 @@
 #include <QTimer>
 
 #include "delivery_transport.h"
+#include "media_backend.h"
 #include "forum/engine.h"
+#include "forum/group.h"
+#include "forum/inbox.h"
+#include "forum/moderation.h"
 #include "forum/identity.h"
+#include "forum/keystore.h"
 #include "forum/store.h"
 #include "logos_ui_plugin_context.h"
 #include "rep_logos_forum_source.h"
@@ -53,7 +58,37 @@ public:
     QString catchUp() override;
     QString saveSnapshot() override;
     QString useStorePeers(QString peers) override;
+    QString retryMembership() override;
     QString openLink(QString url) override;
+
+    // Images, reactions and search: media_backend.cpp.
+    QString attachImage(QString fileUrl) override;
+    QString discardImage(QString token) override;
+    QString createTopicWithImages(QString title, QString body, int mode, QString alias, QString tokens) override;
+    QString replyWithImages(QString topicId, QString body, int mode, QString alias, QString tokens) override;
+    QString loadImage(QString postId, int index) override;
+    QString fullImage(QString postId, int index) override;
+    QString react(QString postId, int emoji) override;
+    QString search(QString query) override;
+    QString unlock(QString passphrase) override;
+    QString lockKeys() override;
+    QString setPassphrase(QString current, QString next) override;
+    QString recoveryPhrase(QString label, QString passphrase) override;
+    QString restoreAccount(QString label, QString words) override;
+    QString inbox() override;
+    QString myPosts() override;
+    QString markInboxRead() override;
+    // Private forums and moderation (forum_groups.cpp).
+    QString selectForum(QString id) override;
+    QString createGroup(QString name) override;
+    QString joinGroup(QString invite) override;
+    QString leaveGroup(QString id) override;
+    QString groupInvite(QString id) override;
+    QString muteAuthor(QString key) override;
+    QString unmuteAuthor(QString key) override;
+    QString hidePost(QString id) override;
+    QString unhidePost(QString id) override;
+    QString moderationList() override;
 
 protected:
     void onContextReady() override;
@@ -66,10 +101,25 @@ private:
     std::vector<std::string> dnsServers() const;  // name servers handed to Delivery, empty for its defaults
     void subscribe();
     void refreshStatus();
+    void setRln(const QString& phase, const QString& detail);
+    QString rlnShort() const;
+    void publishRln();
+    void pollMembership();
+    void membershipAnswered(const QJsonObject& o);
+    void membershipsAnswered(const QJsonObject& o);
+    // A membership gifted by the forum's sponsor (rln_gifter_module).
+    void requestGift();
+    void giftLibp2p(const QString& method, const QString& arg, int attempt, std::function<void(QString)> done);
+    void giftRegister();
+    void giftFailed(const QString& reason);
 
     // Posting
     QString compose(bool topic, const QString& target, const QString& text, const QString& title, int mode,
-                    const QString& alias);
+                    const QString& alias, const std::string& manifest = {});
+    QString composeWithImages(bool topic, const QString& target, const QString& text, const QString& title, int mode,
+                              const QString& alias, const QString& tokens);
+    friend class ForumMedia;
+    std::unique_ptr<ForumMedia> media_;
     forum::Account* selected();
     void publishAccounts();
     void publishOutbox();
@@ -94,10 +144,47 @@ private:
     void armUploadWatchdog();
     QJsonObject readJson() const;
 
+    // ── Private forums and moderation (forum_groups.cpp) ──
+    // A joined group: its own engine on the shared store, behind a transport
+    // that seals everything it sends on the group's topic.
+    struct Joined {
+        forum::Group group;
+        std::unique_ptr<forum::SealedTransport> net;
+        std::unique_ptr<forum::Engine> engine;
+    };
+    void initGroups();
+    void openGroups();
+    forum::InboxView inboxView(const forum::Account& sel) const;
+    Joined* attachGroup(const forum::Group& g);
+    Joined* joinedById(const std::string& forumId);
+    forum::Engine* currentEngine();
+    std::string currentForumId() const;
+    // A message on a topic that is not the public forum's: a group's (opened
+    // and handed to its engine) or another app's (ignored).
+    void routeGroupMessage(const QString& topic, const std::string& wire, bool history);
+    std::optional<std::string> openOwnSealed(const std::string& wire) const;
+    void subscribeGroups();
+    void pumpGroups();
+    void catchUpGroups();
+    void publishForums();
+    std::vector<std::unique_ptr<Joined>> joined_;
+    std::unique_ptr<forum::Groups> groups_;
+    std::unique_ptr<forum::Moderation> moderation_;
+
     std::unique_ptr<forum::Store> store_;
     std::unique_ptr<DeliveryTransport> net_;
     std::unique_ptr<forum::Engine> engine_;
     std::vector<forum::Account> accounts_;
+    // Keys at rest (sealed with a passphrase, or not), and for this session
+    // only, the anonymous posts written here: never saved, so nothing on disk
+    // says which anonymous posts were ours; used to keep them out of the inbox.
+    std::unique_ptr<forum::Keystore> keys_;
+    std::set<std::string> anonThisSession_;
+    void publishKeys();
+    void publishInbox();
+    void reloadAccounts();
+    QString keysLocked() const;   // why an account cannot sign now, or ""
+    std::vector<forum::Account> selectedView();   // the selected account's key and label only
     QString selectedLabel_;
     forum::RotationPolicy rotation_;
     QHash<QString, double> readUpTo_;  // topic id -> last activity the user has seen
@@ -129,9 +216,28 @@ private:
     QString lastCatchUp_, lastSnapshot_;
     int uploadProgress_ = 0;        // upload watchdog generation, bumped at every upload step
     bool fetchSnapshots_ = false;
+    QString preset_ = QStringLiteral("logos.dev");  // the Logos Delivery network; bootstrap() reads the choice
+    // RLN membership, on a network that runs RLN. rlnPhase_: "" (no RLN),
+    // starting, wallet, gifting, gift-failed, funding, registering, pending,
+    // active, quota, lapsed, failed, missing (the RLN modules are not loaded).
+    QString networkSetting_;  // settings.json "network": the user's opt-in network, or empty
+    QString rlnPhase_, rlnDetail_;
+    QString rlnRegistry_, rlnIdentifier_;          // from delivery's rlnState
+    QString rlnPayer_, rlnNeeds_, rlnPrice_, rlnHolds_;  // while awaiting funding
+    int rlnRate_ = 0;
+    bool rlnPolling_ = false;
+    QTimer rlnTimer_;
+    // The sponsor: an open gifter that registers a membership for this node
+    // and pays for it. Empty peer id = sponsorship off ("gifter": "off").
+    QString gifterSetting_;               // settings.json "gifter", kept across saves
+    QString gifterPeer_, gifterAddr_;
+    bool gifting_ = false;                // a request is on its way
+    bool libp2pUp_ = false;
+    int giftFailures_ = 0;
+    qint64 giftRetryAt_ = 0;              // ms since epoch; 0 = ask now
+    QString giftError_;
+    QSet<QString> quotaHeld_;  // our posts delivery holds for the epoch's quota
     QJsonValue dnsSetting_;         // settings.json "dns": name servers chosen by hand
-    QString preset_ = QStringLiteral("logos.dev");  // the Logos Delivery network
-    QString rlnState_;  // "RLN ready", "RLN failed: …", or empty where the network runs no RLN   // settings.json "fetchSnapshots": opt in to Storage fetches
     QSet<QString> earlyConfirms_;   // confirmations that arrived before our send reply
     QList<QString> earlyOrder_;     // their arrival order, to drop the oldest
     std::optional<forum::Announcement> pendingAnnouncement_;  // answered before storage was ready
