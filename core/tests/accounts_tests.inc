@@ -2,6 +2,7 @@
 // Accounts: keys at rest, backup and restore, replies to you. Included by
 // tests.cpp, whose TEST/CHECK, topic(), Bus and FakeNet these use.
 #include "forum/keystore.h"
+#include "forum/recovery.h"
 
 #include <sodium.h>
 #include <sqlite3.h>
@@ -264,5 +265,154 @@ TEST(secret_keys_are_wiped_when_they_go_away) {
     CHECK(!zero(keys.accounts()[0].key.sk));
     keys.lock();
     CHECK(!keys.is_unlocked() && zero(keys.accounts()[0].key.sk));
+}
+
+// ─── Backup and restore ───────────────────────────────────────────────────────
+
+TEST(recovery_words_are_the_bip39_english_list) {
+    std::string list;
+    for (size_t i = 0; i < 2048; ++i) list += std::string(recovery_word(i)) + "\n";
+    uint8_t h[32];
+    crypto_hash_sha256(h, reinterpret_cast<const uint8_t*>(list.data()), list.size());
+    CHECK(to_hex(h, 32) == "2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda");
+    // BIP-39's own 256-bit vectors: the same words for the same 32 bytes.
+    auto words_for = [](uint8_t fill) {
+        uint8_t seed[32]; std::memset(seed, fill, 32);
+        Keypair k; crypto_sign_seed_keypair(k.pk.data(), k.sk.data(), seed);
+        return recovery_phrase(k.sk);
+    };
+    std::string abandon, zoo;
+    for (int i = 0; i < 23; ++i) { abandon += "abandon "; zoo += "zoo "; }
+    CHECK(words_for(0x00) == abandon + "art");
+    CHECK(words_for(0xFF) == zoo + "vote");
+    CHECK(words_for(0x7F) == "legal winner thank year wave sausage worth useful legal winner thank year wave sausage "
+                             "worth useful legal winner thank year wave sausage worth title");
+    CHECK(words_for(0x80) == "letter advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount "
+                             "doctor acoustic avoid letter advice cage absurd amount doctor acoustic bless");
+}
+
+TEST(a_restored_account_has_the_same_public_key_on_a_fresh_install) {
+    Account original{"me", Keypair::generate(), 1};
+    std::string words = recovery_phrase(original.key.sk);
+    CHECK(std::count(words.begin(), words.end(), ' ') == 23);
+    TempDir fresh;
+    Store s(fresh.db()); Keystore keys(s);
+    std::string messy = "  " + words + "\n";
+    for (auto& c : messy) if (c == ' ') { c = '\t'; break; }
+    for (size_t i = 0; i < messy.size(); i += 7) messy[i] = static_cast<char>(std::toupper(static_cast<unsigned char>(messy[i])));
+    for (const auto& phrase : {words, messy}) {
+        std::string why;
+        const auto back = restore_from_phrase(phrase, &why);
+        CHECK(back && back->pk == original.key.pk && back->sk == original.key.sk && why.empty());
+    }
+    const auto k = restore_from_phrase(words);
+    Account restored{"restored", *k, 2, 0, true};
+    CHECK(keys.save(restored, true));
+    const Post p = author_as(restored, topic("back", "after a restore"));
+    CHECK(verify(p) == Check::Ok && p.author == original.key.pk);
+    sodium_memzero(words.data(), words.size());
+}
+
+TEST(a_mistyped_missing_or_swapped_word_is_caught) {
+    uint8_t seed[32];
+    for (int i = 0; i < 32; ++i) seed[i] = static_cast<uint8_t>(i * 7 + 3);
+    Keypair k; crypto_sign_seed_keypair(k.pk.data(), k.sk.data(), seed);
+    const std::string words = recovery_phrase(k.sk);
+    std::vector<std::string> w;
+    for (size_t at = 0, sp; at <= words.size(); at = sp + 1) {
+        sp = words.find(' ', at); if (sp == std::string::npos) sp = words.size();
+        w.push_back(words.substr(at, sp - at));
+    }
+    CHECK(w.size() == 24);
+    auto join = [](const std::vector<std::string>& v) { std::string s; for (auto& x : v) s += x + " "; return s; };
+    std::string why;
+    // A word not in the list is named by its position.
+    auto typo = w; typo[6] += "x";
+    CHECK(!restore_from_phrase(join(typo), &why) && why.find("word 7") != std::string::npos);
+    // 23 or 25 words.
+    auto shorter = w; shorter.pop_back();
+    CHECK(!restore_from_phrase(join(shorter), &why) && why.find("24 words") != std::string::npos);
+    auto longer = w; longer.push_back("abandon");
+    CHECK(!restore_from_phrase(join(longer)));
+    // A real word in the wrong place is a matter of the 8-bit checksum: it
+    // catches 255 in 256. Measured over 200 phrases: each word replaced by
+    // its neighbour in the list, and each pair of neighbours swapped.
+    int missed = 0, tried = 0;
+    for (int n = 0; n < 200; ++n) {
+        uint8_t sd[32];
+        for (int i = 0; i < 32; ++i) sd[i] = static_cast<uint8_t>(n * 31 + i * 7 + 3);
+        Keypair kn; crypto_sign_seed_keypair(kn.pk.data(), kn.sk.data(), sd);
+        const std::string phrase = recovery_phrase(kn.sk);
+        std::vector<std::string> v;
+        for (size_t at = 0, sp; at <= phrase.size(); at = sp + 1) {
+            sp = phrase.find(' ', at); if (sp == std::string::npos) sp = phrase.size();
+            v.push_back(phrase.substr(at, sp - at));
+        }
+        for (size_t i = 0; i < 24; ++i) {
+            auto sub = v;
+            for (size_t j = 0; j < 2048; ++j)
+                if (sub[i] == recovery_word(j)) { sub[i] = recovery_word((j + 1) % 2048); break; }
+            ++tried; missed += restore_from_phrase(join(sub)).has_value();
+            if (i + 1 < 24 && v[i] != v[i + 1]) {
+                auto sw = v; std::swap(sw[i], sw[i + 1]);
+                ++tried; missed += restore_from_phrase(join(sw)).has_value();
+            }
+        }
+    }
+    CHECK(tried > 9000 && missed * 128 < tried);   // under 1 in 128 (expected: 1 in 256)
+    CHECK(!restore_from_phrase(join(w) + "\xF0\x9F\x94\x91"));   // trailing junk is a 25th word
+}
+
+TEST(restore_never_reuses_anonymous_keys_and_they_are_never_derived_from_the_account) {
+    // The original install: an account, and two anonymous posts.
+    Bus bus; FakeNet na(bus); Store sa(":memory:");
+    Engine ea(sa, na, "Logos Forum"); na.engine = &ea;
+    Account me{"me", Keypair::generate(), 1};
+    std::set<PublicKey> keys{me.key.pk};
+    size_t anonymous = 0;
+    const std::string t = ea.post_topic(&me, "mine", "signed by the account", "", 1000);
+    for (int i = 0; i < 2; ++i) {
+        const auto p = sa.get(ea.post_reply(nullptr, t, "anonymous " + std::to_string(i), "", 2000 + i));
+        keys.insert(p->author); ++anonymous;
+    }
+    const std::string words = recovery_phrase(me.key.sk);
+    // Two fresh installs restore the same words, then each posts anonymously
+    // twice, with the very same text and dates as the other. Were anonymous
+    // keys derived from the account, both installs would sign with the same
+    // keys; were they restored, they would repeat the original's.
+    for (int install = 0; install < 2; ++install) {
+        Store s(":memory:"); Keystore ks(s);
+        Account back{"me", *restore_from_phrase(words), 5000, 0, true};
+        CHECK(back.key.pk == me.key.pk);
+        ks.save(back, true);
+        FakeNet n(bus); Engine e(s, n, "Logos Forum"); n.engine = &e;
+        for (int i = 0; i < 2; ++i) {
+            const auto p = s.get(e.post_reply(nullptr, t, "after a restore " + std::to_string(i), "", 9000 + i));
+            CHECK(p && p->mode == Mode::Anonymous && verify(*p) == Check::Ok);
+            keys.insert(p->author); ++anonymous;
+        }
+        CHECK(s.account_rows().size() == 1);   // nothing about anonymous posts came back with the words
+    }
+    // Six anonymous keys and the account's: seven different keys.
+    CHECK(anonymous == 6 && keys.size() == 7);
+}
+
+TEST(a_rotation_marks_the_account_as_not_backed_up_and_the_old_words_give_the_old_key) {
+    TempDir dir;
+    Store s(dir.db()); Keystore keys(s);
+    Account me{"me", Keypair::generate(), 1};
+    const std::string words = recovery_phrase(me.key.sk);
+    me.backed_up = true;
+    keys.save(me, true);
+    CHECK(keys.accounts()[0].backed_up);
+    const PublicKey old = rotate(me, 2);
+    CHECK(!me.backed_up);
+    keys.save(me, true);
+    CHECK(!keys.accounts()[0].backed_up);
+    // The words written before restore the retired key, never the new one:
+    // the account does not silently come back as what it rotated away from.
+    const auto back = restore_from_phrase(words);
+    CHECK(back && back->pk == old && back->pk != me.key.pk);
+    CHECK(restore_from_phrase(recovery_phrase(me.key.sk))->pk == me.key.pk);
 }
 
