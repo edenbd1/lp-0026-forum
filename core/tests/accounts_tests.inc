@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Accounts: keys at rest, backup and restore, replies to you. Included by
 // tests.cpp, whose TEST/CHECK, topic(), Bus and FakeNet these use.
+#include "forum/inbox.h"
 #include "forum/keystore.h"
 #include "forum/recovery.h"
 
@@ -392,6 +393,7 @@ TEST(restore_never_reuses_anonymous_keys_and_they_are_never_derived_from_the_acc
             keys.insert(p->author); ++anonymous;
         }
         CHECK(s.account_rows().size() == 1);   // nothing about anonymous posts came back with the words
+        CHECK(my_posts(s, "Logos Forum", back.key.pk).empty());
     }
     // Six anonymous keys and the account's: seven different keys.
     CHECK(anonymous == 6 && keys.size() == 7);
@@ -416,3 +418,146 @@ TEST(a_rotation_marks_the_account_as_not_backed_up_and_the_old_words_give_the_ol
     CHECK(restore_from_phrase(recovery_phrase(me.key.sk))->pk == me.key.pk);
 }
 
+TEST(nothing_on_disk_links_an_anonymous_post_to_this_install_once_it_is_sent) {
+    TempDir dir;
+    Bus bus; FakeNet n(bus); n.up = false;
+    Store s(dir.db()); Keystore keys(s); Engine e(s, n, "Logos Forum"); n.engine = &e;
+    Account me{"me", Keypair::generate(), 1};
+    keys.save(me, true);
+    const std::string t = e.post_topic(&me, "mine", "body", "", 1790000000000);
+    const std::string anon = e.post_reply(nullptr, t, "anonymous from here", "", 1790000001000);
+    const Post p = *s.get(anon);
+    // The outbox copy carries the base64 signature; the posts table keeps the
+    // signature as raw bytes. While it waits, the outbox copy is on disk…
+    const std::string b64sig = nlohmann::json::parse(encode(p))["sig"].get<std::string>();
+    CHECK(on_disk(dir.db(), b64sig));
+    n.up = true;
+    e.pump(1790000002000);
+    CHECK(s.outbox().empty());
+    // …and once sent it is gone from forum.db and its log.
+    CHECK(!on_disk(dir.db(), b64sig));
+    // No table but `posts` names the anonymous post or its key, and its row
+    // there is like any received post's: nothing in it names an account.
+    sqlite3* db = nullptr;
+    sqlite3_open(dir.db().c_str(), &db);
+    std::vector<std::string> tables;
+    {
+        sqlite3_stmt* q = nullptr;
+        sqlite3_prepare_v2(db, "SELECT name FROM sqlite_master WHERE type='table'", -1, &q, nullptr);
+        while (sqlite3_step(q) == SQLITE_ROW) tables.push_back(reinterpret_cast<const char*>(sqlite3_column_text(q, 0)));
+        sqlite3_finalize(q);
+    }
+    CHECK(tables.size() >= 4);
+    const std::string anon_key(reinterpret_cast<const char*>(p.author.data()), 32);
+    for (const auto& table : tables) {
+        if (table == "posts") continue;
+        sqlite3_stmt* q = nullptr;
+        sqlite3_prepare_v2(db, ("SELECT * FROM \"" + table + "\"").c_str(), -1, &q, nullptr);
+        while (sqlite3_step(q) == SQLITE_ROW)
+            for (int c = 0; c < sqlite3_column_count(q); ++c) {
+                const auto* b = static_cast<const char*>(sqlite3_column_blob(q, c));
+                const std::string v = b ? std::string(b, sqlite3_column_bytes(q, c)) : std::string();
+                CHECK(v.find(anon) == std::string::npos && v.find(anon_key) == std::string::npos);
+            }
+        sqlite3_finalize(q);
+    }
+    sqlite3_close(db);
+    // And the account knows nothing of it: neither its posts nor its inbox.
+    const auto own = my_posts(s, "Logos Forum", me.key.pk);
+    CHECK(own.size() == 1 && own[0].id == t);
+}
+
+// ─── Replies to you ───────────────────────────────────────────────────────────
+
+TEST(replies_and_mentions_reach_you_by_key_never_by_name) {
+    Store s(":memory:");
+    Account me{"Alice", Keypair::generate(), 1}, bob{"Bob", Keypair::generate(), 1};
+    auto put = [&](const Post& p, uint64_t received) { s.put(p, received); return p.id(); };
+    const std::string mine = put(author_as(me, topic("my topic")), 100);
+    const std::string theirs = put(author_as(bob, topic("bob's topic")), 110);
+    const std::string early = put(author_as(bob, reply_to(theirs, "before Alice spoke", 1790000000500)), 120);
+    put(author_as(me, reply_to(theirs, "Alice replies", 1790000001000)), 130);
+    const std::string to_topic = put(author_as(bob, reply_to(mine, "to Alice's topic", 1790000002000)), 140);
+    const std::string after = put(author_as(bob, reply_to(theirs, "after Alice's reply", 1790000003000)), 150);
+    const std::string handle = mention_handle(me.key.pk);
+    std::string upper = handle; for (auto& c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    const std::string hex = to_hex(me.key.pk.data(), 32);
+    const std::string mention = put(author_as(bob, topic("hey", "ping @" + handle + ", thoughts?")), 160);
+    const std::string mention_upper = put(author_as(bob, topic("hey", "@" + upper)), 170);
+    const std::string mention_full = put(author_as(bob, topic("hey", "(@" + hex + ")")), 175);
+    // Not mentions: a name, an alias, too few digits, a longer key that only
+    // starts like Alice's, digits not after an "@".
+    std::string other = hex.substr(0, 16) + (hex[16] == '0' ? "1" : "0");
+    for (const std::string& body : {std::string("@Alice"), std::string("@alice and @Alice"), "@" + handle.substr(0, 15),
+                                    "@" + other, handle, "@\xEF\xBC\x90" + handle})
+        put(author_as(bob, topic("not a mention", body)), 180);
+    put(author_as(bob, topic("Alice", "named in the title, by name")), 185);
+    Post alias_alice = author_as(bob, topic("t", "signed by Bob as Alice"), "Alice");
+    put(alias_alice, 190);
+    // Alice's own posts never reach her inbox, even mentioning herself.
+    put(author_as(me, topic("me", "@" + handle)), 195);
+
+    const auto v = inbox(s, "Logos Forum", me.key.pk, 0);
+    std::map<std::string, Why> got;
+    for (const auto& i : v.items) got[i.post.id] = i.why;
+    CHECK(got.size() == 5);
+    CHECK(got.count(to_topic) && got[to_topic] == Why::YourTopic);
+    CHECK(got.count(after) && got[after] == Why::AfterYourReply);
+    CHECK(!got.count(early));
+    CHECK(got.count(mention) && got[mention] == Why::Mention);
+    CHECK(got.count(mention_upper) && got.count(mention_full));
+    CHECK(v.unread == 5);
+    CHECK(inbox(s, "Logos Forum", me.key.pk, 160).unread == 2);   // read up to 160: two newer
+    CHECK(mentions("@" + handle, me.key.pk) && !mentions("@" + handle, bob.key.pk));
+}
+
+TEST(anonymous_posts_are_not_yours_in_the_inbox) {
+    Bus bus; FakeNet n(bus); Store s(":memory:");
+    Engine e(s, n, "Logos Forum"); n.engine = &e;
+    Account me{"me", Keypair::generate(), 1}, bob{"bob", Keypair::generate(), 1};
+    // An anonymous topic written here, then answered: not Alice's to read.
+    const std::string anon_topic = e.post_topic(nullptr, "asked anonymously", "?", "", 1000);
+    s.put(author_as(bob, reply_to(anon_topic, "an answer", 2000)), 2000);
+    CHECK(inbox(s, "Logos Forum", me.key.pk, 0).items.empty());
+    // An anonymous reply written here in her own topic: listed (nothing on
+    // disk says it is hers), unless the embedder skips it from memory.
+    const std::string own = e.post_topic(&me, "mine", "!", "", 3000);
+    const std::string anon_reply = e.post_reply(nullptr, own, "me, anonymously", "", 4000);
+    CHECK(inbox(s, "Logos Forum", me.key.pk, 0).items.size() == 1);
+    CHECK(inbox(s, "Logos Forum", me.key.pk, 0, {anon_reply}).items.empty());
+    CHECK(my_posts(s, "Logos Forum", me.key.pk).size() == 1);
+}
+
+TEST(a_second_account_sees_neither_the_first_accounts_posts_nor_its_replies) {
+    Bus bus; FakeNet n(bus); Store s(":memory:");
+    Engine e(s, n, "Logos Forum"); n.engine = &e;
+    Keystore keys(s);
+    Account first{"first", Keypair::generate(), 1}, second{"second", Keypair::generate(), 2}, bob{"bob", Keypair::generate(), 1};
+    keys.save(first, true); keys.save(second, false);
+    const std::string t = e.post_topic(&first, "first's topic", "b", "", 1000);
+    e.post_reply(&first, t, "as an alias", "Masked", 1100);
+    e.post_reply(nullptr, t, "anonymously", "", 1200);
+    s.put(author_as(bob, reply_to(t, "answering first", 1300)), 1300);
+    s.put(author_as(bob, topic("hi", "@" + mention_handle(first.key.pk))), 1400);
+    CHECK(my_posts(s, "Logos Forum", first.key.pk).size() == 2);        // identity and alias, not anonymous
+    CHECK(my_posts(s, "Logos Forum", second.key.pk).empty());
+    CHECK(inbox(s, "Logos Forum", first.key.pk, 0).items.size() == 3);  // bob's reply, the mention, the anonymous reply
+    CHECK(inbox(s, "Logos Forum", second.key.pk, 0).items.empty());
+    // Each account's read mark is its own.
+    s.set_inbox_read("first", 1350);
+    CHECK(s.inbox_read("first") == 1350 && s.inbox_read("second") == 0);
+}
+
+TEST(the_inbox_read_mark_survives_a_restart_and_goes_with_its_account) {
+    TempDir dir;
+    {
+        Store s(dir.db()); Keystore keys(s);
+        keys.save(Account{"a", Keypair::generate(), 1}, true);
+        keys.save(Account{"b", Keypair::generate(), 2}, false);
+        s.set_inbox_read("a", 777);
+    }
+    Store s(dir.db());
+    CHECK(s.inbox_read("a") == 777 && s.inbox_read("b") == 0);
+    s.remove_account("a");
+    CHECK(s.inbox_read("a") == 0);
+}

@@ -277,6 +277,9 @@ void Store::sent(const std::string& id) {
     Stmt q(db_, "DELETE FROM outbox WHERE id=?");
     q.text(1, id);
     q.step();
+    // The outbox copy said this install wrote the post (an anonymous one
+    // too): zeroed in the file by secure_delete, and flushed out of the log.
+    if (sqlite3_changes(db_) > 0) scrub();
 }
 
 int Store::awaiting(const std::string& id, uint64_t now_ms, uint64_t window_ms) {
